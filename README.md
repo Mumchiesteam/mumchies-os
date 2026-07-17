@@ -42,10 +42,11 @@ The API is available at `http://localhost:8000`, with interactive docs at `/docs
 
 ## Shopify read-only orders
 
-The Orders dashboard reads the latest 100 orders through the backend only; the browser never receives your Shopify access token. This integration makes a single `GET` request to Shopify and has no write, fulfillment, tag, or update operations.
+The Orders dashboard reads the latest 100 orders through the backend only; the browser never receives your Shopify credentials or Shopify access token. The backend first exchanges the Shopify client credentials for a short-lived Admin API token, then makes a single `GET` request to Shopify. There are no write, fulfillment, tag, or update operations.
 
-1. In Shopify Admin, create a custom app with the **read_orders** Admin API scope and install it.
-2. Copy `.env.example` to `.env`, then set `SHOPIFY_STORE` (for example `my-store.myshopify.com`), `SHOPIFY_ACCESS_TOKEN`, and a supported `SHOPIFY_API_VERSION`.
+1. In Shopify, create and install a custom app for the store and grant it the Admin API scopes needed for orders.
+2. Copy `.env.example` to `.env`, then set `SHOPIFY_STORE` (for example `my-store.myshopify.com`), `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET`, and a supported `SHOPIFY_API_VERSION`.
+3. The backend requests `POST /admin/oauth/access_token` with `grant_type=client_credentials`, caches the token until shortly before expiry, and uses it for Admin API requests.
 3. Start the backend and frontend as described above. The dashboard requests `GET /api/v1/orders` on load and every 60 seconds.
 
 Without valid Shopify variables, the endpoint responds with a clear configuration error and the dashboard shows a retry state. No Shopify data is modified.

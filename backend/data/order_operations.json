@@ -1,0 +1,50 @@
+{
+  "6804281655374": {
+    "call_logs": [],
+    "corrected_address": {
+      "customer_name": "VINAY BANGERA",
+      "phone": "+919527348325",
+      "address_line1": "FLAT NO.A-4, PHASE -1, RACHANA GARDENS ,Bhangarwadi LONAVALA,PUNE DISTRICT",
+      "address_line2": "Suite 2",
+      "landmark": null,
+      "city": "Pune",
+      "state": "Maharashtra",
+      "pincode": "410401"
+    },
+    "courier_sync_status": null,
+    "courier_sync_error": null,
+    "address_verified": false,
+    "address_verified_at": null,
+    "address_verified_by": null,
+    "verified_address_snapshot": null
+  },
+  "6804316291150": {
+    "call_logs": [
+      {
+        "result": "Confirmed",
+        "timestamp": "2026-07-18T01:51:30",
+        "operator": "Amit Kumar",
+        "comment": "test confirmed"
+      },
+      {
+        "result": "Callback Requested",
+        "timestamp": "2026-07-18T01:50:51",
+        "operator": "Amit Kumar",
+        "comment": "test callback"
+      },
+      {
+        "result": "No Answer",
+        "timestamp": "2026-07-18T01:48:35",
+        "operator": "Amit Kumar",
+        "comment": "test no answer"
+      }
+    ],
+    "corrected_address": null,
+    "address_verified": false,
+    "address_verified_at": null,
+    "address_verified_by": null,
+    "verified_address_snapshot": null,
+    "courier_sync_status": null,
+    "courier_sync_error": null
+  }
+}
