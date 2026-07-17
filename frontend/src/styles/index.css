@@ -1,9 +1,7 @@
 @import "tailwindcss";
 
-@theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-}
+@theme { --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif; }
 
-html {
-  font-family: var(--font-sans);
-}
+html { font-family: var(--font-sans); }
+body { margin: 0; min-width: 320px; }
+button, select { cursor: pointer; }
