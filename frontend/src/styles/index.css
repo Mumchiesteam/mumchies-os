@@ -5,3 +5,10 @@
 html { font-family: var(--font-sans); }
 body { margin: 0; min-width: 320px; }
 button, select { cursor: pointer; }
+
+@keyframes drawer-in {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+.drawer-enter { animation: drawer-in 220ms cubic-bezier(.16, 1, .3, 1); }
