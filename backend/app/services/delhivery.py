@@ -296,6 +296,25 @@ class DelhiveryService:
             raise DelhiveryError("Delhivery's official PDF label could not be downloaded.", status_code=pdf_response.status_code)
         return self._validate_pdf_response(pdf_response)
 
+    async def label_data(self, waybill: str) -> dict[str, Any]:
+        """Fetch Delhivery's documented packing-slip JSON (no pdf=True) for native label
+        rendering - see app/services/delhivery_label.py. Distinct from label(), which proxies
+        Delhivery's own server-rendered PDF unchanged for the raw-download endpoint."""
+        if not waybill:
+            raise DelhiveryError("A Delhivery AWB is required to retrieve label data.")
+        response = await self._get("/api/p/packing_slip", {"wbns": waybill})
+        try:
+            payload = response.json()
+        except Exception as error:
+            raise DelhiveryError("Delhivery did not return packing-slip JSON for this AWB.") from error
+        packages = payload.get("packages") if isinstance(payload, dict) else None
+        if not isinstance(packages, list) or not packages:
+            raise DelhiveryError("Delhivery could not generate label data: the AWB is invalid, unmanifested, or was not found.")
+        package = packages[0]
+        if not isinstance(package, dict):
+            raise DelhiveryError("Delhivery returned malformed packing-slip data.")
+        return package
+
     async def cancel(self, waybill: str) -> dict[str, Any]:
         response = await self._post("/api/p/edit", json_body={"waybill": waybill, "cancellation": "true"})
         return response.json()

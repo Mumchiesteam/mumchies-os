@@ -110,7 +110,7 @@ async def test_batch_generation_does_not_mark_printed_and_prevents_duplicate(db,
     async def fake_label(_shipment):
         return pdf()
     monkeypatch.setattr(label_printing, "official_label", fake_label)
-    upsert_shipment(db, "1", provider="delhivery", awb="A1", booking_status="booked", label_print_status="not_printed")
+    upsert_shipment(db, "1", provider="shiprocket", awb="A1", shipment_id="1", booking_status="booked", label_print_status="not_printed")
     batch = await create_batch(db, ["1"], "Operator")
     assert db.get(ShiprocketShipment, "1").label_print_status == "awaiting_confirmation"
     with pytest.raises(LabelPrintError, match="active print batch"):

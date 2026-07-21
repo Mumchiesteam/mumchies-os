@@ -186,6 +186,17 @@ async def validate_order_address(order_id: str, payload: AddressValidationPayloa
     if len(pieces) == 2 and pieces[0] == pieces[1]:
         warnings.append("Duplicate address text exists")
     shipment = get_shipment(db, order_id)
+    # address_confidence_score/category/source (see ShiprocketShipment model) are always None
+    # today. Investigated 2026-07-21: none of the Shiprocket Shipping API v1 endpoints this app
+    # calls (auth/login, settings/company/pickup, courier/serviceability, orders/create/adhoc,
+    # courier/assign/awb, orders search, courier/track/awb, courier/generate/label,
+    # courier/awb/update - see app/services/shiprocket.py) return an address-confidence-like
+    # field in their response payloads. A confidence/quality score does exist, but only under
+    # Shiprocket's separate "Sense" product (Address Score / SenseAddress APIs, sense.shiprocket.in
+    # per public docs) - a different, separately-licensed API with its own credentials that this
+    # app does not integrate with. Do not fabricate a value here; leave these columns null until
+    # Sense (or an equivalent documented endpoint) is actually integrated. The columns/API fields/
+    # UI below are kept in place so a real score can be wired in later without a schema change.
     score = shipment.address_confidence_score if shipment else None
     category = shipment.address_confidence_category if shipment else None
     return {
@@ -196,7 +207,7 @@ async def validate_order_address(order_id: str, payload: AddressValidationPayloa
         "shiprocket_confidence_score": score,
         "shiprocket_confidence_category": category,
         "shiprocket_confidence_source": shipment.address_confidence_source if shipment else None,
-        "shiprocket_message": "Shiprocket confidence score unavailable" if score is None else f"Shiprocket confidence: {score:g}%" + (f" - {category}" if category else ""),
+        "shiprocket_message": "Shiprocket score not available" if score is None else f"Shiprocket confidence: {score:g}%" + (f" - {category}" if category else ""),
     }
 
 

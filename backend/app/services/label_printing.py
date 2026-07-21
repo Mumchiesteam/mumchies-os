@@ -13,8 +13,10 @@ from sqlalchemy.orm import Session
 
 from app.core.config import BACKEND_DIR
 from app.models.shiprocket import LabelPrintBatch, LabelPrintBatchItem, ShiprocketShipment
-from app.services.delhivery import DelhiveryService
+from app.services.delhivery import DelhiveryError, DelhiveryService
+from app.services.delhivery_label import DelhiveryLabelError, render_delhivery_label
 from app.services.shiprocket import ShiprocketService
+from app.services.shopify import ShopifyService
 
 LABEL_DIR = BACKEND_DIR / "data" / "label_batches"
 LABEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -65,6 +67,32 @@ async def official_label(shipment: ShiprocketShipment) -> bytes:
     return response.content
 
 
+async def _matching_shopify_order(order_id: str):
+    """Best-effort order lookup to enrich the Delhivery label with price/total/date. Never
+    blocks label generation - a lookup failure just means those extra lines are omitted."""
+    try:
+        orders = await ShopifyService().get_latest_orders()
+    except Exception:
+        return None
+    return next((order for order in orders if order.order_id == order_id), None)
+
+
+async def _print_ready_page(shipment: ShiprocketShipment) -> bytes:
+    """Dispatch per-provider label preparation. Delhivery is rendered natively from Delhivery's
+    own documented packing-slip JSON (no A4 PDF is fetched at all); every other provider
+    (Shiprocket) keeps the original official-PDF + box-detection behaviour unchanged."""
+    if shipment.provider == "delhivery":
+        if not shipment.awb:
+            raise LabelPrintError("Shipment has no AWB.")
+        try:
+            data = await DelhiveryService().label_data(shipment.awb)
+            order = await _matching_shopify_order(shipment.order_id)
+            return render_delhivery_label(data, order)
+        except (DelhiveryError, DelhiveryLabelError) as error:
+            raise LabelPrintError(str(error)) from error
+    return print_ready_pdf(await official_label(shipment))
+
+
 async def create_batch(db: Session, order_ids: list[str], operator: str) -> LabelPrintBatch:
     if not order_ids:
         raise LabelPrintError("Select at least one label.")
@@ -86,7 +114,7 @@ async def create_batch(db: Session, order_ids: list[str], operator: str) -> Labe
         if shipment.label_print_status != "not_printed":
             raise LabelPrintError("Only labels currently in the Labels to Print queue can be batched.")
 
-    prepared = [print_ready_pdf(await official_label(shipment)) for shipment in shipments]
+    prepared = [await _print_ready_page(shipment) for shipment in shipments]
     writer = PdfWriter()
     for label in prepared:
         for page in PdfReader(BytesIO(label)).pages:
