@@ -16,9 +16,13 @@ class Settings(BaseSettings):
     shopify_client_id: str | None = None
     shopify_client_secret: str | None = None
     shopify_api_version: str | None = None
+    shopify_notify_customer_on_fulfillment: bool = True
     shiprocket_email: str | None = None
     shiprocket_password: str | None = None
     shiprocket_pickup: str | None = None
+    delhivery_token: str | None = None
+    delhivery_pickup: str | None = None
+    shadowfax_token: str | None = None
 
     # Load both the backend-local file and the repo-root file explicitly so
     # the server behaves the same regardless of its working directory.

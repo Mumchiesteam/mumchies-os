@@ -28,3 +28,4 @@ Thumbs.db
 
 # Database data
 database/postgres-data/
+backend/data/*.db

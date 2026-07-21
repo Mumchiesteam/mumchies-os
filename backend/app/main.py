@@ -8,7 +8,7 @@ app = FastAPI(title=settings.app_name, version=settings.app_version)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["*"],
 )
 app.include_router(api_router, prefix=settings.api_v1_prefix)

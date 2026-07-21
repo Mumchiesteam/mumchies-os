@@ -29,10 +29,11 @@ async def test_orders_endpoint_merges_persisted_operations(monkeypatch: pytest.M
         tags=[],
     )
 
-    async def fake_get_latest_orders(self):  # noqa: ANN001
+    async def fake_get_latest_orders(self, **_kwargs):  # noqa: ANN001
         return [sample_order]
 
     monkeypatch.setattr("app.api.routes.orders.ShopifyService.get_latest_orders", fake_get_latest_orders)
+    monkeypatch.setattr("app.api.routes.orders.get_shipments_by_order_id", lambda _db: {})
     monkeypatch.setattr(
         "app.api.routes.orders.OrderOperationsStore.all",
         lambda: {

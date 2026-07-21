@@ -22,6 +22,7 @@ class OrderProduct(BaseModel):
 
 class ShopifyOrder(BaseModel):
     order_id: str
+    shopify_graphql_id: str | None = None
     order_number: str
     shopify_name: str | None = None
     created_date: str
@@ -35,6 +36,13 @@ class ShopifyOrder(BaseModel):
     customer_orders_count: int | None = None
     products: list[OrderProduct]
     total_amount: Decimal
+    order_total: Decimal = Decimal("0")
+    paid_amount: Decimal = Decimal("0")
+    outstanding_amount: Decimal = Decimal("0")
+    cod_collectable_amount: Decimal = Decimal("0")
+    payment_type: str = "prepaid"
+    payment_gateway_names: list[str] = []
+    transaction_summary: list[dict[str, str | Decimal | None]] = []
     shipping_amount: Decimal | None = None
     payment_status: str | None = None
     fulfillment_status: str | None = None
@@ -48,3 +56,10 @@ class ShopifyOrder(BaseModel):
     corrected_address: dict[str, str | None] | None = None
     courier_sync_status: str | None = None
     courier_sync_error: str | None = None
+    address_sync_results: dict[str, str | dict[str, str | None]] | None = None
+    package_details: dict[str, float | str | None] | None = None
+    selected_courier: dict[str, str | float | None] | None = None
+    shipment: dict[str, str | float | None] | None = None
+    first_action_at: str | None = None
+    human_action_count: int = 0
+    call_attempt_count: int = 0
