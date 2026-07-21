@@ -97,24 +97,31 @@ const formatOrderDateTime = (value: string) => {
 const formatDateTime = (value: string) => new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
 const isCancelled = (order: Order) => Boolean(order.cancelledAt || order.shopifyStatus === 'cancelled' || (order.payment === 'COD' && order.tags.join(' ').toLowerCase().includes('cancel')))
 const isShipped = (order: Order) => {
-  const status = `${order.fulfillmentStatus || ''} ${order.shopifyStatus || ''} ${order.tags.join(' ')}`.toLowerCase()
-  return status.includes('fulfilled') || status.includes('partial') || status.includes('shipped') || status.includes('picked up') || status.includes('dispatched')
+  const status = `${order.fulfillmentStatus || ''} ${order.shopifyStatus || ''} ${order.tags.join(' ')} ${order.externalTracking?.status || ''}`.toLowerCase()
+  return status.includes('fulfilled') || status.includes('partial') || status.includes('shipped') || status.includes('picked up') || status.includes('dispatched') || status.includes('in transit') || status.includes('out for delivery') || Boolean(order.externalTracking?.awb)
 }
-const isDelivered = (order: Order) => `${order.fulfillmentStatus || ''} ${order.shopifyStatus || ''} ${order.tags.join(' ')}`.toLowerCase().includes('delivered')
+const isDelivered = (order: Order) => `${order.fulfillmentStatus || ''} ${order.shopifyStatus || ''} ${order.tags.join(' ')} ${order.externalTracking?.status || ''}`.toLowerCase().includes('delivered')
 const isNdr = (order: Order) => `${order.tags.join(' ')} ${order.shopifyStatus || ''}`.toLowerCase().includes('ndr')
-const listStatus = (order: Order): OperationalStatus => (order.operationalStatus as OperationalStatus | null) || (
-  order.shipment?.awb || order.shipment?.shipment_id ? 'Booked'
-    : isCancelled(order) ? 'Cancelled'
-    : isDelivered(order) ? 'Delivered'
-      : isShipped(order) || order.shopifyStatus === 'fulfilled' ? 'Shipped'
-        : isNdr(order) ? 'NDR'
-          : order.payment === 'Prepaid'
-            ? order.addressVerified ? 'Ready for Booking' : 'Address Verification Pending'
-            : order.latestCallResult === 'Callback Requested' ? 'Callback Required'
-              : order.latestCallResult === 'Confirmed' ? 'Ready for Booking'
-                : order.latestCallResult === 'Wrong Number' ? 'Needs Review'
-                  : 'Call Pending'
-)
+const isBooked = (order: Order) => Boolean(order.shipment?.awb || order.shipment?.shipment_id)
+// Any reliable evidence of an existing active shipment/fulfilment - local shipment record,
+// Shopify's own fulfilment status/tags, or an externally-detected tracking number. Shipment-
+// backed states must always outrank locally-derived operational states (call logs, address
+// verification) - see the backend's app/services/shipment_status.py, which this mirrors.
+const hasShipmentEvidence = (order: Order) => isBooked(order) || isShipped(order) || isDelivered(order) || isNdr(order)
+const listStatus = (order: Order): OperationalStatus => {
+  if (isCancelled(order)) return 'Cancelled'
+  if (isDelivered(order)) return 'Delivered'
+  if (isBooked(order)) return 'Booked'
+  if (isShipped(order)) return 'Shipped'
+  if (order.operationalStatus) return order.operationalStatus as OperationalStatus
+  if (isNdr(order)) return 'NDR'
+  return order.payment === 'Prepaid'
+    ? order.addressVerified ? 'Ready for Booking' : 'Address Verification Pending'
+    : order.latestCallResult === 'Callback Requested' ? 'Callback Required'
+      : order.latestCallResult === 'Confirmed' ? 'Ready for Booking'
+        : order.latestCallResult === 'Wrong Number' ? 'Needs Review'
+          : 'Call Pending'
+}
 
 function App() {
   const [orders, setOrders] = useState<Order[]>([])
@@ -362,7 +369,11 @@ function App() {
         comment: callComment,
       })
       setOperations(updated)
-      setOrders(prev => prev.map(order => order.internalId === selectedOrder.internalId ? { ...order, latestCallResult: updated.call_logs?.[0]?.result || null, operationalStatus: (updated.call_logs?.[0]?.result === 'Callback Requested' ? 'Callback Required' : updated.call_logs?.[0]?.result === 'Confirmed' ? (order.payment === 'Prepaid' && !updated.address_verified ? 'Address Verification Pending' : 'Ready for Booking') : updated.call_logs?.[0]?.result === 'Wrong Number' ? 'Needs Review' : updated.call_logs?.[0]?.result === 'Cancelled' ? 'Cancelled' : 'Call Pending') as OperationalStatus, addressVerified: updated.address_verified, addressVerifiedAt: updated.address_verified_at, addressVerifiedBy: updated.address_verified_by, verifiedAddressSnapshot: updated.verified_address_snapshot, correctedAddress: updated.corrected_address, courierSyncStatus: updated.courier_sync_status, courierSyncError: updated.courier_sync_error } : order))
+      // A call log can only move a not-yet-shipped order between local operational states. An
+      // order that already has an existing shipment/fulfilment must never be downgraded back to
+      // "Ready for Booking" (or any other local state) by a call outcome - see Part 2/3 of the
+      // 2026-07-21 shipment-state regression fix.
+      setOrders(prev => prev.map(order => order.internalId === selectedOrder.internalId ? { ...order, latestCallResult: updated.call_logs?.[0]?.result || null, operationalStatus: (hasShipmentEvidence(order) ? order.operationalStatus : (updated.call_logs?.[0]?.result === 'Callback Requested' ? 'Callback Required' : updated.call_logs?.[0]?.result === 'Confirmed' ? (order.payment === 'Prepaid' && !updated.address_verified ? 'Address Verification Pending' : 'Ready for Booking') : updated.call_logs?.[0]?.result === 'Wrong Number' ? 'Needs Review' : updated.call_logs?.[0]?.result === 'Cancelled' ? 'Cancelled' : 'Call Pending')) as OperationalStatus | null, addressVerified: updated.address_verified, addressVerifiedAt: updated.address_verified_at, addressVerifiedBy: updated.address_verified_by, verifiedAddressSnapshot: updated.verified_address_snapshot, correctedAddress: updated.corrected_address, courierSyncStatus: updated.courier_sync_status, courierSyncError: updated.courier_sync_error } : order))
       setCallComment('')
       await refreshEligibility(selectedOrder.internalId)
       setNotice('Call attempt saved')
@@ -383,7 +394,9 @@ function App() {
         use_as_default_address: useAsDefaultAddress,
       })
       setOperations(updated)
-      setOrders(prev => prev.map(order => order.internalId === selectedOrder.internalId ? { ...order, addressVerified: updated.address_verified, addressVerifiedAt: updated.address_verified_at, addressVerifiedBy: updated.address_verified_by, verifiedAddressSnapshot: updated.verified_address_snapshot, correctedAddress: updated.corrected_address, courierSyncStatus: updated.courier_sync_status, courierSyncError: updated.courier_sync_error, addressSyncResults: updated.address_sync_results, operationalStatus: (order.payment === 'Prepaid' ? 'Address Verification Pending' : order.operationalStatus) as OperationalStatus | null } : order))
+      // Saving a local address correction must never re-enable booking for an order that
+      // already has an existing shipment/fulfilment - see Part 2/5 of the shipment-state fix.
+      setOrders(prev => prev.map(order => order.internalId === selectedOrder.internalId ? { ...order, addressVerified: updated.address_verified, addressVerifiedAt: updated.address_verified_at, addressVerifiedBy: updated.address_verified_by, verifiedAddressSnapshot: updated.verified_address_snapshot, correctedAddress: updated.corrected_address, courierSyncStatus: updated.courier_sync_status, courierSyncError: updated.courier_sync_error, addressSyncResults: updated.address_sync_results, operationalStatus: (hasShipmentEvidence(order) ? order.operationalStatus : order.payment === 'Prepaid' ? 'Address Verification Pending' : order.operationalStatus) as OperationalStatus | null } : order))
       await refreshEligibility(selectedOrder.internalId)
       setNotice('Address correction saved')
     } catch (err) {
@@ -408,7 +421,7 @@ function App() {
       },
       })
       setOperations(updated)
-      setOrders(prev => prev.map(order => order.internalId === selectedOrder.internalId ? { ...order, addressVerified: updated.address_verified, addressVerifiedAt: updated.address_verified_at, addressVerifiedBy: updated.address_verified_by, verifiedAddressSnapshot: updated.verified_address_snapshot, correctedAddress: updated.corrected_address, courierSyncStatus: updated.courier_sync_status, courierSyncError: updated.courier_sync_error, operationalStatus: 'Ready for Booking' } : order))
+      setOrders(prev => prev.map(order => order.internalId === selectedOrder.internalId ? { ...order, addressVerified: updated.address_verified, addressVerifiedAt: updated.address_verified_at, addressVerifiedBy: updated.address_verified_by, verifiedAddressSnapshot: updated.verified_address_snapshot, correctedAddress: updated.corrected_address, courierSyncStatus: updated.courier_sync_status, courierSyncError: updated.courier_sync_error, operationalStatus: (hasShipmentEvidence(order) ? order.operationalStatus : 'Ready for Booking') as OperationalStatus | null } : order))
       await refreshEligibility(selectedOrder.internalId)
       setNotice('Address verified')
     } catch (err) {
@@ -1000,6 +1013,21 @@ const OrderDrawer = memo(function OrderDrawer({
             </div>
           </Section>
 
+          {order.externalTracking?.awb && !shipment && (
+            <Section title="Tracking">
+              <div className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
+                <p className="font-semibold">Shipped via {order.externalTracking.provider || 'courier'}</p>
+                <p>AWB {order.externalTracking.awb}</p>
+                {order.externalTracking.status && <p>Status: {order.externalTracking.status}</p>}
+                {order.externalTracking.trackingUrl && (
+                  <a href={order.externalTracking.trackingUrl} target="_blank" rel="noopener noreferrer" className="mt-2 inline-block rounded-md border border-emerald-200 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-800">
+                    Track Shipment
+                  </a>
+                )}
+              </div>
+            </Section>
+          )}
+
           <Section title="COD Call Log">
             <div className="space-y-3">
               <div className="grid gap-2 lg:grid-cols-[1fr_2fr_auto]">
@@ -1026,6 +1054,12 @@ const OrderDrawer = memo(function OrderDrawer({
 
           <Section title="Courier Booking">
             <div className="space-y-4 text-sm text-slate-600">
+              {hasShipmentEvidence(order) && !shipment ? (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-600">
+                  This order already has an existing shipment or fulfilment (see Tracking above). Booking controls are unavailable to prevent a duplicate shipment.
+                </div>
+              ) : (
+              <>
               <div className="grid gap-3 sm:grid-cols-4">
                 <Field testId="package-weight" label="Weight (kg)" value={packageDraft.weight_kg} onChange={value => setPackageDraft({ ...packageDraft, weight_kg: value })} />
                 <Field testId="package-length" label="Length (cm)" value={packageDraft.length_cm} onChange={value => setPackageDraft({ ...packageDraft, length_cm: value })} />
@@ -1093,6 +1127,8 @@ const OrderDrawer = memo(function OrderDrawer({
                 </div>
               )}
               {courierOptions.length === 0 && <p className="text-xs text-slate-500">{courierSyncMessage}</p>}
+              </>
+              )}
             </div>
           </Section>
 

@@ -20,6 +20,17 @@ class OrderProduct(BaseModel):
     price: Decimal
 
 
+class ExternalTracking(BaseModel):
+    """Shipment/fulfilment detected from Shopify's own fulfillments data - i.e. booked outside
+    Mumchies OS. tracking_url is Shopify's own value when provided; otherwise a safe template
+    URL for a small set of known/confident providers, or None (never a guessed URL)."""
+
+    provider: str | None = None
+    awb: str | None = None
+    status: str | None = None
+    tracking_url: str | None = None
+
+
 class ShopifyOrder(BaseModel):
     order_id: str
     shopify_graphql_id: str | None = None
@@ -63,3 +74,4 @@ class ShopifyOrder(BaseModel):
     first_action_at: str | None = None
     human_action_count: int = 0
     call_attempt_count: int = 0
+    external_tracking: ExternalTracking | None = None

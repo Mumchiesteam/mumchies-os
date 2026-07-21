@@ -14,6 +14,7 @@ from app.repositories.shiprocket import get_shipment, snapshot as shipment_snaps
 from app.schemas.orders import ShopifyOrder
 from app.services.order_operations import OrderOperationsStore
 from app.services.delhivery import DelhiveryError, DelhiveryService, shadowfax_zone_d_quote
+from app.services.shipment_status import has_existing_shipment_evidence
 from app.services.shiprocket import (
     BookingEligibilityResult,
     CourierQuote,
@@ -336,6 +337,15 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
         existing = get_shipment(db, order_id)
         if existing and (existing.awb or existing.shipment_id or existing.shiprocket_order_id):
             return {"provider": existing.provider or "shiprocket", "existing": True, "shipment": shipment_snapshot(existing)}
+
+        # Backend duplicate-booking guard: reject outright (not just via eligibility) if any
+        # reliable source - local shipment, Shopify fulfilment status/tags - already shows an
+        # active shipment. Applies uniformly to every provider, not just Delhivery.
+        if has_existing_shipment_evidence(order, operations, shipment):
+            raise HTTPException(
+                status_code=409,
+                detail="An active shipment or fulfilment already exists for this order. Booking is blocked to prevent a duplicate shipment.",
+            )
 
         eligibility = ShiprocketService().evaluate_booking_eligibility(order, operations, shipment)
         if not eligibility.eligible:

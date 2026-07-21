@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.repositories.shiprocket import get_shipment, snapshot, upsert_shipment
+from app.services.shipment_status import derive_operational_status, has_existing_shipment_evidence
 
 
 class ShiprocketConfigurationError(RuntimeError):
@@ -305,21 +306,6 @@ class ShiprocketService:
         result = logs[0].get("result")
         return str(result) if result is not None else None
 
-    @staticmethod
-    def _operational_status(order: Any, operations: dict[str, Any] | None) -> str | None:
-        if hasattr(order, "operational_status") and getattr(order, "operational_status"):
-            return getattr(order, "operational_status")
-        latest_call = ShiprocketService._latest_call_result(operations)
-        if latest_call == "Confirmed":
-            return "Ready for Booking"
-        if latest_call == "Callback Requested":
-            return "Callback Required"
-        if latest_call == "Wrong Number":
-            return "Needs Review"
-        if operations and operations.get("address_verified"):
-            return "Ready for Booking"
-        return None
-
     def evaluate_booking_eligibility(
         self,
         order: Any,
@@ -333,12 +319,17 @@ class ShiprocketService:
         verified_snapshot = operations.get("verified_address_snapshot")
         package_details = operations.get("package_details") or {}
         latest_call = self._latest_call_result(operations)
-        status = self._operational_status(order, operations) or getattr(order, "operational_status", None)
+        # Single authoritative precedence chain - see app/services/shipment_status.py. An order
+        # that already has an existing shipment/fulfilment (local or Shopify-native) is never
+        # eligible, regardless of call logs or address-verification state.
+        status = derive_operational_status(order, operations, shipment)
         payment = "COD" if str(getattr(order, "payment_status", "")).lower() in {"pending", "cod", "partially paid"} else "Prepaid"
         shipment_exists = bool(shipment and (shipment.get("awb") or shipment.get("shipment_id") or shipment.get("shiprocket_order_id")))
         shipment_status = shipment.get("booking_status") if shipment else None
 
         missing: list[str] = []
+        if has_existing_shipment_evidence(order, operations, shipment):
+            missing.append("an active shipment or fulfilment already exists for this order")
         delivery_postcode = self._address_postcode(corrected_address or verified_snapshot or shipping_address)
         if not delivery_postcode:
             missing.append("delivery postcode")

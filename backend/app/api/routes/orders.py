@@ -16,6 +16,7 @@ from app.schemas.orders import ShopifyOrder
 from app.repositories.shiprocket import get_shipment, get_shipments_by_order_id, snapshot as shipment_snapshot
 from app.services.order_operations import OrderOperationsStore
 from app.services.delhivery import DelhiveryError, DelhiveryService
+from app.services.shipment_status import derive_operational_status
 from app.services.shiprocket import ShiprocketAPIError, ShiprocketConfigurationError, ShiprocketService
 from app.services.shopify import ShopifyConfigurationError, ShopifyService, ShopifySyncError
 from app.services.shopify_fulfillment import ShopifyFulfillmentSynchronizer, ShopifyFulfillmentSyncError
@@ -69,38 +70,18 @@ class AddressValidationPayload(BaseModel):
 
 def _merged_operational_state(order: ShopifyOrder, operations: dict[str, object]) -> ShopifyOrder:
     call_logs = operations.get("call_logs") or []
-    latest_call = call_logs[0]["result"] if call_logs else None
     human_actions = operations.get("human_actions") or []
     first_action_at = operations.get("first_action_at")
     if not first_action_at and call_logs:
         first_action_at = min((str(value.get("timestamp")) for value in call_logs if value.get("timestamp")), default=None)
     if not first_action_at and any((operations.get("corrected_address"), operations.get("address_verified"), operations.get("package_details"), operations.get("selected_courier"))):
         first_action_at = "historic"
-    shopify_status = (order.shopify_status or "").lower()
-    fulfillment_status = (order.fulfillment_status or "").lower()
-    tags = " ".join(order.tags).lower()
 
-    operational_status: str | None
-    if shopify_status == "cancelled" or fulfillment_status == "cancelled" or order.cancelled_at:
-        operational_status = "Cancelled"
-    elif "delivered" in tags or fulfillment_status == "delivered":
-        operational_status = "Delivered"
-    elif "fulfilled" in fulfillment_status or "partial" in fulfillment_status or "shipped" in tags or "dispatched" in tags or "picked up" in tags:
-        operational_status = "Shipped"
-    elif "ndr" in tags:
-        operational_status = "NDR"
-    elif latest_call == "Wrong Number":
-        operational_status = "Needs Review"
-    elif order.payment_status and order.payment_status.lower() not in {"pending", "cod", "partially paid"}:
-        operational_status = "Ready for Booking" if operations.get("address_verified") else "Address Verification Pending"
-    elif latest_call == "Confirmed":
-        operational_status = "Ready for Booking"
-    elif latest_call == "Callback Requested":
-        operational_status = "Callback Required"
-    elif latest_call in {"No Answer", "Busy", "Switched Off"} or latest_call is None:
-        operational_status = "Call Pending"
-    else:
-        operational_status = "Call Pending"
+    # Single authoritative precedence chain - see app/services/shipment_status.py. Shipment/
+    # fulfilment-backed states (Cancelled, Delivered, Shipped, Booked, NDR) always outrank
+    # locally-derived operational states, so call logs/address edits can never downgrade them.
+    operational_status = derive_operational_status(order, operations, operations.get("shipment"))
+    latest_call = call_logs[0]["result"] if call_logs else None
 
     return order.model_copy(update={
         "latest_call_result": latest_call,

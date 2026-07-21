@@ -11,7 +11,15 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
-from app.schemas.orders import OrderProduct, ShippingAddress, ShopifyOrder
+from app.schemas.orders import ExternalTracking, OrderProduct, ShippingAddress, ShopifyOrder
+
+# Safe, confident tracking-URL templates for a small set of known providers - reuses the exact
+# pattern already used elsewhere in this codebase (see DelhiveryService/normalize_tracking).
+# Deliberately NOT populated for providers we aren't sure of the public tracking URL for; those
+# just show the tracking number without a link rather than risk an invented/incorrect URL.
+_KNOWN_TRACKING_URL_TEMPLATES = {
+    "delhivery": "https://www.delhivery.com/track/package/{awb}",
+}
 
 
 class ShopifyConfigurationError(RuntimeError):
@@ -345,7 +353,7 @@ class ShopifyService:
 
     async def _fetch_orders(self, limit: int | None = None) -> list[ShopifyOrder]:
         access_token = await self._get_access_token()
-        fields = "id,name,status,order_number,created_at,customer,email,phone,shipping_address,line_items,shipping_lines,total_price,current_total_price,total_outstanding,financial_status,fulfillment_status,cancelled_at,tags,payment_gateway_names"
+        fields = "id,name,status,order_number,created_at,customer,email,phone,shipping_address,line_items,shipping_lines,total_price,current_total_price,total_outstanding,financial_status,fulfillment_status,cancelled_at,tags,payment_gateway_names,fulfillments"
         url = f"https://{self.store}/admin/api/{self.api_version}/orders.json"
         headers = {"X-Shopify-Access-Token": access_token}
         orders: list[ShopifyOrder] = []
@@ -415,6 +423,30 @@ class ShopifyService:
         return None
 
     @staticmethod
+    def _external_tracking(order: dict[str, Any]) -> ExternalTracking | None:
+        """Detect a shipment/fulfilment booked outside Mumchies OS from Shopify's own REST
+        fulfillments array. Picks the most relevant fulfillment (prefers one with a tracking
+        number; otherwise the most recently updated) rather than assuming array order."""
+        fulfillments = [value for value in (order.get("fulfillments") or []) if isinstance(value, dict)]
+        if not fulfillments:
+            return None
+        with_tracking = [value for value in fulfillments if value.get("tracking_number")]
+        candidates = with_tracking or fulfillments
+        fulfillment = max(candidates, key=lambda value: str(value.get("updated_at") or ""))
+
+        provider = str(fulfillment.get("tracking_company") or "").strip() or None
+        awb = str(fulfillment.get("tracking_number") or "").strip() or None
+        status = str(fulfillment.get("shipment_status") or fulfillment.get("status") or "").strip() or None
+        tracking_url = str(fulfillment.get("tracking_url") or "").strip() or None
+        if not tracking_url and provider and awb:
+            template = _KNOWN_TRACKING_URL_TEMPLATES.get(provider.strip().casefold())
+            if template:
+                tracking_url = template.format(awb=awb)
+        if not (provider or awb or status):
+            return None
+        return ExternalTracking(provider=provider, awb=awb, status=status, tracking_url=tracking_url)
+
+    @staticmethod
     def _to_order(order: dict[str, Any]) -> ShopifyOrder:
         customer = order.get("customer") or {}
         address = order.get("shipping_address") or {}
@@ -460,4 +492,5 @@ class ShopifyService:
             payment_status=order.get("financial_status"),
             fulfillment_status=order.get("fulfillment_status"),
             tags=[tag.strip() for tag in order.get("tags", "").split(",") if tag.strip()],
+            external_tracking=ShopifyService._external_tracking(order),
         )

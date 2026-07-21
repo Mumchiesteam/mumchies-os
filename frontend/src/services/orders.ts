@@ -16,6 +16,13 @@ export interface AddressSyncResults {
   errors?: Record<string, string>
 }
 
+export interface ExternalTracking {
+  provider: string | null
+  awb: string | null
+  status: string | null
+  trackingUrl: string | null
+}
+
 export interface Order {
   internalId: string
   orderNumber: string
@@ -143,6 +150,7 @@ export interface Order {
     address_confidence_score: number | null
     address_confidence_category: string | null
   } | null
+  externalTracking: ExternalTracking | null
 }
 
 interface ApiOrder {
@@ -234,6 +242,7 @@ interface ApiOrder {
     mode: string | null
   } | null
   shipment: Order['shipment']
+  external_tracking: { provider: string | null; awb: string | null; status: string | null; tracking_url: string | null } | null
 }
 
 export interface OrderOperations {
@@ -349,6 +358,9 @@ export async function getOrders(signal?: AbortSignal): Promise<Order[]> {
       packageDetails: item.package_details,
       selectedCourier: item.selected_courier,
       shipment: item.shipment,
+      externalTracking: item.external_tracking
+        ? { provider: item.external_tracking.provider, awb: item.external_tracking.awb, status: item.external_tracking.status, trackingUrl: item.external_tracking.tracking_url }
+        : null,
     }
   })
 }
