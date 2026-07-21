@@ -1,25 +1,66 @@
 {
   "6804281655374": {
-    "call_logs": [],
+    "call_logs": [
+      {
+        "result": "Switched Off",
+        "timestamp": "2026-07-19T02:06:06",
+        "operator": "Amit Kumar",
+        "comment": "Browser recovery verification"
+      },
+      {
+        "result": "No Answer",
+        "timestamp": "2026-07-19T02:05:24",
+        "operator": "Amit Kumar",
+        "comment": ""
+      }
+    ],
     "corrected_address": {
       "customer_name": "VINAY BANGERA",
       "phone": "+919527348325",
       "address_line1": "FLAT NO.A-4, PHASE -1, RACHANA GARDENS ,Bhangarwadi LONAVALA,PUNE DISTRICT",
-      "address_line2": "Suite 2",
+      "address_line2": "Suite 2 - browser recovery verified",
+      "landmark": "",
+      "city": "Pune",
+      "state": "Maharashtra",
+      "pincode": "410401"
+    },
+    "courier_sync_status": "Not synchronized",
+    "courier_sync_error": null,
+    "address_verified": true,
+    "address_verified_at": "2026-07-19T02:13:04",
+    "address_verified_by": "Amit Kumar",
+    "verified_address_snapshot": {
+      "customer_name": "VINAY BANGERA",
+      "phone": "+919527348325",
+      "address_line1": "FLAT NO.A-4, PHASE -1, RACHANA GARDENS ,Bhangarwadi LONAVALA,PUNE DISTRICT",
+      "address_line2": "Suite 2 - browser recovery verified",
       "landmark": null,
       "city": "Pune",
       "state": "Maharashtra",
       "pincode": "410401"
     },
-    "courier_sync_status": null,
-    "courier_sync_error": null,
-    "address_verified": false,
-    "address_verified_at": null,
-    "address_verified_by": null,
-    "verified_address_snapshot": null
+    "selected_courier": null,
+    "package_details": {
+      "weight_kg": 0.95,
+      "length_cm": 12.0,
+      "breadth_cm": 10.0,
+      "height_cm": 8.0
+    }
   },
   "6804316291150": {
     "call_logs": [
+      {
+        "result": "Switched Off",
+        "timestamp": "2026-07-19T01:49:14",
+        "operator": "Amit Kumar",
+        "comment": "Recovery verification 2026-07-19"
+      },
+      {
+        "result": "Switched Off",
+        "timestamp": "2026-07-19T01:46:47",
+        "operator": "Amit Kumar",
+        "comment": "Recovery verification 2026-07-19"
+      },
       {
         "result": "Confirmed",
         "timestamp": "2026-07-18T01:51:30",
@@ -46,5 +87,615 @@
     "verified_address_snapshot": null,
     "courier_sync_status": null,
     "courier_sync_error": null
+  },
+  "6806311534670": {
+    "call_logs": [
+      {
+        "result": "Confirmed",
+        "timestamp": "2026-07-19T04:02:44",
+        "operator": "Amit Kumar",
+        "comment": ""
+      },
+      {
+        "result": "No Answer",
+        "timestamp": "2026-07-19T04:02:21",
+        "operator": "Amit Kumar",
+        "comment": ""
+      },
+      {
+        "result": "Confirmed",
+        "timestamp": "2026-07-19T03:39:15",
+        "operator": "Amit Kumar",
+        "comment": ""
+      },
+      {
+        "result": "No Answer",
+        "timestamp": "2026-07-19T03:38:28",
+        "operator": "Amit Kumar",
+        "comment": ""
+      },
+      {
+        "result": "Confirmed",
+        "timestamp": "2026-07-19T02:39:08",
+        "operator": "Amit Kumar",
+        "comment": ""
+      },
+      {
+        "result": "Confirmed",
+        "timestamp": "2026-07-19T02:26:15",
+        "operator": "Amit Kumar",
+        "comment": ""
+      },
+      {
+        "result": "Busy",
+        "timestamp": "2026-07-19T02:24:26",
+        "operator": "Amit Kumar",
+        "comment": ""
+      }
+    ],
+    "corrected_address": {
+      "customer_name": "Kumar Jatinder",
+      "phone": "+917347355427",
+      "address_line1": "Saila khud Hoshiarpur Punjab Saila khurd",
+      "address_line2": "",
+      "landmark": "td",
+      "city": "Hoshiarpur",
+      "state": "Punjab",
+      "pincode": "144529"
+    },
+    "package_details": {
+      "weight_kg": 0.95,
+      "length_cm": 5.0,
+      "breadth_cm": 5.0,
+      "height_cm": 5.0
+    },
+    "selected_courier": {
+      "courier_id": "196",
+      "courier_name": "DTDC Air 500gm",
+      "rate": 162.12,
+      "cod_charge": 42,
+      "total_estimated_shipping_cost": 204.12,
+      "estimated_delivery_days": 4,
+      "expected_delivery_date": "2026-07-23",
+      "rating": 2.67,
+      "mode": "1"
+    },
+    "address_verified": false,
+    "address_verified_at": null,
+    "address_verified_by": null,
+    "verified_address_snapshot": null,
+    "courier_sync_status": "Not synchronized",
+    "courier_sync_error": null
+  },
+  "6806307995726": {
+    "call_logs": [],
+    "corrected_address": null,
+    "package_details": null,
+    "selected_courier": null,
+    "address_verified": true,
+    "address_verified_at": "2026-07-19T03:20:27",
+    "address_verified_by": "Amit Kumar",
+    "verified_address_snapshot": {
+      "customer_name": "Gurjeet kaur",
+      "phone": "+919988954773",
+      "address_line1": "House no.4289/3 street no.5 Shimlapuri payal street gill road near Lapper paint store Gill Road payal street",
+      "address_line2": null,
+      "landmark": null,
+      "city": "Vishkarma Town",
+      "state": "Punjab",
+      "pincode": "141003"
+    },
+    "courier_sync_status": null,
+    "courier_sync_error": null
+  },
+  "6781596106830": {
+    "call_logs": [
+      {
+        "result": "Confirmed",
+        "timestamp": "2026-07-20T23:03:27",
+        "operator": "Amit Kumar",
+        "comment": ""
+      },
+      {
+        "result": "Confirmed",
+        "timestamp": "2026-07-20T23:03:27",
+        "operator": "Amit Kumar",
+        "comment": ""
+      }
+    ],
+    "corrected_address": {
+      "customer_name": "dhrubabrata Chakraborty",
+      "phone": "+919836553951",
+      "address_line1": "5/5 Simlaipara Lane Kol-700002",
+      "address_line2": "",
+      "landmark": "",
+      "city": "Kolkata",
+      "state": "West Bengal",
+      "pincode": "700002"
+    },
+    "package_details": {
+      "weight_kg": 0.49,
+      "length_cm": 5.0,
+      "breadth_cm": 5.0,
+      "height_cm": 5.0
+    },
+    "selected_courier": null,
+    "address_verified": false,
+    "address_verified_at": null,
+    "address_verified_by": null,
+    "verified_address_snapshot": null,
+    "courier_sync_status": "Not synchronized",
+    "courier_sync_error": null
+  },
+  "6810025492558": {
+    "call_logs": [
+      {
+        "result": "Confirmed",
+        "timestamp": "2026-07-20T23:06:02",
+        "operator": "Amit Kumar",
+        "comment": ""
+      }
+    ],
+    "corrected_address": {
+      "customer_name": "Sital Poral",
+      "phone": "+917063789399",
+      "address_line1": "Radhe Radhe Ghatal to daspur",
+      "address_line2": "",
+      "landmark": "",
+      "city": "West Midnapore",
+      "state": "West Bengal",
+      "pincode": "721146"
+    },
+    "package_details": {
+      "weight_kg": 0.49,
+      "length_cm": 5.0,
+      "breadth_cm": 5.0,
+      "height_cm": 5.0
+    },
+    "selected_courier": {
+      "provider": "shiprocket",
+      "booking_supported": true,
+      "rate_note": "Estimated Shiprocket rate",
+      "courier_id": "58",
+      "courier_name": "Shadowfax Surface",
+      "rate": 55.36,
+      "cod_charge": 40,
+      "total_estimated_shipping_cost": 95.36,
+      "estimated_delivery_days": 3,
+      "expected_delivery_date": "2026-07-23",
+      "rating": 4.5,
+      "mode": "surface"
+    },
+    "address_verified": false,
+    "address_verified_at": null,
+    "address_verified_by": null,
+    "verified_address_snapshot": null,
+    "courier_sync_status": "Not synchronized",
+    "courier_sync_error": null
+  },
+  "6808095293518": {
+    "call_logs": [
+      {
+        "result": "Confirmed",
+        "timestamp": "2026-07-20T23:09:37",
+        "operator": "Amit Kumar",
+        "comment": ""
+      }
+    ],
+    "corrected_address": null,
+    "package_details": {
+      "weight_kg": 0.49,
+      "length_cm": 5.0,
+      "breadth_cm": 5.0,
+      "height_cm": 5.0
+    },
+    "selected_courier": {
+      "provider": "delhivery",
+      "booking_supported": true,
+      "rate_note": "Estimated direct-account rate",
+      "courier_id": "delhivery:surface",
+      "courier_name": "Delhivery Surface",
+      "rate": 41.57,
+      "cod_charge": null,
+      "total_estimated_shipping_cost": 41.57,
+      "estimated_delivery_days": null,
+      "expected_delivery_date": null,
+      "rating": null,
+      "mode": "surface"
+    },
+    "address_verified": true,
+    "address_verified_at": "2026-07-20T23:09:44",
+    "address_verified_by": "Amit Kumar",
+    "verified_address_snapshot": {
+      "customer_name": "Girish .",
+      "phone": "+919833110401",
+      "address_line1": "C-2 ,601, Skyline wealth space, skyline Oasis premier road, near D mart, vi dyavihar westMumbai - 400086",
+      "address_line2": null,
+      "landmark": null,
+      "city": "Mumbai",
+      "state": "Maharashtra",
+      "pincode": "400086"
+    },
+    "courier_sync_status": null,
+    "courier_sync_error": null
+  },
+  "6809952911438": {
+    "call_logs": [],
+    "corrected_address": null,
+    "package_details": {
+      "weight_kg": 0.49,
+      "length_cm": 5.0,
+      "breadth_cm": 5.0,
+      "height_cm": 5.0
+    },
+    "selected_courier": {
+      "provider": "shiprocket",
+      "booking_supported": true,
+      "rate_note": "Estimated Shiprocket rate",
+      "courier_id": "6",
+      "courier_name": "DTDC Surface",
+      "rate": 55.55,
+      "cod_charge": 0,
+      "total_estimated_shipping_cost": 55.55,
+      "estimated_delivery_days": 4,
+      "expected_delivery_date": "2026-07-25",
+      "rating": 3.67,
+      "mode": "surface"
+    },
+    "address_verified": true,
+    "address_verified_at": "2026-07-20T23:11:14",
+    "address_verified_by": "Amit Kumar",
+    "verified_address_snapshot": {
+      "customer_name": "Deepa -",
+      "phone": "+919871400318",
+      "address_line1": "918 B Block Road Sector 1 Rohini B- 918 Awantika sec 1",
+      "address_line2": null,
+      "landmark": null,
+      "city": "North Delhi",
+      "state": "Delhi",
+      "pincode": "110085"
+    },
+    "courier_sync_status": null,
+    "courier_sync_error": null
+  },
+  "6809944457294": {
+    "call_logs": [],
+    "corrected_address": null,
+    "package_details": null,
+    "selected_courier": null,
+    "address_verified": true,
+    "address_verified_at": "2026-07-20T23:19:25",
+    "address_verified_by": "Amit Kumar",
+    "verified_address_snapshot": {
+      "customer_name": "Kalpana Rathore",
+      "phone": "+917537065555",
+      "address_line1": "B/h bagdadi hotel near by mejbaan hotel ke pass wali gali Mejbaan hotel ke pass wali gali",
+      "address_line2": null,
+      "landmark": null,
+      "city": "Jhalawar",
+      "state": "Rajasthan",
+      "pincode": "326001"
+    },
+    "courier_sync_status": null,
+    "courier_sync_error": null
+  },
+  "6809471778894": {
+    "call_logs": [
+      {
+        "result": "Confirmed",
+        "timestamp": "2026-07-20T23:20:13",
+        "operator": "Amit Kumar",
+        "comment": ""
+      }
+    ],
+    "corrected_address": null,
+    "package_details": {
+      "weight_kg": 0.49,
+      "length_cm": 5.0,
+      "breadth_cm": 5.0,
+      "height_cm": 5.0
+    },
+    "selected_courier": {
+      "provider": "delhivery",
+      "booking_supported": true,
+      "rate_note": "Estimated direct-account rate",
+      "courier_id": "delhivery:surface",
+      "courier_name": "Delhivery Surface",
+      "rate": 43.95,
+      "cod_charge": null,
+      "total_estimated_shipping_cost": 43.95,
+      "estimated_delivery_days": null,
+      "expected_delivery_date": null,
+      "rating": null,
+      "mode": "surface"
+    },
+    "address_verified": true,
+    "address_verified_at": "2026-07-20T23:19:44",
+    "address_verified_by": "Amit Kumar",
+    "verified_address_snapshot": {
+      "customer_name": "Inderpal .",
+      "phone": "+919780655200",
+      "address_line1": "614, SST Nagar,Rajpura road,near Iqbal inn hotal,Patiala",
+      "address_line2": null,
+      "landmark": null,
+      "city": "Punjab State Elec.Board",
+      "state": "Punjab",
+      "pincode": "147001"
+    },
+    "courier_sync_status": null,
+    "courier_sync_error": null
+  },
+  "6810091749454": {
+    "call_logs": [],
+    "corrected_address": null,
+    "package_details": {
+      "weight_kg": 0.95,
+      "length_cm": 5.0,
+      "breadth_cm": 5.0,
+      "height_cm": 5.0
+    },
+    "selected_courier": {
+      "provider": "shiprocket",
+      "booking_supported": true,
+      "rate_note": "Estimated Shiprocket rate",
+      "courier_id": "43",
+      "courier_name": "Delhivery Surface",
+      "rate": 77.88,
+      "cod_charge": 0,
+      "total_estimated_shipping_cost": 77.88,
+      "estimated_delivery_days": 8,
+      "expected_delivery_date": "2026-07-28",
+      "rating": 4.5,
+      "mode": "surface"
+    },
+    "address_verified": true,
+    "address_verified_at": "2026-07-20T23:37:51",
+    "address_verified_by": "Amit Kumar",
+    "verified_address_snapshot": {
+      "customer_name": "Rajiv Ranjan",
+      "phone": "+918709101110",
+      "address_line1": "Divya electronic.barhiya lakhisarai",
+      "address_line2": null,
+      "landmark": null,
+      "city": "Lakhisarai",
+      "state": "Bihar",
+      "pincode": "811302"
+    },
+    "courier_sync_status": null,
+    "courier_sync_error": null
+  },
+  "6809756237902": {
+    "call_logs": [
+      {
+        "result": "Confirmed",
+        "timestamp": "2026-07-20T23:45:01",
+        "operator": "Amit Kumar",
+        "comment": ""
+      },
+      {
+        "result": "Confirmed",
+        "timestamp": "2026-07-20T23:44:31",
+        "operator": "Amit Kumar",
+        "comment": ""
+      }
+    ],
+    "corrected_address": {
+      "customer_name": "Sush .",
+      "phone": "+919916050403",
+      "address_line1": "Hulimavu, bangalore india",
+      "address_line2": "302 Hill Crest",
+      "landmark": "",
+      "city": "Bangalore",
+      "state": "Karnataka",
+      "pincode": "560072"
+    },
+    "package_details": {
+      "weight_kg": 0.49,
+      "length_cm": 5.0,
+      "breadth_cm": 5.0,
+      "height_cm": 5.0
+    },
+    "selected_courier": {
+      "provider": "shiprocket",
+      "booking_supported": true,
+      "rate_note": "Estimated Shiprocket rate",
+      "courier_id": "6",
+      "courier_name": "DTDC Surface",
+      "rate": 52.81,
+      "cod_charge": 42,
+      "total_estimated_shipping_cost": 94.81,
+      "estimated_delivery_days": 2,
+      "expected_delivery_date": "2026-07-22",
+      "rating": 4.33,
+      "mode": "surface"
+    },
+    "address_verified": false,
+    "address_verified_at": null,
+    "address_verified_by": null,
+    "verified_address_snapshot": null,
+    "courier_sync_status": "Not synchronized",
+    "courier_sync_error": null
+  },
+  "6810558890062": {
+    "call_logs": [
+      {
+        "result": "Confirmed",
+        "timestamp": "2026-07-21T02:52:16",
+        "operator": "Amit Kumar",
+        "comment": ""
+      }
+    ],
+    "corrected_address": {
+      "customer_name": "Narendar .",
+      "phone": "+918290779997",
+      "address_line1": "Narendar Singh Baba ramdev hotal nadol Baba ramdev hotal nadol 306603 Nadol RJ India Narendar Singh Baba ramdev hotal nadol Baba ramdev hotal nadol 306603 Nadol RJ India",
+      "address_line2": "",
+      "landmark": "",
+      "city": "Pali",
+      "state": "Rajasthan",
+      "pincode": "306603"
+    },
+    "package_details": {
+      "weight_kg": 0.49,
+      "length_cm": 5.0,
+      "breadth_cm": 5.0,
+      "height_cm": 5.0
+    },
+    "selected_courier": null,
+    "address_verified": false,
+    "address_verified_at": null,
+    "address_verified_by": null,
+    "verified_address_snapshot": null,
+    "courier_sync_status": "Not synchronized",
+    "courier_sync_error": null,
+    "address_sync_results": {
+      "shopify_order": "failed",
+      "shopify_customer": "failed",
+      "shiprocket": "not_applicable",
+      "delhivery": "not_applicable",
+      "errors": {
+        "shopify_order": "Shopify rejected the order address update: Variable $input of type OrderInput! was provided invalid value for shippingAddress.first_name (Field is not defined on MailingAddressInput), shippingAddress.last_name (Field is not defined on MailingAddressInput)",
+        "shopify_customer": "Shopify customer address update failed (403)."
+      }
+    }
+  },
+  "6810022674510": {
+    "call_logs": [
+      {
+        "result": "Confirmed",
+        "timestamp": "2026-07-21T11:08:54",
+        "operator": "Amit Kumar",
+        "comment": ""
+      }
+    ],
+    "corrected_address": {
+      "customer_name": "Omprkash Goswami",
+      "phone": "+919839622349",
+      "address_line1": "Laxmi devi uday raj Goswami inter College Rewari Laxmi devi uday raj Goswami inter College Rewari",
+      "address_line2": "",
+      "landmark": "",
+      "city": "Gonda",
+      "state": "Uttar Pradesh",
+      "pincode": "271502"
+    },
+    "package_details": {
+      "weight_kg": 0.49,
+      "length_cm": 5.0,
+      "breadth_cm": 5.0,
+      "height_cm": 5.0
+    },
+    "selected_courier": {
+      "provider": "delhivery",
+      "booking_supported": true,
+      "rate_note": "Estimated direct-account rate",
+      "courier_id": "delhivery:surface",
+      "courier_name": "Delhivery Surface",
+      "rate": 48.45,
+      "cod_charge": 25,
+      "total_estimated_shipping_cost": 73.45,
+      "estimated_delivery_days": null,
+      "expected_delivery_date": null,
+      "rating": null,
+      "mode": "surface"
+    },
+    "address_verified": false,
+    "address_verified_at": null,
+    "address_verified_by": null,
+    "verified_address_snapshot": null,
+    "courier_sync_status": "Not synchronized",
+    "courier_sync_error": null,
+    "address_sync_results": {
+      "shopify_order": "failed",
+      "shopify_customer": "failed",
+      "shiprocket": "not_applicable",
+      "delhivery": "not_applicable",
+      "errors": {
+        "shopify_order": "Shopify rejected the order address update: Variable $input of type OrderInput! was provided invalid value for shippingAddress.first_name (Field is not defined on MailingAddressInput), shippingAddress.last_name (Field is not defined on MailingAddressInput)",
+        "shopify_customer": "Shopify customer address update failed (403)."
+      }
+    },
+    "human_actions": [
+      {
+        "action": "address_corrected",
+        "timestamp": "2026-07-21T05:38:42.304475+00:00",
+        "operator": null
+      },
+      {
+        "action": "call_logged",
+        "timestamp": "2026-07-21T11:08:54",
+        "operator": "Amit Kumar"
+      },
+      {
+        "action": "package_details_saved",
+        "timestamp": "2026-07-21T05:38:56.538863+00:00",
+        "operator": null
+      },
+      {
+        "action": "package_details_saved",
+        "timestamp": "2026-07-21T05:38:56.616895+00:00",
+        "operator": null
+      },
+      {
+        "action": "courier_selected",
+        "timestamp": "2026-07-21T05:39:06.013451+00:00",
+        "operator": null
+      },
+      {
+        "action": "courier_selected",
+        "timestamp": "2026-07-21T05:39:09.919219+00:00",
+        "operator": null
+      },
+      {
+        "action": "courier_selected",
+        "timestamp": "2026-07-21T05:39:14.763376+00:00",
+        "operator": null
+      },
+      {
+        "action": "courier_selected",
+        "timestamp": "2026-07-21T05:39:15.463878+00:00",
+        "operator": null
+      },
+      {
+        "action": "courier_selected",
+        "timestamp": "2026-07-21T05:39:17.104383+00:00",
+        "operator": null
+      },
+      {
+        "action": "courier_selected",
+        "timestamp": "2026-07-21T05:39:18.543605+00:00",
+        "operator": null
+      },
+      {
+        "action": "courier_selected",
+        "timestamp": "2026-07-21T05:39:27.192369+00:00",
+        "operator": null
+      },
+      {
+        "action": "courier_selected",
+        "timestamp": "2026-07-21T05:39:27.918782+00:00",
+        "operator": null
+      },
+      {
+        "action": "package_details_saved",
+        "timestamp": "2026-07-21T05:50:55.299898+00:00",
+        "operator": null
+      },
+      {
+        "action": "package_details_saved",
+        "timestamp": "2026-07-21T05:57:04.407097+00:00",
+        "operator": null
+      },
+      {
+        "action": "package_details_saved",
+        "timestamp": "2026-07-21T05:57:04.465931+00:00",
+        "operator": null
+      },
+      {
+        "action": "courier_selected",
+        "timestamp": "2026-07-21T05:57:21.333569+00:00",
+        "operator": null
+      }
+    ],
+    "first_action_at": "2026-07-21T05:38:42.304475+00:00"
   }
 }
