@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   addOrderCallLog,
+  apiBase,
   bookShiprocketShipment,
   checkShiprocketCouriers,
   formatMoney,
@@ -27,6 +28,7 @@ import {
   type OrderOperations,
   type RiskLevel,
 } from './services/orders'
+import { logout } from './services/auth'
 
 type IconName = 'grid' | 'bag' | 'alert' | 'users' | 'chart' | 'settings' | 'search' | 'bell' | 'filter' | 'chevron' | 'more' | 'eye' | 'truck' | 'calendar' | 'close' | 'copy' | 'phone' | 'external' | 'repeat' | 'tag' | 'edit' | 'call'
 type TabKey = 'fresh' | 'previous' | 'all'
@@ -562,6 +564,7 @@ function App() {
           </nav>
           <div className="ml-auto flex items-center gap-2">
             <button className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"><Icon name="bell" /></button>
+            <button onClick={() => void logout()} className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">Log out</button>
           </div>
         </div>
       </header>
@@ -1197,7 +1200,7 @@ const OrderDrawer = memo(function OrderDrawer({
                 </button>
               ) : <div className="flex flex-1 items-center justify-center rounded-lg bg-slate-100 px-3 py-2.5 text-sm font-semibold text-slate-500">Official provider PDF label unavailable</div>}
               {shipment.provider === 'delhivery' && <button disabled={labelLoading} onClick={onPrintLabel} className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700 disabled:opacity-60">Open / Print Official PDF</button>}
-              <button onClick={() => window.open(shipment.tracking_url || `http://127.0.0.1:8000/api/v1/couriers/shiprocket/orders/${order.internalId}/tracking`, '_blank', 'noopener,noreferrer')} className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Open Tracking</button>
+              <button onClick={() => window.open(shipment.tracking_url || `${apiBase}/api/v1/couriers/shiprocket/orders/${order.internalId}/tracking`, '_blank', 'noopener,noreferrer')} className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Open Tracking</button>
             </>
           ) : (
             <button

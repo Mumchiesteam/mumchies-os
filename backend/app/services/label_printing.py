@@ -11,14 +11,14 @@ from pypdf import PdfReader, PdfWriter
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import BACKEND_DIR
+from app.core.config import settings
 from app.models.shiprocket import LabelPrintBatch, LabelPrintBatchItem, ShiprocketShipment
 from app.services.delhivery import DelhiveryError, DelhiveryService
 from app.services.delhivery_label import DelhiveryLabelError, render_delhivery_label
 from app.services.shiprocket import ShiprocketService
 from app.services.shopify import ShopifyService
 
-LABEL_DIR = BACKEND_DIR / "data" / "label_batches"
+LABEL_DIR = settings.data_dir / "label_batches"
 LABEL_DIR.mkdir(parents=True, exist_ok=True)
 TARGETS = ((288.0, 432.0), (432.0, 288.0))
 

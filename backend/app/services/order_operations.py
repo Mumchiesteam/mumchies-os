@@ -9,9 +9,9 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from app.core.config import BACKEND_DIR
+from app.core.config import settings
 
-OPS_FILE = BACKEND_DIR / "data" / "order_operations.json"
+OPS_FILE = settings.data_dir / "order_operations.json"
 OPS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 

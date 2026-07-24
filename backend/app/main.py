@@ -1,15 +1,46 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+import hmac
 
 from app.api.router import api_router
+from app.core.auth import read_session
 from app.core.config import settings
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
+
+
+@app.middleware("http")
+async def require_authentication(request: Request, call_next):
+    public_paths = {"/health", f"{settings.api_v1_prefix}/auth/login", f"{settings.api_v1_prefix}/auth/logout"}
+    if not settings.auth_enabled or request.method == "OPTIONS" or request.url.path in public_paths:
+        return await call_next(request)
+    if not settings.auth_session_secret:
+        return JSONResponse(status_code=503, content={"detail": "Authentication is not configured."})
+    session = read_session(
+        request.cookies.get(settings.auth_cookie_name, ""),
+        settings.auth_session_secret,
+    )
+    if session is None:
+        response = JSONResponse(status_code=401, content={"detail": "Authentication required."})
+        response.delete_cookie(settings.auth_cookie_name, path="/")
+        return response
+    if request.method not in {"GET", "HEAD"} and not hmac.compare_digest(
+        request.headers.get("X-CSRF-Token", ""),
+        session.csrf_token,
+    ):
+        return JSONResponse(status_code=403, content={"detail": "Invalid CSRF token."})
+    request.state.auth_username = session.username
+    request.state.csrf_token = session.csrf_token
+    return await call_next(request)
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=settings.cors_origins,
     allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
 app.include_router(api_router, prefix=settings.api_v1_prefix)
 

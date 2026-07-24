@@ -1,3 +1,5 @@
+import { getCsrfToken } from './auth-state'
+
 export type RiskLevel = 'High' | 'Medium' | 'Low'
 
 export interface OrderProduct {
@@ -278,7 +280,16 @@ export interface OrderOperations {
   shipment: Order['shipment']
 }
 
-const apiBase = 'http://127.0.0.1:8000'
+export const apiBase = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '')
+
+const apiFetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
+  const method = (init.method || 'GET').toUpperCase()
+  const headers = new Headers(init.headers)
+  if (!['GET', 'HEAD'].includes(method)) headers.set('X-CSRF-Token', getCsrfToken())
+  const response = await fetch(input, { ...init, headers, credentials: 'include' })
+  if (response.status === 401) window.dispatchEvent(new Event('mumchies:unauthorised'))
+  return response
+}
 
 const formatDate = (value: string) => new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(value))
 
@@ -300,7 +311,7 @@ const inferPayment = (paymentStatus: string | null, paymentType?: string): 'COD'
 }
 
 export async function getOrders(signal?: AbortSignal): Promise<Order[]> {
-  const response = await fetch(`${apiBase}/api/v1/orders`, { signal })
+  const response = await apiFetch(`${apiBase}/api/v1/orders`, { signal })
   if (!response.ok) {
     const body = await response.json().catch(() => null)
     throw new Error(body?.detail ?? 'Could not load Shopify orders.')
@@ -368,7 +379,7 @@ export async function getOrders(signal?: AbortSignal): Promise<Order[]> {
 export const formatMoney = toMoney
 
 export async function getOrderOperations(orderId: string): Promise<OrderOperations> {
-  const response = await fetch(`${apiBase}/api/v1/orders/${orderId}/operations`)
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/operations`)
   if (!response.ok) {
     throw new Error('Could not load order operations.')
   }
@@ -390,7 +401,7 @@ export async function saveOrderAddress(orderId: string, payload: {
   one_time_delivery_address?: boolean
   use_as_default_address?: boolean
 }): Promise<OrderOperations> {
-  const response = await fetch(`${apiBase}/api/v1/orders/${orderId}/address`, {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/address`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -402,7 +413,7 @@ export async function saveOrderAddress(orderId: string, payload: {
 }
 
 export async function addOrderCallLog(orderId: string, payload: { result: string; timestamp?: string; operator: string; comment: string }): Promise<OrderOperations> {
-  const response = await fetch(`${apiBase}/api/v1/orders/${orderId}/call-logs`, {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/call-logs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -414,7 +425,7 @@ export async function addOrderCallLog(orderId: string, payload: { result: string
 }
 
 export async function verifyOrderAddress(orderId: string, payload: { operator: string; verified_at?: string; address_snapshot: OrderOperations['verified_address_snapshot'] }): Promise<OrderOperations> {
-  const response = await fetch(`${apiBase}/api/v1/orders/${orderId}/address/verify`, {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/address/verify`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -431,7 +442,7 @@ export async function saveOrderPackage(orderId: string, payload: {
   breadth_cm?: number | null
   height_cm?: number | null
 }): Promise<{ provider: string; package_details: OrderOperations['package_details'] }> {
-  const response = await fetch(`${apiBase}/api/v1/couriers/shiprocket/orders/${orderId}/package`, {
+  const response = await apiFetch(`${apiBase}/api/v1/couriers/shiprocket/orders/${orderId}/package`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -452,7 +463,7 @@ export async function getBookingEligibility(orderId: string): Promise<{
   shipment_status: string | null
   shipment: Order['shipment']
 }> {
-  const response = await fetch(`${apiBase}/api/v1/couriers/shiprocket/orders/${orderId}/eligibility`)
+  const response = await apiFetch(`${apiBase}/api/v1/couriers/shiprocket/orders/${orderId}/eligibility`)
   if (!response.ok) {
     throw new Error('Could not check booking eligibility.')
   }
@@ -489,7 +500,7 @@ export async function checkShiprocketCouriers(orderId: string, payload: {
     rate_note: string
   }>
 }> {
-  const response = await fetch(`${apiBase}/api/v1/couriers/shiprocket/orders/${orderId}/couriers/check`, {
+  const response = await apiFetch(`${apiBase}/api/v1/couriers/shiprocket/orders/${orderId}/couriers/check`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -515,7 +526,7 @@ export async function selectShiprocketCourier(orderId: string, payload: {
   rating: number | null
   mode: string | null
 }): Promise<{ provider: string; selected_courier: OrderOperations['selected_courier'] }> {
-  const response = await fetch(`${apiBase}/api/v1/couriers/shiprocket/orders/${orderId}/couriers/select`, {
+  const response = await apiFetch(`${apiBase}/api/v1/couriers/shiprocket/orders/${orderId}/couriers/select`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -535,7 +546,7 @@ export async function bookShiprocketShipment(orderId: string, payload: {
   breadth_cm?: number | null
   height_cm?: number | null
 }): Promise<{ provider: string; shipment?: Order['shipment']; existing?: boolean }> {
-  const response = await fetch(`${apiBase}/api/v1/orders/${orderId}/book`, {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/book`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -548,7 +559,7 @@ export async function bookShiprocketShipment(orderId: string, payload: {
 }
 
 export async function refreshShiprocketShipment(orderId: string): Promise<{ provider: string; shipment: Order['shipment'] }> {
-  const response = await fetch(`${apiBase}/api/v1/couriers/shiprocket/orders/${orderId}/refresh`, { method: 'POST' })
+  const response = await apiFetch(`${apiBase}/api/v1/couriers/shiprocket/orders/${orderId}/refresh`, { method: 'POST' })
   if (!response.ok) {
     const body = await response.json().catch(() => null)
     throw new Error(body?.detail?.message || body?.detail || 'Could not refresh shipment status.')
@@ -557,7 +568,7 @@ export async function refreshShiprocketShipment(orderId: string): Promise<{ prov
 }
 
 export async function syncShopifyFulfillment(orderId: string): Promise<{ order_id: string; shipment: Order['shipment'] }> {
-  const response = await fetch(`${apiBase}/api/v1/orders/${orderId}/shopify-fulfillment/sync`, { method: 'POST' })
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/shopify-fulfillment/sync`, { method: 'POST' })
   if (!response.ok) {
     const body = await response.json().catch(() => null)
     throw new Error(body?.detail || 'Could not synchronize Shopify fulfillment.')
@@ -566,7 +577,7 @@ export async function syncShopifyFulfillment(orderId: string): Promise<{ order_i
 }
 
 export async function downloadShippingLabel(orderId: string): Promise<Blob> {
-  const response = await fetch(`${apiBase}/api/v1/orders/${orderId}/shipment/label`)
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/shipment/label`)
   if (!response.ok) {
     const body = await response.json().catch(() => null)
     throw new Error(body?.detail?.message || body?.detail || 'Shipping label is not yet available.')
@@ -581,13 +592,13 @@ export function shippingLabelUrl(orderId: string, disposition: 'attachment' | 'i
 }
 
 export async function validateAddress(orderId: string, payload: Record<string, string>): Promise<{ valid: boolean; status: string; blockers: string[]; warnings: string[]; shiprocket_confidence_score: number | null; shiprocket_confidence_category: string | null; shiprocket_message: string }> {
-  const response = await fetch(`${apiBase}/api/v1/orders/${orderId}/address/validate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/address/validate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
   if (!response.ok) throw new Error('Could not validate address.')
   return response.json()
 }
 
 export async function exportOrders(mode: 'current' | 'full', orderIds: string[]): Promise<void> {
-  const response = await fetch(`${apiBase}/api/v1/orders/export`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode, order_ids: orderIds }) })
+  const response = await apiFetch(`${apiBase}/api/v1/orders/export`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode, order_ids: orderIds }) })
   if (!response.ok) throw new Error('Could not export orders.')
   const blob = await response.blob()
   const disposition = response.headers.get('content-disposition') || ''
@@ -601,32 +612,32 @@ export async function exportOrders(mode: 'current' | 'full', orderIds: string[])
 }
 
 export async function getLabelQueue(): Promise<{ labels_to_print: NonNullable<Order['shipment']>[]; awaiting_confirmation: NonNullable<Order['shipment']>[]; printed_today: NonNullable<Order['shipment']>[] }> {
-  const response = await fetch(`${apiBase}/api/v1/labels/queue`)
+  const response = await apiFetch(`${apiBase}/api/v1/labels/queue`)
   if (!response.ok) throw new Error('Could not load label queue.')
   return response.json()
 }
 
 export async function createLabelBatch(orderIds: string[]): Promise<{ id: string; provider: string; status: string; order_ids: string[] }> {
-  const response = await fetch(`${apiBase}/api/v1/labels/batches`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: orderIds, operator: 'Amit Kumar' }) })
+  const response = await apiFetch(`${apiBase}/api/v1/labels/batches`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: orderIds, operator: 'Amit Kumar' }) })
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail || 'Could not create label batch.')
   return body
 }
 
 export async function confirmLabelBatch(batchId: string, printedOrderIds: string[]): Promise<void> {
-  const response = await fetch(`${apiBase}/api/v1/labels/batches/${batchId}/confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printed_order_ids: printedOrderIds, operator: 'Amit Kumar' }) })
+  const response = await apiFetch(`${apiBase}/api/v1/labels/batches/${batchId}/confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printed_order_ids: printedOrderIds, operator: 'Amit Kumar' }) })
   if (!response.ok) throw new Error('Could not confirm label batch.')
 }
 
 export const labelBatchPdfUrl = (batchId: string) => `${apiBase}/api/v1/labels/batches/${batchId}/pdf`
 
 export async function getActiveLabelBatches(): Promise<Array<{ id: string; provider: string; status: string; order_ids: string[] }>> {
-  const response = await fetch(`${apiBase}/api/v1/labels/batches/active`)
+  const response = await apiFetch(`${apiBase}/api/v1/labels/batches/active`)
   if (!response.ok) throw new Error('Could not recover pending print batches.')
   return response.json()
 }
 
 export async function requestLabelReprint(orderId: string): Promise<void> {
-  const response = await fetch(`${apiBase}/api/v1/labels/orders/${orderId}/reprint`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmed: true }) })
+  const response = await apiFetch(`${apiBase}/api/v1/labels/orders/${orderId}/reprint`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmed: true }) })
   if (!response.ok) throw new Error('Could not return the label to the print queue.')
 }
