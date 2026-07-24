@@ -1,14 +1,14 @@
 """add Shopify fulfillment synchronization fields
 
-Revision ID: 20260721_02_shopify_fulfillment_sync
+Revision ID: 20260721_02_fulfillment_sync
 Revises: 20260721_01_delivery_tracking_fields
 """
 
 from alembic import op
 import sqlalchemy as sa
 
-revision = "20260721_02_shopify_fulfillment_sync"
-down_revision = "20260721_01_delivery_tracking_fields"
+revision = "20260721_02_fulfillment_sync"
+down_revision = "20260721_01_tracking_fields"
 branch_labels = None
 depends_on = None
 

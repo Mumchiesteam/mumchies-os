@@ -1,6 +1,6 @@
 """add shiprocket package details and selected courier
 
-Revision ID: 20260718_01_shiprocket_package_details
+Revision ID: 20260718_01_package_details
 Revises: 20260717_01_shiprocket_shipments
 Create Date: 2026-07-18 00:00:00.000000
 """
@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "20260718_01_shiprocket_package_details"
+revision = "20260718_01_package_details"
 down_revision = "20260717_01_shiprocket_shipments"
 branch_labels = None
 depends_on = None

@@ -8,7 +8,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "20260721_04_label_printing"
-down_revision = "20260721_03_shopify_fulfillment_status"
+down_revision = "20260721_03_fulfillment_status"
 branch_labels = None
 depends_on = None
 
