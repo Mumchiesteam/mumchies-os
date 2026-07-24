@@ -71,7 +71,6 @@ services:
   - type: web
     name: mumchies-os-web
     runtime: static
-    region: singapore
     rootDir: frontend
     buildCommand: npm ci && npm run build
     staticPublishPath: ./dist
