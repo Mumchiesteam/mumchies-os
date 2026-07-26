@@ -56,3 +56,21 @@ async def test_orders_empty_page_and_search(monkeypatch):
     page = await routes.list_orders(search="does-not-exist", db=None)
     assert page.items == []
     assert (page.total, page.total_pages, page.page) == (0, 1, 1)
+
+
+@pytest.mark.anyio
+async def test_full_counts_do_not_follow_page_size_or_page(monkeypatch):
+    async def load(_db):
+        return make_orders(64)
+
+    monkeypatch.setattr(routes, "_load_orders", load)
+    page_1_20 = await routes.list_orders(page=1, page_size=20, queue="fresh", db=None)
+    page_2_20 = await routes.list_orders(page=2, page_size=20, queue="fresh", db=None)
+    page_1_50 = await routes.list_orders(page=1, page_size=50, queue="fresh", db=None)
+    page_1_100 = await routes.list_orders(page=1, page_size=100, queue="fresh", db=None)
+    for result in (page_1_20, page_2_20, page_1_50, page_1_100):
+        assert result.total == 64
+        assert result.counts["fresh"] == 64
+        assert result.counts["new_orders"] == 64
+        assert result.counts["all"] == 64
+    assert len(page_1_20.items) == len(page_2_20.items) == 20

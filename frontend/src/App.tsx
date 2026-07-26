@@ -16,6 +16,8 @@ import {
   confirmLabelBatch,
   exportOrders,
   getLabelQueue,
+  getShiprocketCleanupPending,
+  cancelShiprocketOnly,
   getActiveLabelBatches,
   labelBatchPdfUrl,
   requestLabelReprint,
@@ -30,13 +32,15 @@ import {
   type OrderOperations,
   type RiskLevel,
   type CancellationPreflight,
+  type OrderCounts,
+  type ShiprocketCleanupRecord,
 } from './services/orders'
 import { logout } from './services/auth'
 import { formatDateTime } from './utils/time'
 import { orderContactSectionTitle } from './utils/operations'
 
 type IconName = 'grid' | 'bag' | 'alert' | 'users' | 'chart' | 'settings' | 'search' | 'bell' | 'filter' | 'chevron' | 'more' | 'eye' | 'truck' | 'calendar' | 'close' | 'copy' | 'phone' | 'external' | 'repeat' | 'tag' | 'edit' | 'call'
-type TabKey = 'fresh' | 'previous' | 'all' | 'labels_to_print' | 'awaiting_confirmation' | 'printed_today'
+type TabKey = 'fresh' | 'previous' | 'all' | 'labels_to_print' | 'awaiting_confirmation' | 'printed_today' | 'shiprocket_cleanup'
 type CallResult = 'No Answer' | 'Busy' | 'Switched Off' | 'Callback Requested' | 'Confirmed' | 'Cancelled' | 'Wrong Number'
 type OperationalStatus = 'Call Pending' | 'Callback Required' | 'Address Verification Pending' | 'Ready for Booking' | 'Booked' | 'Shipped' | 'NDR' | 'Delivered' | 'Cancelled' | 'Needs Review'
 type CourierQuote = {
@@ -66,6 +70,7 @@ const dispatchItems: { key: TabKey; label: string }[] = [
   { key: 'labels_to_print', label: 'Labels to Print' },
   { key: 'awaiting_confirmation', label: 'Awaiting Confirmation' },
   { key: 'printed_today', label: 'Printed Today' },
+  { key: 'shiprocket_cleanup', label: 'Shiprocket Cleanup Pending' },
 ]
 const callResults: CallResult[] = ['No Answer', 'Busy', 'Switched Off', 'Callback Requested', 'Confirmed', 'Cancelled', 'Wrong Number']
 const riskStyle: Record<RiskLevel, string> = { High: 'bg-rose-50 text-rose-700 ring-rose-100', Medium: 'bg-amber-50 text-amber-700 ring-amber-100', Low: 'bg-emerald-50 text-emerald-700 ring-emerald-100' }
@@ -149,6 +154,8 @@ function App() {
   const [pageSize, setPageSize] = useState<20 | 50 | 100>(20)
   const [total, setTotal] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
+  const [counts, setCounts] = useState<OrderCounts>({ operations: 0, fresh: 0, previous: 0, all: 0, labels_to_print: 0, awaiting_confirmation: 0, printed_today: 0, new_orders: 0, pending_booking: 0, cod: 0, prepaid: 0, high_risk: 0, repeat_customers: 0, cod_collectable: 0, prepaid_value: 0 })
+  const [cleanupRecords, setCleanupRecords] = useState<ShiprocketCleanupRecord[]>([])
   const [cardFilter, setCardFilter] = useState<'pending' | 'cod' | 'prepaid' | 'risk' | 'repeat' | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const [notice, setNotice] = useState('')
@@ -195,11 +202,20 @@ function App() {
   const [activeBatch, setActiveBatch] = useState<{ id: string; order_ids: string[] } | null>(null)
   const [printedLabels, setPrintedLabels] = useState<Set<string>>(new Set())
   const refreshLabels = useCallback(() => void getLabelQueue().then(setLabelQueue).catch(() => undefined), [])
+  const refreshCleanup = useCallback(() => void getShiprocketCleanupPending().then(result => setCleanupRecords(result.items)).catch(() => undefined), [])
 
   const loadOrders = useCallback(async (signal?: AbortSignal) => {
     try {
       setLoading(true)
       setError('')
+      if (queue === 'shiprocket_cleanup') {
+        const cleanup = await getShiprocketCleanupPending()
+        setCleanupRecords(cleanup.items)
+        setOrders([])
+        setTotal(cleanup.total)
+        setTotalPages(1)
+        return
+      }
       const data = await getOrders({
         page,
         pageSize,
@@ -212,6 +228,7 @@ function App() {
       setOrders(data.items)
       setTotal(data.total)
       setTotalPages(data.totalPages)
+      setCounts(data.counts)
       if (data.page !== page) setPage(data.page)
       const counts = new Map<string, number>()
       const repeat = new Set<string>()
@@ -240,7 +257,7 @@ function App() {
     }
   }, [loadOrders])
 
-  useEffect(() => { refreshLabels() }, [refreshLabels])
+  useEffect(() => { refreshLabels(); refreshCleanup() }, [refreshCleanup, refreshLabels])
 
   useEffect(() => {
     if (selectedOrderId) return
@@ -255,20 +272,6 @@ function App() {
   }, [notice])
 
   const selectedOrder = useMemo(() => orders.find(order => order.internalId === selectedOrderId) || null, [orders, selectedOrderId])
-  const queueOrders = useMemo(() => {
-    const sortedNewestFirst = (a: Order, b: Order) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    const sortedOldestFirst = (a: Order, b: Order) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-    const active = (order: Order) => !isCancelled(order) && !isShipped(order) && !isDelivered(order)
-    const unresolved = (order: Order) => active(order) && !['Ready for Booking', 'Booked'].includes(listStatus(order))
-    return {
-      fresh: orders.filter(order => active(order) && !order.firstActionAt),
-      previous: orders.filter(order => Boolean(order.firstActionAt) && unresolved(order)),
-      all: [...orders],
-      sortedNewestFirst,
-      sortedOldestFirst,
-    }
-  }, [orders])
-
   useEffect(() => {
     if (!selectedOrder) return
     let active = true
@@ -321,27 +324,25 @@ function App() {
   const displayedOrders = orders
 
   const summaryCounts = useMemo(() => ({
-    fresh: queueOrders.fresh.length,
-    previous: queueOrders.previous.length,
-    all: queue === 'all' ? total : queueOrders.all.length,
-    labels_to_print: labelQueue.labels_to_print.length,
-    awaiting_confirmation: labelQueue.awaiting_confirmation.length,
-    printed_today: labelQueue.printed_today.length,
-  }), [labelQueue, queue, queueOrders, total])
+    fresh: counts.fresh,
+    previous: counts.previous,
+    all: counts.all,
+    labels_to_print: counts.labels_to_print,
+    awaiting_confirmation: counts.awaiting_confirmation,
+    printed_today: counts.printed_today,
+    shiprocket_cleanup: cleanupRecords.length,
+  }), [cleanupRecords.length, counts])
 
   const cards = useMemo(() => {
-    const pending = orders.filter(order => listStatus(order) === 'Ready for Booking' && !order.shipment?.awb)
-    const cod = orders.filter(order => order.paymentType === 'cod' || order.paymentType === 'partial_cod')
-    const prepaid = orders.filter(order => order.paymentType === 'prepaid')
     return [
-      { key: 'new', label: 'New Orders', value: queueOrders.fresh.length, detail: 'No operator action' },
-      { key: 'pending', label: 'Pending Booking', value: pending.length, detail: 'Ready to dispatch' },
-      { key: 'cod', label: 'COD', value: cod.length, detail: `${formatMoney(cod.reduce((sum, order) => sum + order.codCollectableAmount, 0))} to collect` },
-      { key: 'prepaid', label: 'Prepaid', value: prepaid.length, detail: formatMoney(prepaid.reduce((sum, order) => sum + order.orderTotal, 0)) },
-      { key: 'risk', label: 'High Risk', value: orders.filter(order => order.risk === 'High' && !isCancelled(order)).length, detail: 'Active orders' },
-      { key: 'repeat', label: 'Repeat Customers', value: orders.filter(order => repeatIds.has(order.internalId)).length, detail: 'Known customers' },
+      { key: 'new', label: 'New Orders', value: counts.new_orders, detail: 'Rolling 24 hours' },
+      { key: 'pending', label: 'Pending Booking', value: counts.pending_booking, detail: 'Ready to dispatch' },
+      { key: 'cod', label: 'COD', value: counts.cod, detail: `${formatMoney(counts.cod_collectable)} to collect` },
+      { key: 'prepaid', label: 'Prepaid', value: counts.prepaid, detail: formatMoney(counts.prepaid_value) },
+      { key: 'risk', label: 'High Risk', value: counts.high_risk, detail: 'Active orders' },
+      { key: 'repeat', label: 'Repeat Customers', value: counts.repeat_customers, detail: 'Known customers' },
     ]
-  }, [orders, queueOrders.fresh.length, repeatIds])
+  }, [counts])
 
   const statusFromOrder = (order: Order): OperationalStatus => {
     return listStatus(order)
@@ -618,8 +619,9 @@ function App() {
           ) : (
             <>
               {loading && <div className="border-b border-slate-100 bg-slate-50 px-4 py-2 text-xs font-medium text-slate-500">Updating orders…</div>}
+              {queue === 'shiprocket_cleanup' && <div className="overflow-x-auto"><table className="w-full min-w-[980px] text-left text-sm"><thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-400"><tr>{['Order No', 'Shopify Status', 'Mumchies Shipment', 'Shiprocket Status', 'Reason', 'Action'].map(value => <th key={value} className="px-4 py-3">{value}</th>)}</tr></thead><tbody className="divide-y divide-slate-100">{cleanupRecords.map(record => <tr key={record.shiprocket_order_id}><td className="px-4 py-3 font-semibold">#{record.order_number}</td><td className="px-4 py-3">{record.shopify_status}</td><td className="px-4 py-3">{record.mumchies_provider || '—'} · {record.mumchies_status || '—'}</td><td className="px-4 py-3">{record.shiprocket_status}</td><td className="px-4 py-3 text-amber-700">{record.reason}</td><td className="px-4 py-3"><button onClick={() => { if (window.confirm(`Cancel only Shiprocket order ${record.order_number}? Shopify will not be cancelled.`)) void cancelShiprocketOnly(record).then(() => { setNotice('Shiprocket order cancelled safely.'); void loadOrders() }).catch(error => setNotice(error.message)) }} className="rounded-md border border-rose-200 px-3 py-1.5 text-xs font-semibold text-rose-700">Safe Cancel in Shiprocket only</button></td></tr>)}</tbody></table>{cleanupRecords.length === 0 && <div className="py-14 text-center text-sm text-slate-400">No stale Shiprocket New orders require cleanup.</div>}</div>}
               {queue === 'printed_today' && orders.length > 0 && <div className="divide-y divide-slate-100 border-b border-slate-200 bg-slate-50/60">{orders.map(order => <div key={order.internalId} className="flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3 text-xs"><span className="font-semibold text-slate-700">#{order.orderNumber}</span><span className="text-slate-500">Confirmed {order.shipment?.label_last_printed_at ? formatDateTime(order.shipment.label_last_printed_at) : '—'}</span><span className="text-slate-500">Operator: {order.shipment?.label_last_printed_by || '—'}</span><button onClick={() => void requestLabelReprint(order.internalId).then(() => { setNotice('Label returned to print queue.'); refreshLabels(); void loadOrders() }).catch(error => setNotice(error.message))} className="ml-auto font-semibold text-orange-600">Reprint</button></div>)}</div>}
-              <div className={`overflow-x-auto transition-opacity ${loading ? 'opacity-60' : ''}`}>
+              <div className={`${queue === 'shiprocket_cleanup' ? 'hidden' : ''} overflow-x-auto transition-opacity ${loading ? 'opacity-60' : ''}`}>
                 <table className="w-full min-w-[980px] text-left">
                   <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-400">
                     <tr>
@@ -632,7 +634,7 @@ function App() {
                 </table>
                 {orders.length === 0 && <div className="py-14 text-center text-sm text-slate-400">{queue === 'printed_today' ? 'No labels have been confirmed today.' : 'No orders match your filters.'}</div>}
               </div>
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-4 py-3">
+              {queue !== 'shiprocket_cleanup' && <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-4 py-3">
                 <p className="text-xs text-slate-500">Showing <span className="font-semibold text-slate-700">{total === 0 ? 0 : (page - 1) * pageSize + 1}–{Math.min(page * pageSize, total)}</span> of {total} orders</p>
                 <div className="flex items-center gap-3 text-xs text-slate-500">
                   <label>Rows per page <select aria-label="Rows per page" value={pageSize} onChange={event => { setPageSize(Number(event.target.value) as 20 | 50 | 100); setPage(1) }} className="ml-1 rounded-md border border-slate-200 bg-white px-2 py-1.5"><option value={20}>20</option><option value={50}>50</option><option value={100}>100</option></select></label>
@@ -640,7 +642,7 @@ function App() {
                   <span>Page {page} of {totalPages}</span>
                   <button disabled={page >= totalPages || loading} onClick={() => setPage(value => Math.min(totalPages, value + 1))} className="rounded-md border border-slate-200 px-2.5 py-1.5 font-semibold disabled:opacity-40">Next</button>
                 </div>
-              </div>
+              </div>}
             </>
           )}
         </section>

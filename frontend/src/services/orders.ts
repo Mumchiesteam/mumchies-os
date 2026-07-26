@@ -320,6 +320,25 @@ export interface OrdersPage {
   pageSize: number
   total: number
   totalPages: number
+  counts: OrderCounts
+}
+
+export interface OrderCounts {
+  operations: number
+  fresh: number
+  previous: number
+  all: number
+  labels_to_print: number
+  awaiting_confirmation: number
+  printed_today: number
+  new_orders: number
+  pending_booking: number
+  cod: number
+  prepaid: number
+  high_risk: number
+  repeat_customers: number
+  cod_collectable: number
+  prepaid_value: number
 }
 
 export interface OrdersQuery {
@@ -348,7 +367,7 @@ export async function getOrders(query: OrdersQuery = {}, signal?: AbortSignal): 
     throw new Error(body?.detail ?? 'Could not load Shopify orders.')
   }
 
-  const data: { items: ApiOrder[]; page: number; page_size: number; total: number; total_pages: number } = await response.json()
+  const data: { items: ApiOrder[]; page: number; page_size: number; total: number; total_pages: number; counts: OrderCounts } = await response.json()
   const items = data.items.map((item): Order => {
     const shipping = item.shipping_amount == null ? null : Number(item.shipping_amount)
     return {
@@ -405,7 +424,31 @@ export async function getOrders(query: OrdersQuery = {}, signal?: AbortSignal): 
         : null,
     }
   })
-  return { items, page: data.page, pageSize: data.page_size, total: data.total, totalPages: data.total_pages }
+  return { items, page: data.page, pageSize: data.page_size, total: data.total, totalPages: data.total_pages, counts: data.counts }
+}
+
+export interface ShiprocketCleanupRecord {
+  order_id: string
+  order_number: string
+  shopify_status: string
+  mumchies_provider: string | null
+  mumchies_status: string | null
+  shiprocket_order_id: string
+  shiprocket_status: string
+  reason: string
+  shiprocket_awb: null
+}
+
+export async function getShiprocketCleanupPending(): Promise<{ items: ShiprocketCleanupRecord[]; total: number }> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/shiprocket-cleanup-pending`)
+  if (!response.ok) throw new Error('Could not reconcile Shiprocket New orders.')
+  return response.json()
+}
+
+export async function cancelShiprocketOnly(record: ShiprocketCleanupRecord): Promise<void> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${record.order_id}/shiprocket-only-cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shiprocket_order_id: record.shiprocket_order_id, order_number: record.order_number, operator: 'Amit Kumar' }) })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail || 'Could not safely cancel the Shiprocket order.')
 }
 
 export const formatMoney = toMoney

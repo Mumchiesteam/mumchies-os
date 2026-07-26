@@ -10,6 +10,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from sqlalchemy import select
 
 from app.db.session import get_db
 from app.schemas.orders import ShopifyOrder
@@ -65,6 +66,12 @@ class CancellationPayload(BaseModel):
     cancel_shiprocket: bool = True
 
 
+class ShiprocketOnlyCancellationPayload(BaseModel):
+    shiprocket_order_id: str
+    order_number: str
+    operator: str = Field(...)
+
+
 class VerifyAddressPayload(BaseModel):
     operator: str = Field(...)
     verified_at: str | None = None
@@ -91,6 +98,7 @@ class OrdersPage(BaseModel):
     page_size: int
     total: int
     total_pages: int
+    counts: dict[str, int | float]
 
 
 def _merged_operational_state(order: ShopifyOrder, operations: dict[str, object]) -> ShopifyOrder:
@@ -152,7 +160,56 @@ def _is_inactive(order: ShopifyOrder) -> bool:
         order.fulfillment_status, order.shopify_status, order.cancelled_at,
         " ".join(order.tags), str(order.external_tracking.status if order.external_tracking else ""),
     ])).casefold()
-    return bool(order.cancelled_at) or any(value in text for value in ("cancel", "fulfilled", "shipped", "picked up", "dispatched", "in transit", "out for delivery", "delivered"))
+    return bool(order.cancelled_at) or str(order.operational_status or "").casefold() in {"cancelled", "shipped", "delivered"} or any(value in text for value in ("cancel", "fulfilled", "shipped", "picked up", "dispatched", "in transit", "out for delivery", "delivered"))
+
+
+def _base_filtered_orders(orders: list[ShopifyOrder], search: str, payment: str, risk: str) -> list[ShopifyOrder]:
+    needle = search.strip().casefold()
+    result = []
+    for order in orders:
+        searchable = " ".join(filter(None, [
+            order.order_number, order.shopify_name, order.customer_name, order.phone,
+            " ".join(f"{product.product_name} {product.sku or ''}" for product in order.products),
+        ])).casefold()
+        if needle and needle not in searchable:
+            continue
+        display_payment = {"cod": "cod", "partial_cod": "partial cod", "prepaid": "prepaid"}.get(order.payment_type, order.payment_type)
+        if payment != "all" and display_payment != payment:
+            continue
+        tag_text = " ".join(order.tags).casefold()
+        order_risk = "high" if "high" in tag_text else "medium" if "medium" in tag_text else "low"
+        if risk != "all" and order_risk != risk:
+            continue
+        result.append(order)
+    return result
+
+
+def _full_counts(orders: list[ShopifyOrder], now: datetime, db: Session) -> dict[str, int | float]:
+    fresh = [order for order in orders if _matches_queue(order, "fresh", now)]
+    previous = [order for order in orders if _matches_queue(order, "previous", now)]
+    active = [order for order in orders if not _is_inactive(order)]
+    pending = [order for order in orders if order.operational_status == "Ready for Booking" and not (order.shipment or {}).get("awb")]
+    cod = [order for order in orders if order.payment_type in {"cod", "partial_cod"}]
+    prepaid = [order for order in orders if order.payment_type == "prepaid"]
+    high_risk = [order for order in orders if "high" in " ".join(order.tags).casefold() and not _is_inactive(order)]
+    customer_counts: dict[str, int] = {}
+    for order in orders:
+        if order.customer_id:
+            customer_counts[order.customer_id] = customer_counts.get(order.customer_id, 0) + 1
+    repeat = [order for order in orders if (order.customer_orders_count or 0) > 1 or bool(order.customer_id and customer_counts.get(order.customer_id, 0) > 1)]
+    from app.models.shiprocket import ShiprocketShipment
+    local_today = now.astimezone(ZoneInfo("Asia/Kolkata")).date()
+    shipments = db.scalars(select(ShiprocketShipment).where(ShiprocketShipment.label_print_status.in_(["not_printed", "awaiting_confirmation", "printed"]))).all() if hasattr(db, "scalars") else []
+    printed_today = [value for value in shipments if value.label_print_status == "printed" and value.label_last_printed_at and (value.label_last_printed_at if value.label_last_printed_at.tzinfo else value.label_last_printed_at.replace(tzinfo=timezone.utc)).astimezone(ZoneInfo("Asia/Kolkata")).date() == local_today]
+    return {
+        "operations": len(active), "fresh": len(fresh), "previous": len(previous), "all": len(orders),
+        "labels_to_print": sum(1 for value in shipments if value.label_print_status == "not_printed" and value.booking_status == "booked" and value.awb),
+        "awaiting_confirmation": sum(1 for value in shipments if value.label_print_status == "awaiting_confirmation"),
+        "printed_today": len(printed_today), "new_orders": len(fresh), "pending_booking": len(pending),
+        "cod": len(cod), "prepaid": len(prepaid), "high_risk": len(high_risk), "repeat_customers": len(repeat),
+        "cod_collectable": sum(float(order.cod_collectable_amount) for order in cod),
+        "prepaid_value": sum(float(order.order_total) for order in prepaid),
+    }
 
 
 def _matches_queue(order: ShopifyOrder, queue: str, now: datetime) -> bool:
@@ -194,24 +251,9 @@ async def list_orders(
         raise HTTPException(status_code=422, detail="Unknown orders queue.")
     orders = await _load_orders(db)
     now = datetime.now(timezone.utc)
-    needle = search.strip().casefold()
-    filtered = []
-    for order in orders:
-        if not _matches_queue(order, queue, now):
-            continue
-        searchable = " ".join(filter(None, [
-            order.order_number, order.shopify_name, order.customer_name, order.phone,
-            " ".join(f"{product.product_name} {product.sku or ''}" for product in order.products),
-        ])).casefold()
-        if needle and needle not in searchable:
-            continue
-        display_payment = {"cod": "cod", "partial_cod": "partial cod", "prepaid": "prepaid"}.get(order.payment_type, order.payment_type)
-        if payment != "all" and display_payment != payment:
-            continue
-        order_risk = "high" if "high" in " ".join(order.tags).casefold() else "medium" if "medium" in " ".join(order.tags).casefold() else "low"
-        if risk != "all" and order_risk != risk:
-            continue
-        filtered.append(order)
+    base_filtered = _base_filtered_orders(orders, search, payment, risk)
+    counts = _full_counts(base_filtered, now, db)
+    filtered = [order for order in base_filtered if _matches_queue(order, queue, now)]
     reverse = sort not in {"oldest", "value_asc"}
     if sort in {"value_asc", "value_desc"}:
         filtered.sort(key=lambda value: float(value.total_amount), reverse=reverse)
@@ -224,7 +266,7 @@ async def list_orders(
     total_pages = max(1, (total + page_size - 1) // page_size)
     effective_page = min(page, total_pages)
     start = (effective_page - 1) * page_size
-    return OrdersPage(items=filtered[start:start + page_size], page=effective_page, page_size=page_size, total=total, total_pages=total_pages)
+    return OrdersPage(items=filtered[start:start + page_size], page=effective_page, page_size=page_size, total=total, total_pages=total_pages, counts=counts)
 
 
 @router.get("/{order_id}/operations")
@@ -595,6 +637,70 @@ async def cancel_order(order_id: str, payload: CancellationPayload, db: Session 
     timestamp = datetime.now(timezone.utc).isoformat()
     operations = OrderOperationsStore.save_cancellation(order_id, results, payload.operator, timestamp)
     return {"results": results, "preflight": preflight, "operations": operations, "timestamp": timestamp, "operator": payload.operator}
+
+
+def _cleanup_reason(order: ShopifyOrder) -> str | None:
+    shipment = order.shipment or {}
+    external = order.external_tracking
+    provider = str(shipment.get("provider") or (external.provider if external else "")).casefold()
+    if provider and provider != "shiprocket" and (shipment.get("awb") or (external.awb if external else None)):
+        return "Direct Delhivery shipment" if provider == "delhivery" else f"Booked through {provider}"
+    if order.cancelled_at or str(order.shopify_status or "").casefold() == "cancelled":
+        return "Cancelled in Shopify"
+    if str(order.operational_status or "").casefold() == "cancelled":
+        return "Locally marked cancelled"
+    if str(order.fulfillment_status or "").casefold() in {"fulfilled", "partial", "partially_fulfilled"}:
+        return "Shopify fulfilled"
+    return None
+
+
+@router.get("/shiprocket-cleanup-pending")
+async def shiprocket_cleanup_pending(db: Session = Depends(get_db)) -> dict[str, object]:
+    orders = await _load_orders(db)
+    by_number = {order.order_number: order for order in orders}
+    try:
+        upstream_orders = await ShiprocketService().list_new_orders()
+    except (ShiprocketAPIError, ShiprocketConfigurationError) as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    items = []
+    for upstream in upstream_orders:
+        number = str(upstream.get("channel_order_id") or "")
+        order = by_number.get(number)
+        if order is None:
+            continue
+        reason = _cleanup_reason(order)
+        if reason is None:
+            continue
+        _shipment_id, awb = ShiprocketService._upstream_shipment(upstream)
+        if awb:
+            continue
+        local_shipment = order.shipment or {}
+        items.append({
+            "order_id": order.order_id, "order_number": number,
+            "shopify_status": "Cancelled" if order.cancelled_at else order.fulfillment_status or order.shopify_status or "Open",
+            "mumchies_provider": local_shipment.get("provider") or (order.external_tracking.provider if order.external_tracking else None),
+            "mumchies_status": order.operational_status,
+            "shiprocket_order_id": str(upstream.get("id") or ""), "shiprocket_status": upstream.get("status") or "NEW",
+            "reason": reason, "shiprocket_awb": None,
+        })
+    items.sort(key=lambda value: value["order_number"], reverse=True)
+    return {"items": items, "total": len(items)}
+
+
+@router.post("/{order_id}/shiprocket-only-cancel")
+async def shiprocket_only_cancel(order_id: str, payload: ShiprocketOnlyCancellationPayload) -> dict[str, object]:
+    service = ShiprocketService()
+    upstream_orders = await service.list_new_orders(force_refresh=True)
+    upstream = next((value for value in upstream_orders if str(value.get("id") or "") == payload.shiprocket_order_id and str(value.get("channel_order_id") or "") == payload.order_number), None)
+    if upstream is None:
+        raise HTTPException(status_code=409, detail="The Shiprocket New order could not be found or no longer matches this order.")
+    try:
+        await service.cancel_unbooked_order(upstream)
+    except (ShiprocketAPIError, ShiprocketConfigurationError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    result = {"status": "cancelled", "cancel_on_channel": False, "shiprocket_order_id": payload.shiprocket_order_id}
+    OrderOperationsStore.record_timeline_event(order_id, "shiprocket_cleanup", operator=payload.operator, details=result)
+    return result
 
 
 @router.post("/{order_id}/address/verify")

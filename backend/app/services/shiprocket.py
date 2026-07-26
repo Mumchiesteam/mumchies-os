@@ -7,7 +7,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -74,6 +74,7 @@ class ShiprocketService:
 
     _token_cache: dict[str, Any] | None = None
     _token_lock = asyncio.Lock()
+    _new_orders_cache: tuple[float, list[dict[str, Any]]] | None = None
 
     def __init__(self, email: str | None = None, password: str | None = None, pickup_location: str | None = None) -> None:
         self.email = email or settings.shiprocket_email
@@ -403,6 +404,36 @@ class ShiprocketService:
         if not isinstance(rows, list):
             return None
         return next((row for row in rows if str(row.get("channel_order_id") or "") == channel_order_id), None)
+
+    async def list_new_orders(self, *, force_refresh: bool = False) -> list[dict[str, Any]]:
+        cached = self._new_orders_cache
+        if not force_refresh and cached and cached[0] > time.monotonic():
+            return list(cached[1])
+        rows: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            response = await self._get(
+                "https://apiv2.shiprocket.in/v1/external/orders",
+                params={
+                    "filter_by": "status", "filter": "1", "per_page": 100, "page": page,
+                    "from": (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat(),
+                    "to": datetime.now(timezone.utc).date().isoformat(),
+                },
+            )
+            if response.status_code >= 400:
+                raise self._api_error(response, "list_new_orders")
+            payload = response.json()
+            values = payload.get("data") if isinstance(payload, dict) else []
+            if not isinstance(values, list) or not values:
+                break
+            rows.extend(value for value in values if isinstance(value, dict))
+            pagination = ((payload.get("meta") or {}).get("pagination") or payload.get("pagination") or {}) if isinstance(payload, dict) else {}
+            last_page = int(pagination.get("total_pages") or pagination.get("last_page") or page)
+            if page >= last_page:
+                break
+            page += 1
+        self.__class__._new_orders_cache = (time.monotonic() + 60, list(rows))
+        return rows
 
     async def cancel_unbooked_order(self, order: dict[str, Any]) -> dict[str, Any]:
         order_id = order.get("id")

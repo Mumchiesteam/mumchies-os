@@ -13,6 +13,8 @@ from app.services import order_operations
 from app.services.order_operations import OrderOperationsStore
 from app.services.shiprocket import ShiprocketAPIError, ShiprocketService
 from app.services.shopify import ShopifySyncError
+from app.services.shopify import ShopifyService
+from tests.test_operations_upgrade import raw_order
 
 
 @pytest.fixture()
@@ -140,3 +142,17 @@ async def test_cancellation_preflight_protects_local_awb(db, monkeypatch):
     monkeypatch.setattr(orders.ShiprocketService, "find_existing_order", find)
     result = await orders._cancellation_preflight("1", db)
     assert result["allowed"] is False
+
+
+@pytest.mark.anyio
+async def test_shiprocket_cleanup_pending_classifies_cancelled_and_delhivery(db, monkeypatch):
+    cancelled = ShopifyService._to_order({**raw_order(), "id": 1, "name": "#1", "order_number": 1, "cancelled_at": "2026-07-25T00:00:00Z"}).model_copy(update={"order_id": "gid1", "order_number": "1", "operational_status": "Cancelled"})
+    delhivery = ShopifyService._to_order({**raw_order("paid", "0"), "id": 2, "name": "#2", "order_number": 2, "fulfillment_status": "fulfilled", "fulfillments": [{"status": "success", "tracking_company": "Delhivery", "tracking_number": "D1"}]}).model_copy(update={"order_id": "gid2", "order_number": "2", "operational_status": "Shipped"})
+    async def load(_db): return [cancelled, delhivery]
+    async def new(_self): return [{"id": 11, "channel_order_id": "1", "status": "NEW", "shipments": []}, {"id": 12, "channel_order_id": "2", "status": "NEW", "shipments": []}]
+    monkeypatch.setattr(orders, "_load_orders", load)
+    monkeypatch.setattr(orders.ShiprocketService, "list_new_orders", new)
+    result = await orders.shiprocket_cleanup_pending(db)
+    assert result["total"] == 2
+    assert {item["reason"] for item in result["items"]} == {"Cancelled in Shopify", "Direct Delhivery shipment"}
+    assert all(item["shiprocket_awb"] is None for item in result["items"])
