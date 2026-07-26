@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getOrders, shiprocketCancellationMessage, shouldRemoveCleanupRecord, verifyShiprocketOnlyCancellation, type ShiprocketCancellationResult, type ShiprocketCleanupRecord } from './orders'
+import { clearReconciliationFilter, getOrders, reconciliationDataset, reconciliationFilterLabel, selectReconciliationFilter, shiprocketCancellationMessage, shouldRemoveCleanupRecord, verifyShiprocketOnlyCancellation, type OrdersReconciliationSummary, type ReconciliationRecord, type ShiprocketCancellationResult, type ShiprocketCleanupRecord } from './orders'
 
 const response = (pageSize: number, total = 0) => new Response(JSON.stringify({
   items: [],
@@ -64,5 +64,41 @@ describe('Shiprocket cancellation verification client', () => {
     await verifyShiprocketOnlyCancellation(cleanupRecord)
     expect(String(fetchMock.mock.calls[0][0])).toContain('/shiprocket-only-cancel/verify')
     expect(fetchMock.mock.calls).toHaveLength(1)
+  })
+})
+
+const reconciliationRecord = (orderNumber: string, reason: string | null = null): ReconciliationRecord => ({ order: null, order_id: orderNumber, order_number: orderNumber, created_date: null, customer_name: 'Customer', total_amount: 100, payment_type: 'prepaid', risk: 'Low', status: 'Open', reason, shiprocket_order_id: null, shiprocket_status: null, source: 'os' })
+const reconciliationSummary: OrdersReconciliationSummary = {
+  operations_queue: 2, fresh_orders: 1, previous_pending: 1, shiprocket_new: 2, present_in_both: 1, cleanup_pending: 1, missing_in_shiprocket: 1,
+  in_both: ['2'], only_in_os: [], only_in_shiprocket: [], duplicate_mapping_anomalies: [],
+  datasets: {
+    operations: [reconciliationRecord('1'), reconciliationRecord('2')],
+    shiprocket_new: [reconciliationRecord('2'), reconciliationRecord('3')],
+    both: [reconciliationRecord('2')],
+    cleanup_pending: [reconciliationRecord('3', 'stale Shiprocket state')],
+    missing_in_shiprocket: [reconciliationRecord('1', 'not yet synced to Shiprocket')],
+  },
+}
+
+describe('reconciliation card filtering', () => {
+  it('selects one active card and returns the correct cached dataset', () => {
+    const active = selectReconciliationFilter(null, 'missing_in_shiprocket')
+    expect(active).toBe('missing_in_shiprocket')
+    expect(reconciliationFilterLabel(active)).toBe('Missing in Shiprocket')
+    expect(reconciliationDataset(reconciliationSummary, active).map(record => record.order_number)).toEqual(['1'])
+    expect(selectReconciliationFilter(active, 'both')).toBe('both')
+  })
+
+  it('clears the active reconciliation filter', () => {
+    expect(clearReconciliationFilter()).toBeNull()
+    expect(reconciliationDataset(reconciliationSummary, clearReconciliationFilter())).toEqual([])
+  })
+
+  it('does not make API requests when changing reconciliation cards', () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    for (const filter of ['operations', 'shiprocket_new', 'both', 'cleanup_pending', 'missing_in_shiprocket'] as const) {
+      reconciliationDataset(reconciliationSummary, selectReconciliationFilter(null, filter))
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

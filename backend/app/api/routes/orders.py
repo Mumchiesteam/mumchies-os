@@ -753,6 +753,46 @@ def _os_only_reason(order: ShopifyOrder, upstream: dict[str, object] | None) -> 
     return "other"
 
 
+def _reconciliation_record(
+    *,
+    order: ShopifyOrder | None,
+    upstream: dict[str, object] | None = None,
+    reason: str | None = None,
+) -> dict[str, object]:
+    upstream = upstream or {}
+    if order is not None:
+        return {
+            "order": order.model_dump(mode="json"),
+            "order_id": order.order_id,
+            "order_number": order.order_number,
+            "created_date": order.created_date,
+            "customer_name": order.customer_name,
+            "total_amount": float(order.total_amount),
+            "payment_type": order.payment_type,
+            "risk": "High" if "high" in " ".join(order.tags).casefold() else "Medium" if "medium" in " ".join(order.tags).casefold() else "Low",
+            "status": order.operational_status or order.fulfillment_status or order.shopify_status or "Open",
+            "reason": reason,
+            "shiprocket_order_id": str(upstream.get("id") or "") or None,
+            "shiprocket_status": upstream.get("status"),
+            "source": "both" if upstream else "os",
+        }
+    return {
+        "order": None,
+        "order_id": f"shiprocket:{upstream.get('id')}",
+        "order_number": str(upstream.get("channel_order_id") or ""),
+        "created_date": upstream.get("created_at") or upstream.get("channel_created_at"),
+        "customer_name": upstream.get("customer_name"),
+        "total_amount": float(upstream.get("total") or 0),
+        "payment_type": "cod" if str(upstream.get("payment_method") or "").casefold() == "cod" else "prepaid",
+        "risk": str(upstream.get("rto_risk") or "Low").title(),
+        "status": upstream.get("status") or "NEW",
+        "reason": reason,
+        "shiprocket_order_id": str(upstream.get("id") or "") or None,
+        "shiprocket_status": upstream.get("status") or "NEW",
+        "source": "shiprocket",
+    }
+
+
 @router.get("/reconciliation-summary")
 async def reconciliation_summary(db: Session = Depends(get_db)) -> dict[str, object]:
     """Compare active OS work with Shiprocket New without implying the sets must be equal."""
@@ -802,6 +842,21 @@ async def reconciliation_summary(db: Session = Depends(get_db)) -> dict[str, obj
         if len(os_by_number.get(number, [])) > 1 or len(sr_by_number.get(number, [])) > 1 or not number
     ]
     cleanup_pending = sum(1 for item in only_sr_items if item["reason"] in {"cancelled in Shopify", "fulfilled through Delhivery", "fulfilled through Shadowfax", "stale Shiprocket state"})
+    cleanup_reasons = {"cancelled in Shopify", "fulfilled through Delhivery", "fulfilled through Shadowfax", "stale Shiprocket state"}
+    datasets = {
+        "operations": [_reconciliation_record(order=order, upstream=(sr_by_number.get(order.order_number) or [None])[0]) for order in operations],
+        "shiprocket_new": [_reconciliation_record(order=all_shopify_by_number.get(str(upstream.get("channel_order_id") or "")), upstream=upstream) for upstream in shiprocket_new],
+        "both": [_reconciliation_record(order=os_by_number[number][0], upstream=sr_by_number[number][0]) for number in sorted(both)],
+        "cleanup_pending": [
+            _reconciliation_record(order=all_shopify_by_number.get(str(upstream.get("channel_order_id") or "")), upstream=upstream, reason=_shiprocket_only_reason(all_shopify_by_number.get(str(upstream.get("channel_order_id") or "")), upstream))
+            for number in sorted(only_sr) for upstream in sr_by_number[number]
+            if _shiprocket_only_reason(all_shopify_by_number.get(number), upstream) in cleanup_reasons
+        ],
+        "missing_in_shiprocket": [
+            _reconciliation_record(order=os_by_number[str(item["order_number"])][0], reason=str(item["reason"]))
+            for item in only_os_items
+        ],
+    }
     return {
         "operations_queue": len(operations),
         "fresh_orders": sum(1 for order in operations if _is_fresh_order(order)),
@@ -814,6 +869,7 @@ async def reconciliation_summary(db: Session = Depends(get_db)) -> dict[str, obj
         "only_in_os": only_os_items,
         "only_in_shiprocket": only_sr_items,
         "duplicate_mapping_anomalies": anomalies,
+        "datasets": datasets,
     }
 
 

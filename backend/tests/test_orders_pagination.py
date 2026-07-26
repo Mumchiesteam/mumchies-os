@@ -146,3 +146,6 @@ async def test_reconciliation_sets_and_mismatch_classification(monkeypatch):
     assert result["only_in_os"] == [{"order_number": "201", "reason": "not yet synced to Shiprocket", "shiprocket_status": None}]
     assert result["only_in_shiprocket"][0]["reason"] == "stale Shiprocket state"
     assert result["duplicate_mapping_anomalies"] == []
+    assert [item["order_number"] for item in result["datasets"]["operations"]] == ["201", "202"]
+    assert result["datasets"]["cleanup_pending"][0]["reason"] == "stale Shiprocket state"
+    assert result["datasets"]["missing_in_shiprocket"][0]["reason"] == "not yet synced to Shiprocket"

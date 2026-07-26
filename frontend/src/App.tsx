@@ -22,6 +22,11 @@ import {
   verifyShiprocketOnlyCancellation,
   shiprocketCancellationMessage,
   shouldRemoveCleanupRecord,
+  reconciliationFilterLabel,
+  selectReconciliationFilter,
+  clearReconciliationFilter,
+  reconciliationDataset,
+  mapApiOrder,
   getActiveLabelBatches,
   labelBatchPdfUrl,
   requestLabelReprint,
@@ -40,6 +45,8 @@ import {
   type ShiprocketCleanupRecord,
   type ShiprocketCancellationResult,
   type OrdersReconciliationSummary,
+  type ReconciliationFilter,
+  type ReconciliationRecord,
 } from './services/orders'
 import { logout } from './services/auth'
 import { formatDateTime } from './utils/time'
@@ -79,6 +86,27 @@ const dispatchItems: { key: TabKey; label: string }[] = [
   { key: 'shiprocket_cleanup', label: 'Shiprocket Cleanup Pending' },
 ]
 const callResults: CallResult[] = ['No Answer', 'Busy', 'Switched Off', 'Callback Requested', 'Confirmed', 'Cancelled', 'Wrong Number']
+const reconciliationDate = (value: string | null) => {
+  if (!value) return '—'
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? value : formatDateTime(value)
+}
+const reconciliationRecordToOrder = (record: ReconciliationRecord): Order => {
+  if (record.order) return mapApiOrder(record.order)
+  const paymentType = record.payment_type === 'cod' || record.payment_type === 'partial_cod' ? record.payment_type : 'prepaid'
+  const createdAt = record.created_date && !Number.isNaN(new Date(record.created_date).getTime()) ? record.created_date : new Date(0).toISOString()
+  return {
+    internalId: record.order_id, orderNumber: record.order_number, shopifyName: null, createdAt, createdDate: reconciliationDate(record.created_date),
+    customerName: record.customer_name || 'Shiprocket customer', amount: record.total_amount, shippingAmount: null,
+    payment: paymentType === 'cod' ? 'COD' : paymentType === 'partial_cod' ? 'Partial COD' : 'Prepaid', orderTotal: record.total_amount,
+    paidAmount: 0, outstandingAmount: 0, codCollectableAmount: 0, paymentType, financialStatus: null,
+    risk: ['High', 'Medium'].includes(record.risk) ? record.risk as RiskLevel : 'Low', fulfillmentStatus: null, shopifyStatus: null,
+    cancelledAt: null, customerId: null, customerOrdersCount: null, phone: null, email: null, shippingAddress: null, products: [], tags: [],
+    firstActionAt: null, humanActionCount: 0, callAttemptCount: 0, latestCallResult: null, operationalStatus: record.status,
+    addressVerified: false, addressVerifiedAt: null, addressVerifiedBy: null, verifiedAddressSnapshot: null, correctedAddress: null,
+    courierSyncStatus: null, courierSyncError: null, addressSyncResults: null, packageDetails: null, selectedCourier: null, shipment: null, externalTracking: null,
+  }
+}
 const riskStyle: Record<RiskLevel, string> = { High: 'bg-rose-50 text-rose-700 ring-rose-100', Medium: 'bg-amber-50 text-amber-700 ring-amber-100', Low: 'bg-emerald-50 text-emerald-700 ring-emerald-100' }
 
 const Icon = ({ name, size = 18 }: { name: IconName; size?: number }) => {
@@ -164,6 +192,7 @@ function App() {
   const [cleanupRecords, setCleanupRecords] = useState<ShiprocketCleanupRecord[]>([])
   const [cleanupResults, setCleanupResults] = useState<Record<string, ShiprocketCancellationResult>>({})
   const [reconciliation, setReconciliation] = useState<OrdersReconciliationSummary | null>(null)
+  const [reconciliationFilter, setReconciliationFilter] = useState<ReconciliationFilter | null>(null)
   const [cardFilter, setCardFilter] = useState<'pending' | 'cod' | 'prepaid' | 'risk' | 'repeat' | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const [notice, setNotice] = useState('')
@@ -280,7 +309,9 @@ function App() {
     return () => window.clearTimeout(timeout)
   }, [notice])
 
-  const selectedOrder = useMemo(() => orders.find(order => order.internalId === selectedOrderId) || null, [orders, selectedOrderId])
+  const reconciliationRows = useMemo(() => reconciliationDataset(reconciliation, reconciliationFilter), [reconciliation, reconciliationFilter])
+  const reconciliationOrders = useMemo(() => reconciliationRows.map(reconciliationRecordToOrder), [reconciliationRows])
+  const selectedOrder = useMemo(() => [...orders, ...reconciliationOrders].find(order => order.internalId === selectedOrderId) || null, [orders, reconciliationOrders, selectedOrderId])
   useEffect(() => {
     if (!selectedOrder) return
     let active = true
@@ -595,7 +626,7 @@ function App() {
           {[{ label: 'ORDERS', items: tabItems }, { label: 'DISPATCH', items: dispatchItems }].map(group => <div key={group.label}>
             <p className="mb-2 text-[10px] font-bold tracking-[.14em] text-slate-400">{group.label}</p>
             <div className="flex flex-wrap gap-2">{group.items.map(tab => (
-              <button key={tab.key} onClick={() => { setQueue(tab.key); setPage(1); setCardFilter(null); if (tab.key === 'labels_to_print') { refreshLabels(); void getActiveLabelBatches().then(batches => { if (batches[0]) { setActiveBatch(batches[0]); setPrintedLabels(new Set(batches[0].order_ids)) } }); setShowLabels(true) } }} className={`rounded-full px-4 py-2 text-sm font-medium ${queue === tab.key ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'}`}>
+              <button key={tab.key} onClick={() => { if (tab.key === 'shiprocket_cleanup') { setReconciliationFilter('cleanup_pending'); return } setReconciliationFilter(clearReconciliationFilter()); setQueue(tab.key); setPage(1); setCardFilter(null); if (tab.key === 'labels_to_print') { refreshLabels(); void getActiveLabelBatches().then(batches => { if (batches[0]) { setActiveBatch(batches[0]); setPrintedLabels(new Set(batches[0].order_ids)) } }); setShowLabels(true) } }} className={`rounded-full px-4 py-2 text-sm font-medium ${(queue === tab.key && !reconciliationFilter) || (tab.key === 'shiprocket_cleanup' && reconciliationFilter === 'cleanup_pending') ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'}`}>
                 {tab.label}
                 <span className={`ml-2 rounded-full px-2 py-0.5 text-[11px] font-bold ${queue === tab.key ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-500'}`}>{summaryCounts[tab.key]}</span>
               </button>
@@ -603,18 +634,18 @@ function App() {
           </div>)}
         </section>
 
-        {reconciliation && <section className="mb-5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-bold uppercase tracking-[.12em] text-slate-400">OS / Shiprocket reconciliation</p><p className="mt-1 text-xs text-slate-500">Operational and Shiprocket totals may differ while orders sync or use another courier.</p></div><button onClick={refreshReconciliation} className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600">Refresh reconciliation</button></div><div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{[
-          ['Operations Queue', reconciliation.operations_queue],
-          ['Shiprocket New', reconciliation.shiprocket_new],
-          ['Present in Both', reconciliation.present_in_both],
-          ['Cleanup Pending', reconciliation.cleanup_pending],
-          ['Missing in Shiprocket', reconciliation.missing_in_shiprocket],
-        ].map(([label, value]) => <div key={String(label)} className="rounded-lg bg-slate-50 px-3 py-2"><p className="text-[11px] font-semibold text-slate-500">{label}</p><p className="mt-1 text-lg font-bold text-slate-900">{value}</p></div>)}</div></section>}
+        {reconciliation && <section className="mb-5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-bold uppercase tracking-[.12em] text-slate-400">OS / Shiprocket reconciliation</p><p className="mt-1 text-xs text-slate-500">Operational and Shiprocket totals may differ while orders sync or use another courier.</p></div><button onClick={refreshReconciliation} className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600">Refresh reconciliation</button></div><div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{([
+          ['operations', 'Operations Queue', reconciliation.operations_queue],
+          ['shiprocket_new', 'Shiprocket New', reconciliation.shiprocket_new],
+          ['both', 'Present in Both', reconciliation.present_in_both],
+          ['cleanup_pending', 'Cleanup Pending', reconciliation.cleanup_pending],
+          ['missing_in_shiprocket', 'Missing in Shiprocket', reconciliation.missing_in_shiprocket],
+        ] as [ReconciliationFilter, string, number][]).map(([key, label, value]) => { const active = reconciliationFilter === key; return <button type="button" aria-pressed={active} key={key} onClick={() => setReconciliationFilter(current => selectReconciliationFilter(current, key))} className={`cursor-pointer rounded-lg border px-3 py-2 text-left transition focus:outline-none focus:ring-2 focus:ring-orange-300 ${active ? 'border-orange-300 bg-orange-50 ring-2 ring-orange-100' : 'border-transparent bg-slate-50 hover:border-slate-300 hover:bg-slate-100'}`}><p className="text-[11px] font-semibold text-slate-500">{label}</p><p className="mt-1 text-lg font-bold text-slate-900">{value}</p></button> })}</div></section>}
 
         <section className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           {cards.map(card => {
             const active = card.key === 'new' ? queue === 'fresh' && !cardFilter : cardFilter === card.key
-            return <button key={card.key} onClick={() => { setPage(1); if (card.key === 'new') { setQueue('fresh'); setCardFilter(null) } else { setQueue('all'); setCardFilter(card.key as typeof cardFilter) } }} className={`rounded-xl border bg-white p-3 text-left shadow-sm transition ${active ? 'border-orange-300 ring-2 ring-orange-100' : 'border-slate-200 hover:border-slate-300'}`}>
+            return <button key={card.key} onClick={() => { setReconciliationFilter(clearReconciliationFilter()); setPage(1); if (card.key === 'new') { setQueue('fresh'); setCardFilter(null) } else { setQueue('all'); setCardFilter(card.key as typeof cardFilter) } }} className={`rounded-xl border bg-white p-3 text-left shadow-sm transition ${active && !reconciliationFilter ? 'border-orange-300 ring-2 ring-orange-100' : 'border-slate-200 hover:border-slate-300'}`}>
               <p className="text-xs font-semibold text-slate-500">{card.label}</p>
               <p className="mt-1 text-xl font-bold text-slate-900">{card.value}</p>
               <p className="mt-1 truncate text-[11px] text-slate-400">{card.detail}</p>
@@ -623,7 +654,8 @@ function App() {
         </section>
 
         <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-          <div className="flex flex-col gap-4 border-b border-slate-200 p-4 xl:flex-row xl:items-center xl:justify-between">
+          {reconciliationFilter && <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-4"><div><h3 className="text-lg font-bold text-slate-900">{reconciliationFilterLabel(reconciliationFilter)}</h3><p className="text-sm text-slate-500">{reconciliationRows.length} orders</p></div><button onClick={() => { setReconciliationFilter(clearReconciliationFilter()); setQueue('all'); setPage(1) }} className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">Clear Filter</button></div>}
+          {!reconciliationFilter && <div className="flex flex-col gap-4 border-b border-slate-200 p-4 xl:flex-row xl:items-center xl:justify-between">
             <div className="relative min-w-0 flex-1 xl:max-w-sm">
               <span className="absolute left-3 top-3 text-slate-400"><Icon name="search" size={17} /></span>
               <input ref={searchRef} value={search} onChange={e => { setSearch(e.target.value); setPage(1) }} className="w-full rounded-lg border border-slate-200 py-2.5 pl-9 pr-9 text-sm outline-none placeholder:text-slate-400 focus:border-orange-300 focus:ring-2 focus:ring-orange-100" placeholder="Search by order or customer..." />
@@ -634,9 +666,11 @@ function App() {
               <Filter value={risk} onChange={value => { setRisk(value); setPage(1) }} options={['All risks', 'High', 'Medium', 'Low']} />
               <Filter value={sort} onChange={value => { setSort(value); setPage(1) }} options={['Newest first', 'Oldest first', 'COD first', 'Prepaid first', 'Value high to low', 'Value low to high']} />
             </div>
-          </div>
+          </div>}
 
-          {loading && orders.length === 0 ? (
+          {reconciliationFilter ? (
+            <OrdersTable orders={reconciliationOrders} repeatIds={repeatIds} onOpen={openOrder} reconciliationRows={reconciliationRows} reconciliationFilter={reconciliationFilter} cleanupRecords={cleanupRecords} cleanupResults={cleanupResults} onCleanup={sendShiprocketCleanup} onVerify={verifyShiprocketCleanup} emptyMessage="No orders match this reconciliation view." />
+          ) : loading && orders.length === 0 ? (
             <div className="grid min-h-80 place-items-center">
               <div className="text-center">
                 <span className="mx-auto block h-8 w-8 animate-spin rounded-full border-2 border-orange-200 border-t-[#ff6b35]" />
@@ -653,21 +687,8 @@ function App() {
           ) : (
             <>
               {loading && <div className="border-b border-slate-100 bg-slate-50 px-4 py-2 text-xs font-medium text-slate-500">Updating orders…</div>}
-              {queue === 'shiprocket_cleanup' && <div className="overflow-x-auto"><table className="w-full min-w-[980px] text-left text-sm"><thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-400"><tr>{['Order No', 'Shopify Status', 'Mumchies Shipment', 'Shiprocket Status', 'Reason', 'Action'].map(value => <th key={value} className="px-4 py-3">{value}</th>)}</tr></thead><tbody className="divide-y divide-slate-100">{cleanupRecords.map(record => { const result = cleanupResults[record.shiprocket_order_id] || record.last_verification; return <tr key={record.shiprocket_order_id}><td className="px-4 py-3 font-semibold">#{record.order_number}</td><td className="px-4 py-3">{record.shopify_status}</td><td className="px-4 py-3">{record.mumchies_provider || '—'} · {record.mumchies_status || '—'}</td><td className="px-4 py-3">{record.shiprocket_status}</td><td className="px-4 py-3 text-amber-700">{result ? shiprocketCancellationMessage(result) : record.reason}</td><td className="px-4 py-3"><div className="flex flex-wrap gap-2"><button onClick={() => sendShiprocketCleanup(record)} className="rounded-md border border-rose-200 px-3 py-1.5 text-xs font-semibold text-rose-700">Safe Cancel in Shiprocket only</button>{result && ['inconsistent', 'unverified'].includes(result.status) && <button onClick={() => verifyShiprocketCleanup(record)} className="rounded-md border border-amber-200 px-3 py-1.5 text-xs font-semibold text-amber-700">Retry verification</button>}<a href={`https://app.shiprocket.in/orders/processing?search=${encodeURIComponent(record.order_number)}`} target="_blank" rel="noreferrer" className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600">Open in Shiprocket</a></div></td></tr> })}</tbody></table>{cleanupRecords.length === 0 && <div className="py-14 text-center text-sm text-slate-400">No stale Shiprocket New orders require cleanup.</div>}</div>}
               {queue === 'printed_today' && orders.length > 0 && <div className="divide-y divide-slate-100 border-b border-slate-200 bg-slate-50/60">{orders.map(order => <div key={order.internalId} className="flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3 text-xs"><span className="font-semibold text-slate-700">#{order.orderNumber}</span><span className="text-slate-500">Confirmed {order.shipment?.label_last_printed_at ? formatDateTime(order.shipment.label_last_printed_at) : '—'}</span><span className="text-slate-500">Operator: {order.shipment?.label_last_printed_by || '—'}</span><button onClick={() => void requestLabelReprint(order.internalId).then(() => { setNotice('Label returned to print queue.'); refreshLabels(); void loadOrders() }).catch(error => setNotice(error.message))} className="ml-auto font-semibold text-orange-600">Reprint</button></div>)}</div>}
-              <div className={`${queue === 'shiprocket_cleanup' ? 'hidden' : ''} overflow-x-auto transition-opacity ${loading ? 'opacity-60' : ''}`}>
-                <table className="w-full min-w-[980px] text-left">
-                  <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                    <tr>
-                      {['Order No', 'Date / Time', 'Customer', 'Amount', 'Payment', 'Risk', 'Status', 'Actions'].map(column => <th key={column} className="whitespace-nowrap px-4 py-3.5">{column}</th>)}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {displayedOrders.map(order => <OrderRow key={order.internalId} order={order} repeat={repeatIds.has(order.internalId)} onClick={() => openOrder(order.internalId)} />)}
-                  </tbody>
-                </table>
-                {orders.length === 0 && <div className="py-14 text-center text-sm text-slate-400">{queue === 'printed_today' ? 'No labels have been confirmed today.' : 'No orders match your filters.'}</div>}
-              </div>
+              <OrdersTable orders={displayedOrders} repeatIds={repeatIds} onOpen={openOrder} loading={loading} emptyMessage={queue === 'printed_today' ? 'No labels have been confirmed today.' : 'No orders match your filters.'} />
               {queue !== 'shiprocket_cleanup' && <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-4 py-3">
                 <p className="text-xs text-slate-500">Showing <span className="font-semibold text-slate-700">{total === 0 ? 0 : (page - 1) * pageSize + 1}–{Math.min(page * pageSize, total)}</span> of {total} orders</p>
                 <div className="flex items-center gap-3 text-xs text-slate-500">
@@ -751,13 +772,40 @@ function Filter({ value, onChange, options }: { value: string; onChange: (value:
   return <select value={value} onChange={e => onChange(e.target.value)} className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-600 outline-none focus:border-orange-300">{options.map(option => <option key={option}>{option}</option>)}</select>
 }
 
-const OrderRow = memo(function OrderRow({ order, repeat, onClick }: { order: Order; repeat: boolean; onClick: () => void }) {
+const reconciliationReason = (reason: string | null) => ({
+  'routed directly to another courier': 'Direct courier',
+  'not yet synced to Shiprocket': 'Awaiting Shiprocket sync',
+  'mapping issue': 'Mapping issue',
+  'Shiprocket order already cancelled': 'Shiprocket cancelled',
+  other: 'Other',
+}[reason || 'other'] || reason || 'Other')
+
+function OrdersTable({ orders: tableOrders, repeatIds: repeats, onOpen, loading: tableLoading = false, emptyMessage, reconciliationRows: metadata = [], reconciliationFilter: filter = null, cleanupRecords: cleanup = [], cleanupResults: results = {}, onCleanup, onVerify }: {
+  orders: Order[]
+  repeatIds: Set<string>
+  onOpen: (orderId: string) => void
+  loading?: boolean
+  emptyMessage: string
+  reconciliationRows?: ReconciliationRecord[]
+  reconciliationFilter?: ReconciliationFilter | null
+  cleanupRecords?: ShiprocketCleanupRecord[]
+  cleanupResults?: Record<string, ShiprocketCancellationResult>
+  onCleanup?: (record: ShiprocketCleanupRecord) => void
+  onVerify?: (record: ShiprocketCleanupRecord) => void
+}) {
+  const showReason = filter === 'missing_in_shiprocket' || filter === 'cleanup_pending'
+  const showShiprocket = filter === 'shiprocket_new' || filter === 'both' || filter === 'cleanup_pending'
+  const columns = ['Order No', 'Date / Time', 'Customer', 'Amount', 'Payment', 'Risk', 'Status', ...(showReason ? ['Reconciliation Reason'] : []), ...(showShiprocket ? ['Shiprocket Status'] : []), 'Actions']
+  return <div className={`overflow-x-auto transition-opacity ${tableLoading ? 'opacity-60' : ''}`}><table className="w-full min-w-[980px] text-left"><thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-400"><tr>{columns.map(column => <th key={column} className="whitespace-nowrap px-4 py-3.5">{column}</th>)}</tr></thead><tbody className="divide-y divide-slate-100">{tableOrders.map((order, index) => { const record = metadata[index]; const cleanupRecord = record?.shiprocket_order_id ? cleanup.find(value => value.shiprocket_order_id === record.shiprocket_order_id) : undefined; const cleanupResult = cleanupRecord ? results[cleanupRecord.shiprocket_order_id] || cleanupRecord.last_verification : null; return <OrderRow key={`${order.internalId}:${record?.shiprocket_order_id || ''}`} order={order} repeat={repeats.has(order.internalId)} onClick={() => onOpen(order.internalId)} drawerEnabled={record?.order !== null} reconciliationReason={showReason ? reconciliationReason(record?.reason || null) : null} shiprocketStatus={showShiprocket ? record?.shiprocket_status || '—' : null} extraActions={<>{filter === 'cleanup_pending' && cleanupRecord && onCleanup && <button onClick={event => { event.stopPropagation(); onCleanup(cleanupRecord) }} className="rounded-md border border-rose-200 px-2 py-1 text-[10px] font-semibold text-rose-700">Safe Cancel</button>}{cleanupResult && ['inconsistent', 'unverified'].includes(cleanupResult.status) && cleanupRecord && onVerify && <button onClick={event => { event.stopPropagation(); onVerify(cleanupRecord) }} className="rounded-md border border-amber-200 px-2 py-1 text-[10px] font-semibold text-amber-700">Retry verification</button>}{record?.shiprocket_order_id && <a onClick={event => event.stopPropagation()} href={`https://app.shiprocket.in/orders/processing?search=${encodeURIComponent(record.order_number)}`} target="_blank" rel="noreferrer" className="rounded-md border border-slate-200 px-2 py-1 text-[10px] font-semibold text-slate-600">Shiprocket</a>}</>} /> })}</tbody></table>{tableOrders.length === 0 && <div className="py-14 text-center text-sm text-slate-400">{emptyMessage}</div>}</div>
+}
+
+const OrderRow = memo(function OrderRow({ order, repeat, onClick, drawerEnabled = true, reconciliationReason: reason = null, shiprocketStatus = null, extraActions = null }: { order: Order; repeat: boolean; onClick: () => void; drawerEnabled?: boolean; reconciliationReason?: string | null; shiprocketStatus?: string | null; extraActions?: ReactNode }) {
   const statusText = listStatus(order)
   const placed = formatOrderDateTime(order.createdAt)
   const attempt = order.callAttemptCount > 0 ? `Attempt ${order.callAttemptCount > 5 ? '5+' : order.callAttemptCount}` : null
   const status = statusText === 'Booked' || statusText === 'Shipped' || statusText === 'Delivered' ? 'bg-emerald-50 text-emerald-700' : statusText === 'Cancelled' || statusText === 'Needs Review' ? 'bg-rose-50 text-rose-700' : statusText === 'NDR' ? 'bg-violet-50 text-violet-700' : statusText === 'Address Verification Pending' || statusText === 'Call Pending' || statusText === 'Callback Required' ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-slate-700'
   return (
-    <tr onClick={onClick} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 56px' }} className="cursor-pointer text-sm text-slate-600 hover:bg-orange-50/50">
+    <tr onClick={() => { if (drawerEnabled) onClick() }} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 56px' }} className={`${drawerEnabled ? 'cursor-pointer' : ''} text-sm text-slate-600 hover:bg-orange-50/50`}>
       <td className="px-4 py-3.5 font-semibold text-slate-800">{order.orderNumber}</td>
       <td className="whitespace-nowrap px-4 py-3.5"><p className="font-medium text-slate-700">{placed.date}</p><p className="text-xs text-slate-400">{placed.time}</p></td>
       <td className="px-4 py-3.5">
@@ -770,9 +818,12 @@ const OrderRow = memo(function OrderRow({ order, repeat, onClick }: { order: Ord
       <td className="px-4 py-3.5"><span className={`rounded-md px-2 py-1 text-[11px] font-bold ${order.payment === 'Prepaid' ? 'bg-emerald-50 text-emerald-700' : order.payment === 'Partial COD' ? 'bg-orange-100 text-orange-800' : 'bg-amber-50 text-amber-700'}`}>{order.payment}</span>{order.payment !== 'Prepaid' && attempt && <p className="mt-1 text-[10px] font-semibold text-slate-400">{attempt}</p>}{order.payment === 'Partial COD' && <p className="mt-1 whitespace-nowrap text-[10px] text-slate-500">{formatMoney(order.paidAmount)} paid · {formatMoney(order.codCollectableAmount)} due</p>}</td>
       <td className="px-4 py-3.5"><span className={`rounded-md px-2 py-1 text-[11px] font-bold ring-1 ring-inset ${riskStyle[order.risk]}`}>{order.risk} Risk</span></td>
       <td className="px-4 py-3.5"><span className={`whitespace-nowrap rounded-md px-2 py-1 text-[11px] font-bold ${status}`}>{statusText}</span></td>
+      {reason && <td className="px-4 py-3.5 text-xs font-medium text-amber-700">{reason}</td>}
+      {shiprocketStatus && <td className="px-4 py-3.5 text-xs font-semibold text-slate-600">{shiprocketStatus}</td>}
       <td className="px-4 py-3.5">
         <div className="flex items-center gap-1">
-          <button onClick={e => { e.stopPropagation(); onClick() }} className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"><Icon name="eye" size={16} /></button>
+          {drawerEnabled && <button onClick={e => { e.stopPropagation(); onClick() }} className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"><Icon name="eye" size={16} /></button>}
+          {extraActions}
         </div>
       </td>
     </tr>

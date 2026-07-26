@@ -351,6 +351,27 @@ export interface OrdersQuery {
   sort?: string
 }
 
+export const mapApiOrder = (item: ApiOrder): Order => {
+  const shipping = item.shipping_amount == null ? null : Number(item.shipping_amount)
+  return {
+    internalId: item.order_id, orderNumber: item.order_number, shopifyName: item.shopify_name,
+    createdAt: item.created_date, createdDate: formatDate(item.created_date), customerName: item.customer_name || 'Guest customer',
+    amount: Number(item.total_amount), shippingAmount: Number.isFinite(shipping ?? NaN) ? shipping : null,
+    payment: inferPayment(item.payment_status, item.payment_type), orderTotal: Number(item.order_total ?? item.total_amount),
+    paidAmount: Number(item.paid_amount ?? 0), outstandingAmount: Number(item.outstanding_amount ?? 0), codCollectableAmount: Number(item.cod_collectable_amount ?? 0),
+    paymentType: item.payment_type, financialStatus: item.payment_status, risk: inferRisk(item.tags), fulfillmentStatus: item.fulfillment_status,
+    shopifyStatus: item.shopify_status, cancelledAt: item.cancelled_at, customerId: item.customer_id, customerOrdersCount: item.customer_orders_count,
+    phone: item.phone, email: item.email, shippingAddress: item.shipping_address,
+    products: item.products.map(product => ({ productName: product.product_name, sku: product.sku, quantity: product.quantity, weightGrams: product.weight_grams, price: Number(product.price) })),
+    tags: item.tags, firstActionAt: item.first_action_at, humanActionCount: item.human_action_count, callAttemptCount: item.call_attempt_count,
+    latestCallResult: item.latest_call_result, operationalStatus: item.operational_status, addressVerified: item.address_verified,
+    addressVerifiedAt: item.address_verified_at, addressVerifiedBy: item.address_verified_by, verifiedAddressSnapshot: item.verified_address_snapshot,
+    correctedAddress: item.corrected_address, courierSyncStatus: item.courier_sync_status, courierSyncError: item.courier_sync_error,
+    addressSyncResults: item.address_sync_results, packageDetails: item.package_details, selectedCourier: item.selected_courier, shipment: item.shipment,
+    externalTracking: item.external_tracking ? { provider: item.external_tracking.provider, awb: item.external_tracking.awb, status: item.external_tracking.status, trackingUrl: item.external_tracking.tracking_url } : null,
+  }
+}
+
 export async function getOrders(query: OrdersQuery = {}, signal?: AbortSignal): Promise<OrdersPage> {
   const params = new URLSearchParams({
     page: String(query.page ?? 1),
@@ -368,62 +389,7 @@ export async function getOrders(query: OrdersQuery = {}, signal?: AbortSignal): 
   }
 
   const data: { items: ApiOrder[]; page: number; page_size: number; total: number; total_pages: number; counts: OrderCounts } = await response.json()
-  const items = data.items.map((item): Order => {
-    const shipping = item.shipping_amount == null ? null : Number(item.shipping_amount)
-    return {
-      internalId: item.order_id,
-      orderNumber: item.order_number,
-      shopifyName: item.shopify_name,
-      createdAt: item.created_date,
-      createdDate: formatDate(item.created_date),
-      customerName: item.customer_name || 'Guest customer',
-      amount: Number(item.total_amount),
-      shippingAmount: Number.isFinite(shipping ?? NaN) ? shipping : null,
-      payment: inferPayment(item.payment_status, item.payment_type),
-      orderTotal: Number(item.order_total ?? item.total_amount),
-      paidAmount: Number(item.paid_amount ?? 0),
-      outstandingAmount: Number(item.outstanding_amount ?? 0),
-      codCollectableAmount: Number(item.cod_collectable_amount ?? 0),
-      paymentType: item.payment_type,
-      financialStatus: item.payment_status,
-      risk: inferRisk(item.tags),
-      fulfillmentStatus: item.fulfillment_status,
-      shopifyStatus: item.shopify_status,
-      cancelledAt: item.cancelled_at,
-      customerId: item.customer_id,
-      customerOrdersCount: item.customer_orders_count,
-      phone: item.phone,
-      email: item.email,
-      shippingAddress: item.shipping_address,
-      products: item.products.map(product => ({
-        productName: product.product_name,
-        sku: product.sku,
-        quantity: product.quantity,
-        weightGrams: product.weight_grams,
-        price: Number(product.price),
-      })),
-      tags: item.tags,
-      firstActionAt: item.first_action_at,
-      humanActionCount: item.human_action_count,
-      callAttemptCount: item.call_attempt_count,
-      latestCallResult: item.latest_call_result,
-      operationalStatus: item.operational_status,
-      addressVerified: item.address_verified,
-      addressVerifiedAt: item.address_verified_at,
-      addressVerifiedBy: item.address_verified_by,
-      verifiedAddressSnapshot: item.verified_address_snapshot,
-      correctedAddress: item.corrected_address,
-      courierSyncStatus: item.courier_sync_status,
-      courierSyncError: item.courier_sync_error,
-      addressSyncResults: item.address_sync_results,
-      packageDetails: item.package_details,
-      selectedCourier: item.selected_courier,
-      shipment: item.shipment,
-      externalTracking: item.external_tracking
-        ? { provider: item.external_tracking.provider, awb: item.external_tracking.awb, status: item.external_tracking.status, trackingUrl: item.external_tracking.tracking_url }
-        : null,
-    }
-  })
+  const items = data.items.map(mapApiOrder)
   return { items, page: data.page, pageSize: data.page_size, total: data.total, totalPages: data.total_pages, counts: data.counts }
 }
 
@@ -464,7 +430,38 @@ export interface OrdersReconciliationSummary {
   only_in_os: { order_number: string; reason: string; shiprocket_status: string | null }[]
   only_in_shiprocket: { order_number: string; reason: string; shiprocket_status: string | null }[]
   duplicate_mapping_anomalies: { order_number: string; os_records: number; shiprocket_records: number }[]
+  datasets: Record<ReconciliationFilter, ReconciliationRecord[]>
 }
+
+export type ReconciliationFilter = 'operations' | 'shiprocket_new' | 'both' | 'cleanup_pending' | 'missing_in_shiprocket'
+
+export interface ReconciliationRecord {
+  order: ApiOrder | null
+  order_id: string
+  order_number: string
+  created_date: string | null
+  customer_name: string | null
+  total_amount: number
+  payment_type: string
+  risk: string
+  status: string
+  reason: string | null
+  shiprocket_order_id: string | null
+  shiprocket_status: string | null
+  source: 'os' | 'shiprocket' | 'both'
+}
+
+export const reconciliationFilterLabel = (filter: ReconciliationFilter) => ({
+  operations: 'Operations Queue',
+  shiprocket_new: 'Shiprocket New',
+  both: 'Present in Both',
+  cleanup_pending: 'Cleanup Pending',
+  missing_in_shiprocket: 'Missing in Shiprocket',
+}[filter])
+
+export const selectReconciliationFilter = (_current: ReconciliationFilter | null, next: ReconciliationFilter): ReconciliationFilter => next
+export const clearReconciliationFilter = (): null => null
+export const reconciliationDataset = (summary: OrdersReconciliationSummary | null, filter: ReconciliationFilter | null): ReconciliationRecord[] => filter && summary ? summary.datasets[filter] || [] : []
 
 export async function getOrdersReconciliation(): Promise<OrdersReconciliationSummary> {
   const response = await apiFetch(`${apiBase}/api/v1/orders/reconciliation-summary`)
