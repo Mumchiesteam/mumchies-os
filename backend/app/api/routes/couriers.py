@@ -250,6 +250,9 @@ async def _build_provider_booking_request(order: ShopifyOrder, operations: dict[
         raise HTTPException(status_code=400, detail="Customer phone and delivery postcode are required.")
     if not pincode.isdigit() or len(pincode) != 6:
         raise HTTPException(status_code=400, detail="Delivery postcode must contain exactly 6 digits.")
+    client_name = str(address.get("customer_name") or address.get("name") or order.customer_name or "").strip()
+    if not client_name:
+        raise HTTPException(status_code=400, detail="Customer name is required for Shadowfax booking.")
     customer_address = {
         "address_line_1": address.get("address_line1") or address.get("address"),
         "city": address.get("city"),
@@ -304,6 +307,7 @@ async def _build_provider_booking_request(order: ShopifyOrder, operations: dict[
         "order_type": "warehouse",
         "order_details": {
             "client_order_id": order.order_number,
+            "client_name": client_name,
             "actual_weight": max(round(package.weight_kg * 1000), 1),
             "volumetric_weight": max(round((package.length_cm * package.breadth_cm * package.height_cm) / 5000 * 1000), 1),
             "product_value": product_value,
@@ -313,7 +317,7 @@ async def _build_provider_booking_request(order: ShopifyOrder, operations: dict[
             "order_service": "regular",
         },
         "customer_details": {
-            "name": str(address.get("customer_name") or address.get("name") or order.customer_name or "Customer"),
+            "name": client_name,
             "contact": phone,
             "address_line_1": customer_address["address_line_1"],
             "address_line_2": " ".join(filter(None, [address.get("address_line2"), address.get("landmark")])),

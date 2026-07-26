@@ -6,6 +6,7 @@ from io import BytesIO
 
 import pytest
 import httpx
+from fastapi import HTTPException
 from PIL import Image
 from pypdf import PdfReader
 from reportlab.pdfgen import canvas
@@ -74,7 +75,7 @@ async def test_shadowfax_booking_payload_uses_shopify_package_operator_and_wareh
     )
     assert payload["order_type"] == "warehouse"
     assert payload["order_details"] == {
-        "client_order_id": "323999", "actual_weight": 500, "volumetric_weight": 600,
+        "client_order_id": "323999", "client_name": "Customer Name", "actual_weight": 500, "volumetric_weight": 600,
         "product_value": 500.0, "payment_mode": "COD", "cod_amount": 500.0,
         "total_amount": 500.0, "order_service": "regular",
     }
@@ -90,6 +91,29 @@ async def test_shadowfax_booking_payload_uses_shopify_package_operator_and_wareh
     assert payload["pickup_details"] == expected_warehouse
     assert payload["rto_details"] == expected_warehouse
     assert payload["product_details"] == [{"sku_name": "Cookies", "sku_id": "COOKIE-1", "price": 250.0, "additional_details": {"quantity": 2}}]
+
+
+@pytest.mark.anyio
+async def test_shadowfax_booking_payload_rejects_missing_client_name(monkeypatch):
+    async def pickup_location(_self):
+        return {
+            "pickup_location": "Mumchies Warehouse", "name": "Mumchies Foods", "phone": "9876543210",
+            "address": "10 Factory Road", "city": "Bengaluru", "state": "Karnataka", "pin_code": "560077",
+        }
+
+    monkeypatch.setattr("app.api.routes.couriers.ShiprocketService.pickup_location_details", pickup_location)
+    order = ShopifyOrder(
+        order_id="gid-2", order_number="324000", created_date="2026-07-27T00:00:00Z",
+        phone="9999999999",
+        shipping_address=ShippingAddress(address="12 Main Road", city="Delhi", state="Delhi", pincode="110001"),
+        products=[OrderProduct(product_name="Cookies", quantity=1, price=Decimal("250"))],
+        total_amount=Decimal("250"), order_total=Decimal("250"), payment_type="prepaid", tags=[],
+    )
+
+    with pytest.raises(HTTPException, match="Customer name is required for Shadowfax booking"):
+        await _build_provider_booking_request(
+            order, {}, PackageDetailsPayload(weight_kg=0.5, length_cm=20, breadth_cm=15, height_cm=10)
+        )
 
 
 @pytest.mark.anyio
