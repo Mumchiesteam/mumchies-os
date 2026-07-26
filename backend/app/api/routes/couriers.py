@@ -379,7 +379,8 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
             OrderOperationsStore.save_selected_courier(order_id, selected)
             _activate_new_label_tracking(db, order_id, result)
             synchronized = await _sync_shopify_after_booking(db, order)
-            return {"provider": "delhivery", **result, "shipment": synchronized or result.get("shipment")}
+            cleanup = await _cleanup_unused_shiprocket_order(order_id, order.order_number)
+            return {"provider": "delhivery", **result, "shipment": synchronized or result.get("shipment"), "shiprocket_cleanup": cleanup, "warning": cleanup.get("error")}
 
         order_payload = _build_shiprocket_order_payload(order, operations, package)
         service = ShiprocketService()
@@ -416,6 +417,34 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
 async def provider_book_shipment(order_id: str, payload: BookingPayload, db: Session = Depends(get_db)) -> dict[str, object]:
     """Provider-neutral booking entrypoint; delegates to the existing guarded implementation."""
     return await shiprocket_book_shipment(order_id, payload, db)
+
+
+async def _cleanup_unused_shiprocket_order(order_id: str, channel_order_id: str) -> dict[str, object]:
+    try:
+        service = ShiprocketService()
+        upstream = await service.find_existing_order(channel_order_id)
+        if not upstream:
+            result = {"status": "not_applicable"}
+        else:
+            _shipment_id, awb = service._upstream_shipment(upstream)
+            status = str(upstream.get("status") or "").strip().casefold()
+            if awb or status not in {"", "new", "open", "processing"}:
+                result = {"status": "protected", "awb": awb, "shiprocket_status": status, "error": "The Shiprocket order was not cancelled because it is no longer safely unbooked."}
+            else:
+                await service.cancel_unbooked_order(upstream)
+                result = {"status": "cancelled", "cancel_on_channel": False, "shiprocket_order_id": str(upstream.get("id"))}
+    except (ShiprocketAPIError, ShiprocketConfigurationError) as error:
+        result = {"status": "failed", "cancel_on_channel": False, "error": str(error)}
+    OrderOperationsStore.record_timeline_event(order_id, "shiprocket_cleanup", operator="Mumchies OS", details=result)
+    return result
+
+
+@router.post("/shiprocket/orders/{order_id}/cleanup-unused")
+async def retry_unused_shiprocket_cleanup(order_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
+    shipment = get_shipment(db, order_id)
+    if shipment is None or shipment.provider != "delhivery" or not shipment.awb or shipment.booking_status != "booked":
+        raise HTTPException(status_code=409, detail="Shiprocket cleanup is available only after a successful direct Delhivery booking with a confirmed AWB.")
+    return await _cleanup_unused_shiprocket_order(order_id, shipment.provider_order_id or order_id)
 
 
 @router.post("/orders/{order_id}/couriers/select")

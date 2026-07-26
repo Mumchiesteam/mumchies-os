@@ -132,7 +132,7 @@ async def test_list_orders_merge_preserves_shipped_status_despite_call_logs(monk
         }},
     )
 
-    orders = await list_orders()
+    orders = (await list_orders()).items
     assert orders[0].operational_status == "Shipped"
 
 

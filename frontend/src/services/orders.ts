@@ -249,6 +249,10 @@ interface ApiOrder {
 
 export interface OrderOperations {
   call_logs: { result: string; timestamp: string; operator: string; comment: string | null }[]
+  address_confirmation_comments: { comment: string; timestamp: string; operator: string }[]
+  human_actions?: { action: string; timestamp: string; operator: string | null }[]
+  timeline_events?: { action: string; timestamp: string; operator: string | null; details: Record<string, unknown> }[]
+  cancellation?: Record<string, unknown> | null
   corrected_address: {
     customer_name: string | null
     phone: string | null
@@ -310,15 +314,42 @@ const inferPayment = (paymentStatus: string | null, paymentType?: string): 'COD'
   return normalized.includes('pending') || normalized.includes('cod') || normalized.includes('partially') ? 'COD' : 'Prepaid'
 }
 
-export async function getOrders(signal?: AbortSignal): Promise<Order[]> {
-  const response = await apiFetch(`${apiBase}/api/v1/orders`, { signal })
+export interface OrdersPage {
+  items: Order[]
+  page: number
+  pageSize: number
+  total: number
+  totalPages: number
+}
+
+export interface OrdersQuery {
+  page?: number
+  pageSize?: 20 | 50 | 100
+  queue?: 'fresh' | 'previous' | 'all' | 'labels_to_print' | 'awaiting_confirmation' | 'printed_today'
+  search?: string
+  payment?: string
+  risk?: string
+  sort?: string
+}
+
+export async function getOrders(query: OrdersQuery = {}, signal?: AbortSignal): Promise<OrdersPage> {
+  const params = new URLSearchParams({
+    page: String(query.page ?? 1),
+    page_size: String(query.pageSize ?? 20),
+    queue: query.queue ?? 'all',
+    search: query.search ?? '',
+    payment: query.payment ?? 'all',
+    risk: query.risk ?? 'all',
+    sort: query.sort ?? 'newest',
+  })
+  const response = await apiFetch(`${apiBase}/api/v1/orders?${params}`, { signal })
   if (!response.ok) {
     const body = await response.json().catch(() => null)
     throw new Error(body?.detail ?? 'Could not load Shopify orders.')
   }
 
-  const data: ApiOrder[] = await response.json()
-  return data.map((item): Order => {
+  const data: { items: ApiOrder[]; page: number; page_size: number; total: number; total_pages: number } = await response.json()
+  const items = data.items.map((item): Order => {
     const shipping = item.shipping_amount == null ? null : Number(item.shipping_amount)
     return {
       internalId: item.order_id,
@@ -374,6 +405,7 @@ export async function getOrders(signal?: AbortSignal): Promise<Order[]> {
         : null,
     }
   })
+  return { items, page: data.page, pageSize: data.page_size, total: data.total, totalPages: data.total_pages }
 }
 
 export const formatMoney = toMoney
@@ -422,6 +454,39 @@ export async function addOrderCallLog(orderId: string, payload: { result: string
     throw new Error('Could not save call log.')
   }
   return response.json()
+}
+
+export async function addAddressConfirmationComment(orderId: string, comment: string): Promise<OrderOperations> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/address-confirmation-comments`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ comment, operator: 'Amit Kumar' }) })
+  if (!response.ok) throw new Error('Could not save address confirmation comment.')
+  return response.json()
+}
+
+export async function saveAndVerifyOrderAddress(orderId: string, payload: Record<string, string | null>): Promise<{ operations: OrderOperations; validation: { status: string; blockers: string[]; warnings: string[]; shiprocket_message: string }; verified: boolean }> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/address/save-verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, operator: 'Amit Kumar' }) })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail || 'Could not save and verify address.')
+  return body
+}
+
+export type CancellationPreflight = { allowed: boolean; blocked_reason: string | null; shopify: { exists: boolean; cancelled: boolean; fulfillment_status: string | null }; shiprocket: { exists: boolean; order_id: string | null; status: string | null; awb: string | null; lookup_error: string | null }; shipment: { exists: boolean; provider: string | null; awb: string | null; status: string | null } }
+export async function getCancellationPreflight(orderId: string): Promise<CancellationPreflight> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/cancellation/preflight`)
+  if (!response.ok) throw new Error('Could not check cancellation safety.')
+  return response.json()
+}
+export async function cancelOrder(orderId: string, comment: string): Promise<{ results: Record<string, { status: string; error?: string }>; operations: OrderOperations }> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operator: 'Amit Kumar', comment, cancel_shopify: true, cancel_shiprocket: true }) })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail || 'Could not cancel order.')
+  return body
+}
+
+export async function retryShiprocketCleanup(orderId: string): Promise<{ status: string; error?: string }> {
+  const response = await apiFetch(`${apiBase}/api/v1/couriers/shiprocket/orders/${orderId}/cleanup-unused`, { method: 'POST' })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail || 'Could not retry Shiprocket cleanup.')
+  return body
 }
 
 export async function verifyOrderAddress(orderId: string, payload: { operator: string; verified_at?: string; address_snapshot: OrderOperations['verified_address_snapshot'] }): Promise<OrderOperations> {
@@ -545,7 +610,7 @@ export async function bookShiprocketShipment(orderId: string, payload: {
   length_cm?: number | null
   breadth_cm?: number | null
   height_cm?: number | null
-}): Promise<{ provider: string; shipment?: Order['shipment']; existing?: boolean }> {
+}): Promise<{ provider: string; shipment?: Order['shipment']; existing?: boolean; warning?: string; shiprocket_cleanup?: { status: string; error?: string } }> {
   const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/book`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

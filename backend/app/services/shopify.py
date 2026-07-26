@@ -219,6 +219,29 @@ class ShopifyService:
             "shipping_address": order.get("shipping_address") or {},
         }
 
+    async def get_order_cancellation_context(self, order_id: str) -> dict[str, Any]:
+        query = """query CancellationContext($id: ID!) { order(id: $id) { id name cancelledAt displayFulfillmentStatus } }"""
+        data = await self.graphql(query, {"id": f"gid://shopify/Order/{order_id}"})
+        order = data.get("order")
+        if not isinstance(order, dict):
+            return {"exists": False, "cancelled": False, "fulfillment_status": None}
+        return {"exists": True, "cancelled": bool(order.get("cancelledAt")), "fulfillment_status": order.get("displayFulfillmentStatus")}
+
+    async def cancel_order(self, order_id: str) -> dict[str, Any]:
+        mutation = """mutation CancelOrder($orderId: ID!, $refundMethod: OrderCancelRefundMethodInput!) {
+          orderCancel(orderId: $orderId, reason: CUSTOMER, refundMethod: $refundMethod, restock: false, notifyCustomer: false) {
+            job { id done }
+            orderCancelUserErrors { field message }
+          }
+        }"""
+        data = await self.graphql(mutation, {"orderId": f"gid://shopify/Order/{order_id}", "refundMethod": {"originalPaymentMethodsRefund": False}})
+        payload = data.get("orderCancel") or {}
+        errors = payload.get("orderCancelUserErrors") or []
+        if errors:
+            raise ShopifySyncError(str(errors[0].get("message") or "Shopify rejected order cancellation."), user_errors=errors)
+        job = payload.get("job") or {}
+        return {"status": "cancelled" if job.get("done") else "cancellation_requested", "job_id": job.get("id")}
+
     @staticmethod
     def _shopify_address(address: dict[str, Any]) -> dict[str, Any]:
         name = str(address.get("customer_name") or address.get("name") or "").strip()

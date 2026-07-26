@@ -404,6 +404,22 @@ class ShiprocketService:
             return None
         return next((row for row in rows if str(row.get("channel_order_id") or "") == channel_order_id), None)
 
+    async def cancel_unbooked_order(self, order: dict[str, Any]) -> dict[str, Any]:
+        order_id = order.get("id")
+        if order_id is None:
+            raise ShiprocketAPIError("Shiprocket did not return an order identifier.", safe_details={"operation": "cancel_order"})
+        shipment_id, awb = self._upstream_shipment(order)
+        status = str(order.get("status") or "").strip().casefold()
+        if awb or status in {"shipped", "delivered", "in transit", "out for delivery", "pickup scheduled", "ready to ship"}:
+            raise ShiprocketAPIError("A booked or shipped Shiprocket order requires a separate explicit shipment-cancellation workflow.", safe_details={"operation": "cancel_order", "protected": True, "awb": awb, "shipment_id": shipment_id})
+        response = await self._post(
+            "https://apiv2.shiprocket.in/v1/external/orders/cancel",
+            {"ids": [int(order_id)], "cancel_on_channel": False},
+        )
+        if response.status_code >= 400:
+            raise self._api_error(response, "cancel_order")
+        return response.json()
+
     @staticmethod
     def _upstream_shipment(order: dict[str, Any]) -> tuple[str | None, str | None]:
         shipments = order.get("shipments") or []

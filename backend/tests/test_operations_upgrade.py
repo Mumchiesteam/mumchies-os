@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.api.routes.couriers import PackageDetailsPayload, _build_delhivery_payload, _build_shiprocket_order_payload
 from app.api.routes import orders as orders_routes
+from app.api.routes.labels import label_queue
 from app.api.routes.orders import AddressValidationPayload, ExportPayload, export_orders, validate_order_address
 from app.db.base import Base
 from app.models.shiprocket import ShiprocketShipment
@@ -142,6 +143,21 @@ def test_legacy_booked_shipment_remains_untracked(db):
     assert shipment.label_print_status is None
 
 
+@pytest.mark.anyio
+async def test_printed_today_uses_current_india_date(db):
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    db.add_all([
+        ShiprocketShipment(order_id="today", provider="delhivery", awb="T", booking_status="booked", label_print_status="printed", label_last_printed_at=now, label_last_printed_by="Operator"),
+        ShiprocketShipment(order_id="old", provider="delhivery", awb="O", booking_status="booked", label_print_status="printed", label_last_printed_at=now - timedelta(days=2), label_last_printed_by="Operator"),
+    ])
+    db.commit()
+    result = await label_queue(db)
+    assert [item["order_id"] for item in result["printed_today"]] == ["today"]
+    assert result["printed_today"][0]["label_last_printed_by"] == "Operator"
+
+
 async def response_bytes(response) -> bytes:
     return b"".join([chunk async for chunk in response.body_iterator])
 
@@ -152,7 +168,7 @@ async def test_current_view_export_respects_selected_ids(db, monkeypatch):
     second = ShopifyService._to_order({**raw_order("paid", "0"), "id": 2, "name": "#2"}).model_copy(update={"order_id": "2", "order_number": "2"})
     async def fake_orders(_db):
         return [first, second]
-    monkeypatch.setattr(orders_routes, "list_orders", fake_orders)
+    monkeypatch.setattr(orders_routes, "_load_orders", fake_orders)
     workbook = load_workbook(BytesIO(await response_bytes(await export_orders(ExportPayload(mode="current", order_ids=["1"]), db))))
     assert workbook["Current View"].max_row == 2
     assert workbook["Current View"]["A2"].value == "321607"
@@ -163,7 +179,7 @@ async def test_full_export_has_required_tabs_and_payment_columns(db, monkeypatch
     order = ShopifyService._to_order(raw_order()).model_copy(update={"order_id": "1"})
     async def fake_orders(_db):
         return [order]
-    monkeypatch.setattr(orders_routes, "list_orders", fake_orders)
+    monkeypatch.setattr(orders_routes, "_load_orders", fake_orders)
     workbook = load_workbook(BytesIO(await response_bytes(await export_orders(ExportPayload(mode="full"), db))))
     required = {"Summary", "All Orders", "Fresh Orders", "Previous Pending", "Pending Booking", "COD", "Partial COD", "Prepaid", "High Risk", "Repeat Customers"}
     assert required.issubset(workbook.sheetnames)

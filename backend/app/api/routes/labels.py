@@ -1,4 +1,6 @@
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -31,10 +33,11 @@ class ReprintPayload(BaseModel):
 @router.get("/queue")
 async def label_queue(db: Session = Depends(get_db)) -> dict[str, object]:
     shipments = db.scalars(select(ShiprocketShipment).where(ShiprocketShipment.label_print_status.in_(["not_printed", "awaiting_confirmation", "printed"]))).all()
+    local_today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
     return {
         "labels_to_print": [snapshot(value) for value in shipments if value.label_print_status == "not_printed" and value.booking_status == "booked" and value.awb],
         "awaiting_confirmation": [snapshot(value) for value in shipments if value.label_print_status == "awaiting_confirmation"],
-        "printed_today": [snapshot(value) for value in shipments if value.label_print_status == "printed" and value.label_last_printed_at],
+        "printed_today": [snapshot(value) for value in shipments if value.label_print_status == "printed" and value.label_last_printed_at and (value.label_last_printed_at if value.label_last_printed_at.tzinfo else value.label_last_printed_at.replace(tzinfo=ZoneInfo("UTC"))).astimezone(ZoneInfo("Asia/Kolkata")).date() == local_today],
     }
 
 

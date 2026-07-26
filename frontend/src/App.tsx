@@ -2,12 +2,15 @@ import type { ReactNode } from 'react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   addOrderCallLog,
+  addAddressConfirmationComment,
+  cancelOrder,
   apiBase,
   bookShiprocketShipment,
   checkShiprocketCouriers,
   formatMoney,
   getBookingEligibility,
   getOrderOperations,
+  getCancellationPreflight,
   getOrders,
   createLabelBatch,
   confirmLabelBatch,
@@ -16,22 +19,24 @@ import {
   getActiveLabelBatches,
   labelBatchPdfUrl,
   requestLabelReprint,
+  retryShiprocketCleanup,
   refreshShiprocketShipment,
-  saveOrderAddress,
+  saveAndVerifyOrderAddress,
   saveOrderPackage,
   selectShiprocketCourier,
   shippingLabelUrl,
   syncShopifyFulfillment,
-  verifyOrderAddress,
-  validateAddress,
   type Order,
   type OrderOperations,
   type RiskLevel,
+  type CancellationPreflight,
 } from './services/orders'
 import { logout } from './services/auth'
+import { formatDateTime } from './utils/time'
+import { orderContactSectionTitle } from './utils/operations'
 
 type IconName = 'grid' | 'bag' | 'alert' | 'users' | 'chart' | 'settings' | 'search' | 'bell' | 'filter' | 'chevron' | 'more' | 'eye' | 'truck' | 'calendar' | 'close' | 'copy' | 'phone' | 'external' | 'repeat' | 'tag' | 'edit' | 'call'
-type TabKey = 'fresh' | 'previous' | 'all'
+type TabKey = 'fresh' | 'previous' | 'all' | 'labels_to_print' | 'awaiting_confirmation' | 'printed_today'
 type CallResult = 'No Answer' | 'Busy' | 'Switched Off' | 'Callback Requested' | 'Confirmed' | 'Cancelled' | 'Wrong Number'
 type OperationalStatus = 'Call Pending' | 'Callback Required' | 'Address Verification Pending' | 'Ready for Booking' | 'Booked' | 'Shipped' | 'NDR' | 'Delivered' | 'Cancelled' | 'Needs Review'
 type CourierQuote = {
@@ -56,6 +61,11 @@ const tabItems: { key: TabKey; label: string }[] = [
   { key: 'fresh', label: 'Fresh Orders' },
   { key: 'previous', label: 'Previous Pending Orders' },
   { key: 'all', label: 'All Orders' },
+]
+const dispatchItems: { key: TabKey; label: string }[] = [
+  { key: 'labels_to_print', label: 'Labels to Print' },
+  { key: 'awaiting_confirmation', label: 'Awaiting Confirmation' },
+  { key: 'printed_today', label: 'Printed Today' },
 ]
 const callResults: CallResult[] = ['No Answer', 'Busy', 'Switched Off', 'Callback Requested', 'Confirmed', 'Cancelled', 'Wrong Number']
 const riskStyle: Record<RiskLevel, string> = { High: 'bg-rose-50 text-rose-700 ring-rose-100', Medium: 'bg-amber-50 text-amber-700 ring-amber-100', Low: 'bg-emerald-50 text-emerald-700 ring-emerald-100' }
@@ -96,7 +106,6 @@ const formatOrderDateTime = (value: string) => {
     time: new Intl.DateTimeFormat('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' }).format(date),
   }
 }
-const formatDateTime = (value: string) => new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
 const isCancelled = (order: Order) => Boolean(order.cancelledAt || order.shopifyStatus === 'cancelled' || (order.payment === 'COD' && order.tags.join(' ').toLowerCase().includes('cancel')))
 const isShipped = (order: Order) => {
   const status = `${order.fulfillmentStatus || ''} ${order.shopifyStatus || ''} ${order.tags.join(' ')} ${order.externalTracking?.status || ''}`.toLowerCase()
@@ -136,12 +145,19 @@ function App() {
   const [payment, setPayment] = useState('All payments')
   const [risk, setRisk] = useState('All risks')
   const [sort, setSort] = useState('Newest first')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState<20 | 50 | 100>(20)
+  const [total, setTotal] = useState(0)
+  const [totalPages, setTotalPages] = useState(1)
   const [cardFilter, setCardFilter] = useState<'pending' | 'cod' | 'prepaid' | 'risk' | 'repeat' | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const [notice, setNotice] = useState('')
   const [repeatIds, setRepeatIds] = useState<Set<string>>(new Set())
   const [callResult, setCallResult] = useState<CallResult>('No Answer')
   const [callComment, setCallComment] = useState('')
+  const [cancellationPreflight, setCancellationPreflight] = useState<CancellationPreflight | null>(null)
+  const [cancellationLoading, setCancellationLoading] = useState(false)
+  const [cancellationResult, setCancellationResult] = useState<Record<string, { status: string; error?: string }> | null>(null)
   const [bookingEligibility, setBookingEligibility] = useState<{
     eligible: boolean
     missing_requirements: string[]
@@ -171,9 +187,6 @@ function App() {
     state: '',
     pincode: '',
   })
-  const [updateCustomerAddress, setUpdateCustomerAddress] = useState(true)
-  const [oneTimeDeliveryAddress, setOneTimeDeliveryAddress] = useState(false)
-  const [useAsDefaultAddress, setUseAsDefaultAddress] = useState(false)
   const [labelQueue, setLabelQueue] = useState<{ labels_to_print: NonNullable<Order['shipment']>[]; awaiting_confirmation: NonNullable<Order['shipment']>[]; printed_today: NonNullable<Order['shipment']>[] }>({ labels_to_print: [], awaiting_confirmation: [], printed_today: [] })
   const [showLabels, setShowLabels] = useState(false)
   const [labelSearch, setLabelSearch] = useState('')
@@ -185,12 +198,24 @@ function App() {
 
   const loadOrders = useCallback(async (signal?: AbortSignal) => {
     try {
+      setLoading(true)
       setError('')
-      const data = await getOrders(signal)
-      setOrders(data)
+      const data = await getOrders({
+        page,
+        pageSize,
+        queue,
+        search,
+        payment: payment === 'All payments' ? 'all' : payment.toLowerCase(),
+        risk: risk === 'All risks' ? 'all' : risk.toLowerCase(),
+        sort: { 'Newest first': 'newest', 'Oldest first': 'oldest', 'COD first': 'cod_first', 'Prepaid first': 'prepaid_first', 'Value high to low': 'value_desc', 'Value low to high': 'value_asc' }[sort] || 'newest',
+      }, signal)
+      setOrders(data.items)
+      setTotal(data.total)
+      setTotalPages(data.totalPages)
+      if (data.page !== page) setPage(data.page)
       const counts = new Map<string, number>()
       const repeat = new Set<string>()
-      for (const order of data) {
+      for (const order of data.items) {
         if (order.customerId) {
           const next = (counts.get(order.customerId) || 0) + 1
           counts.set(order.customerId, next)
@@ -198,13 +223,13 @@ function App() {
         }
       }
       setRepeatIds(repeat)
-      setSelectedOrderId(current => current && data.some(order => order.internalId === current) ? current : null)
+      setSelectedOrderId(current => current && data.items.some(order => order.internalId === current) ? current : null)
     } catch (err) {
       if ((err as Error).name !== 'AbortError') setError((err as Error).message)
     } finally {
       if (!signal?.aborted) setLoading(false)
     }
-  }, [])
+  }, [page, pageSize, payment, queue, risk, search, sort])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -265,9 +290,6 @@ function App() {
         state: ops.corrected_address?.state ?? selectedOrder.shippingAddress?.state ?? '',
         pincode: ops.corrected_address?.pincode ?? selectedOrder.shippingAddress?.pincode ?? '',
       })
-      setUpdateCustomerAddress(true)
-      setOneTimeDeliveryAddress(false)
-      setUseAsDefaultAddress(false)
       setSelectedCourierId(ops.selected_courier?.courier_id ?? null)
       const eligibility = await getBookingEligibility(selectedOrder.internalId)
       if (!active) return
@@ -287,48 +309,25 @@ function App() {
     setSelectedOrderId(orderId)
   }
 
-  const matchesSearch = useCallback((order: Order) => {
-    const text = [
-      order.orderNumber,
-      order.customerName,
-      order.phone,
-      order.products.map(product => [product.productName, product.sku].filter(Boolean).join(' ')).join(' '),
-    ].join(' ').toLowerCase()
-    return text.includes(search.toLowerCase())
-  }, [search])
-
-  const queuePredicate = useCallback((order: Order) => {
-    const active = !isCancelled(order) && !isShipped(order) && !isDelivered(order)
-    if (queue === 'fresh') return active && !order.firstActionAt
-    if (queue === 'previous') return active && Boolean(order.firstActionAt) && !['Ready for Booking', 'Booked'].includes(listStatus(order))
-    return true
-  }, [queue])
-
   const filtered = useMemo(() => {
-    let list = orders.filter(order => matchesSearch(order) && (payment === 'All payments' || order.payment === payment) && (risk === 'All risks' || order.risk === risk) && queuePredicate(order))
+    let list = orders
     if (cardFilter === 'pending') list = list.filter(order => listStatus(order) === 'Ready for Booking' && !order.shipment?.awb)
     if (cardFilter === 'cod') list = list.filter(order => order.paymentType === 'cod' || order.paymentType === 'partial_cod')
     if (cardFilter === 'prepaid') list = list.filter(order => order.paymentType === 'prepaid')
     if (cardFilter === 'risk') list = list.filter(order => order.risk === 'High' && !isCancelled(order))
     if (cardFilter === 'repeat') list = list.filter(order => repeatIds.has(order.internalId))
-    list = [...list].sort((a, b) => {
-      if (queue === 'previous') return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-      if (sort === 'Oldest first') return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-      if (sort === 'COD first') return Number(b.payment === 'COD') - Number(a.payment === 'COD') || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-      if (sort === 'Prepaid first') return Number(b.payment === 'Prepaid') - Number(a.payment === 'Prepaid') || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-      if (sort === 'Value high to low') return b.amount - a.amount
-      if (sort === 'Value low to high') return a.amount - b.amount
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    })
     return list
-  }, [orders, matchesSearch, payment, risk, queue, queuePredicate, sort, cardFilter, repeatIds])
-  const displayedOrders = useMemo(() => filtered.slice(0, 250), [filtered])
+  }, [orders, cardFilter, repeatIds])
+  const displayedOrders = orders
 
   const summaryCounts = useMemo(() => ({
     fresh: queueOrders.fresh.length,
     previous: queueOrders.previous.length,
-    all: queueOrders.all.length,
-  }), [queueOrders])
+    all: queue === 'all' ? total : queueOrders.all.length,
+    labels_to_print: labelQueue.labels_to_print.length,
+    awaiting_confirmation: labelQueue.awaiting_confirmation.length,
+    printed_today: labelQueue.printed_today.length,
+  }), [labelQueue, queue, queueOrders, total])
 
   const cards = useMemo(() => {
     const pending = orders.filter(order => listStatus(order) === 'Ready for Booking' && !order.shipment?.awb)
@@ -352,7 +351,7 @@ function App() {
   const courierSyncMessage = operations?.courier_sync_error || ''
   const status = selectedOrder ? statusFromOrder(selectedOrder) : 'Call Pending'
   const isRepeat = selectedOrder ? repeatIds.has(selectedOrder.internalId) : false
-  const visibleCount = filtered.length
+  const visibleCount = total
   const addressVerifiedLabel = operations?.address_verified
     ? `Address Verified by ${operations.address_verified_by || 'operator'} on ${operations.address_verified_at ? formatDateTime(operations.address_verified_at) : 'unknown time'}`
     : 'Address Verification Pending'
@@ -364,6 +363,12 @@ function App() {
 
   const saveCallLog = async () => {
     if (!selectedOrder) return
+    if (callResult === 'Cancelled') {
+      try {
+        setCancellationPreflight(await getCancellationPreflight(selectedOrder.internalId))
+      } catch (err) { setNotice((err as Error).message) }
+      return
+    }
     try {
       const updated = await addOrderCallLog(selectedOrder.internalId, {
         result: callResult,
@@ -384,52 +389,28 @@ function App() {
     }
   }
 
-  const saveAddress = async () => {
+  const saveAddressConfirmation = async () => {
     if (!selectedOrder) return
     try {
-      const updated = await saveOrderAddress(selectedOrder.internalId, {
-        ...addressDraft,
-        courier_sync_status: operations?.courier_sync_status || 'Not synchronized',
-        courier_sync_error: operations?.courier_sync_error || null,
-        update_customer_address: updateCustomerAddress,
-        one_time_delivery_address: oneTimeDeliveryAddress,
-        use_as_default_address: useAsDefaultAddress,
-      })
+      const updated = await addAddressConfirmationComment(selectedOrder.internalId, callComment)
       setOperations(updated)
-      // Saving a local address correction must never re-enable booking for an order that
-      // already has an existing shipment/fulfilment - see Part 2/5 of the shipment-state fix.
-      setOrders(prev => prev.map(order => order.internalId === selectedOrder.internalId ? { ...order, addressVerified: updated.address_verified, addressVerifiedAt: updated.address_verified_at, addressVerifiedBy: updated.address_verified_by, verifiedAddressSnapshot: updated.verified_address_snapshot, correctedAddress: updated.corrected_address, courierSyncStatus: updated.courier_sync_status, courierSyncError: updated.courier_sync_error, addressSyncResults: updated.address_sync_results, operationalStatus: (hasShipmentEvidence(order) ? order.operationalStatus : order.payment === 'Prepaid' ? 'Address Verification Pending' : order.operationalStatus) as OperationalStatus | null } : order))
-      await refreshEligibility(selectedOrder.internalId)
-      setNotice('Address correction saved')
-    } catch (err) {
-      setNotice((err as Error).message)
-    }
+      setCallComment('')
+      setNotice('Address confirmation comment saved')
+    } catch (err) { setNotice((err as Error).message) }
   }
 
-  const verifyAddress = async () => {
+  const saveAndVerifyAddress = async () => {
     if (!selectedOrder) return
     try {
-      const updated = await verifyOrderAddress(selectedOrder.internalId, {
-      operator: 'Amit Kumar',
-      address_snapshot: {
-        customer_name: addressDraft.customer_name || null,
-        phone: addressDraft.phone || null,
-        address_line1: addressDraft.address_line1 || null,
-        address_line2: addressDraft.address_line2 || null,
-        landmark: addressDraft.landmark || null,
-        city: addressDraft.city || null,
-        state: addressDraft.state || null,
-        pincode: addressDraft.pincode || null,
-      },
-      })
-      setOperations(updated)
-      setOrders(prev => prev.map(order => order.internalId === selectedOrder.internalId ? { ...order, addressVerified: updated.address_verified, addressVerifiedAt: updated.address_verified_at, addressVerifiedBy: updated.address_verified_by, verifiedAddressSnapshot: updated.verified_address_snapshot, correctedAddress: updated.corrected_address, courierSyncStatus: updated.courier_sync_status, courierSyncError: updated.courier_sync_error, operationalStatus: (hasShipmentEvidence(order) ? order.operationalStatus : 'Ready for Booking') as OperationalStatus | null } : order))
+      const result = await saveAndVerifyOrderAddress(selectedOrder.internalId, addressDraft)
+      setOperations(result.operations)
+      setOrders(previous => previous.map(order => order.internalId === selectedOrder.internalId ? { ...order, correctedAddress: result.operations.corrected_address, addressVerified: result.operations.address_verified, addressVerifiedAt: result.operations.address_verified_at, addressVerifiedBy: result.operations.address_verified_by, verifiedAddressSnapshot: result.operations.verified_address_snapshot, addressSyncResults: result.operations.address_sync_results } : order))
       await refreshEligibility(selectedOrder.internalId)
-      setNotice('Address verified')
-    } catch (err) {
-      setNotice((err as Error).message)
-    }
+      setNotice(result.verified ? (result.validation.warnings.length ? `Address verified with advisories: ${result.validation.warnings.join('; ')}` : 'Address saved and verified') : `Address saved but not verified: ${result.validation.blockers.join('; ')}`)
+      return result
+    } catch (err) { setNotice((err as Error).message) }
   }
+
 
   const checkCouriers = async (packageNumbers: { weight_kg: number; length_cm: number | null; breadth_cm: number | null; height_cm: number | null }) => {
     if (!selectedOrder || !Number.isFinite(packageNumbers.weight_kg) || packageNumbers.weight_kg <= 0) return
@@ -489,7 +470,8 @@ function App() {
         ? { ...order, shipment: result.shipment ?? order.shipment, operationalStatus: 'Booked' }
         : order))
       setOperations(await getOrderOperations(selectedOrder.internalId))
-      setNotice(result.existing ? 'Existing shipment loaded' : 'Shipment booked')
+      if (result.warning) setCourierError(`Shiprocket cleanup failed: ${result.warning}`)
+      setNotice(result.warning ? 'Delhivery shipment booked; Shiprocket cleanup needs attention' : result.existing ? 'Existing shipment loaded' : 'Shipment booked')
     } catch (err) {
       setCourierError((err as Error).message)
     } finally {
@@ -582,22 +564,22 @@ function App() {
           </div>
         </div>
 
-        <section className="mb-5 flex flex-wrap gap-2">
-          {tabItems.map(tab => (
-            <button key={tab.key} onClick={() => setQueue(tab.key)} className={`rounded-full px-4 py-2 text-sm font-medium ${queue === tab.key ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'}`}>
-              {tab.label}
-              <span className={`ml-2 rounded-full px-2 py-0.5 text-[11px] font-bold ${queue === tab.key ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-500'}`}>{summaryCounts[tab.key]}</span>
-            </button>
-          ))}
-          <button onClick={() => { refreshLabels(); void getActiveLabelBatches().then(batches => { if (batches[0]) { setActiveBatch(batches[0]); setPrintedLabels(new Set(batches[0].order_ids)) } }); setShowLabels(true) }} className="rounded-full bg-white px-4 py-2 text-sm font-medium text-slate-600 ring-1 ring-slate-200">Labels to Print <span className="ml-2 font-bold">{labelQueue.labels_to_print.length}</span></button>
-          <span className="rounded-full bg-white px-4 py-2 text-sm text-slate-500 ring-1 ring-slate-200">Awaiting Confirmation {labelQueue.awaiting_confirmation.length}</span>
-          <span className="rounded-full bg-white px-4 py-2 text-sm text-slate-500 ring-1 ring-slate-200">Printed Today {labelQueue.printed_today.length}</span>
+        <section className="mb-5 flex flex-wrap items-end gap-5">
+          {[{ label: 'ORDERS', items: tabItems }, { label: 'DISPATCH', items: dispatchItems }].map(group => <div key={group.label}>
+            <p className="mb-2 text-[10px] font-bold tracking-[.14em] text-slate-400">{group.label}</p>
+            <div className="flex flex-wrap gap-2">{group.items.map(tab => (
+              <button key={tab.key} onClick={() => { setQueue(tab.key); setPage(1); setCardFilter(null); if (tab.key === 'labels_to_print') { refreshLabels(); void getActiveLabelBatches().then(batches => { if (batches[0]) { setActiveBatch(batches[0]); setPrintedLabels(new Set(batches[0].order_ids)) } }); setShowLabels(true) } }} className={`rounded-full px-4 py-2 text-sm font-medium ${queue === tab.key ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'}`}>
+                {tab.label}
+                <span className={`ml-2 rounded-full px-2 py-0.5 text-[11px] font-bold ${queue === tab.key ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-500'}`}>{summaryCounts[tab.key]}</span>
+              </button>
+            ))}</div>
+          </div>)}
         </section>
 
         <section className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           {cards.map(card => {
             const active = card.key === 'new' ? queue === 'fresh' && !cardFilter : cardFilter === card.key
-            return <button key={card.key} onClick={() => { if (card.key === 'new') { setQueue('fresh'); setCardFilter(null) } else { setQueue('all'); setCardFilter(card.key as typeof cardFilter) } }} className={`rounded-xl border bg-white p-3 text-left shadow-sm transition ${active ? 'border-orange-300 ring-2 ring-orange-100' : 'border-slate-200 hover:border-slate-300'}`}>
+            return <button key={card.key} onClick={() => { setPage(1); if (card.key === 'new') { setQueue('fresh'); setCardFilter(null) } else { setQueue('all'); setCardFilter(card.key as typeof cardFilter) } }} className={`rounded-xl border bg-white p-3 text-left shadow-sm transition ${active ? 'border-orange-300 ring-2 ring-orange-100' : 'border-slate-200 hover:border-slate-300'}`}>
               <p className="text-xs font-semibold text-slate-500">{card.label}</p>
               <p className="mt-1 text-xl font-bold text-slate-900">{card.value}</p>
               <p className="mt-1 truncate text-[11px] text-slate-400">{card.detail}</p>
@@ -609,17 +591,17 @@ function App() {
           <div className="flex flex-col gap-4 border-b border-slate-200 p-4 xl:flex-row xl:items-center xl:justify-between">
             <div className="relative min-w-0 flex-1 xl:max-w-sm">
               <span className="absolute left-3 top-3 text-slate-400"><Icon name="search" size={17} /></span>
-              <input ref={searchRef} value={search} onChange={e => setSearch(e.target.value)} className="w-full rounded-lg border border-slate-200 py-2.5 pl-9 pr-9 text-sm outline-none placeholder:text-slate-400 focus:border-orange-300 focus:ring-2 focus:ring-orange-100" placeholder="Search by order or customer..." />
-              {search && <button aria-label="Clear search" onClick={() => { setSearch(''); searchRef.current?.focus() }} className="absolute right-3 top-2.5 text-lg text-slate-400 hover:text-slate-700">×</button>}
+              <input ref={searchRef} value={search} onChange={e => { setSearch(e.target.value); setPage(1) }} className="w-full rounded-lg border border-slate-200 py-2.5 pl-9 pr-9 text-sm outline-none placeholder:text-slate-400 focus:border-orange-300 focus:ring-2 focus:ring-orange-100" placeholder="Search by order or customer..." />
+              {search && <button aria-label="Clear search" onClick={() => { setSearch(''); setPage(1); searchRef.current?.focus() }} className="absolute right-3 top-2.5 text-lg text-slate-400 hover:text-slate-700">×</button>}
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Filter value={payment} onChange={setPayment} options={['All payments', 'COD', 'Partial COD', 'Prepaid']} />
-              <Filter value={risk} onChange={setRisk} options={['All risks', 'High', 'Medium', 'Low']} />
-              <Filter value={sort} onChange={setSort} options={['Newest first', 'Oldest first', 'COD first', 'Prepaid first', 'Value high to low', 'Value low to high']} />
+              <Filter value={payment} onChange={value => { setPayment(value); setPage(1) }} options={['All payments', 'COD', 'Partial COD', 'Prepaid']} />
+              <Filter value={risk} onChange={value => { setRisk(value); setPage(1) }} options={['All risks', 'High', 'Medium', 'Low']} />
+              <Filter value={sort} onChange={value => { setSort(value); setPage(1) }} options={['Newest first', 'Oldest first', 'COD first', 'Prepaid first', 'Value high to low', 'Value low to high']} />
             </div>
           </div>
 
-          {loading ? (
+          {loading && orders.length === 0 ? (
             <div className="grid min-h-80 place-items-center">
               <div className="text-center">
                 <span className="mx-auto block h-8 w-8 animate-spin rounded-full border-2 border-orange-200 border-t-[#ff6b35]" />
@@ -635,7 +617,9 @@ function App() {
             </div>
           ) : (
             <>
-              <div className="overflow-x-auto">
+              {loading && <div className="border-b border-slate-100 bg-slate-50 px-4 py-2 text-xs font-medium text-slate-500">Updating orders…</div>}
+              {queue === 'printed_today' && orders.length > 0 && <div className="divide-y divide-slate-100 border-b border-slate-200 bg-slate-50/60">{orders.map(order => <div key={order.internalId} className="flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3 text-xs"><span className="font-semibold text-slate-700">#{order.orderNumber}</span><span className="text-slate-500">Confirmed {order.shipment?.label_last_printed_at ? formatDateTime(order.shipment.label_last_printed_at) : '—'}</span><span className="text-slate-500">Operator: {order.shipment?.label_last_printed_by || '—'}</span><button onClick={() => void requestLabelReprint(order.internalId).then(() => { setNotice('Label returned to print queue.'); refreshLabels(); void loadOrders() }).catch(error => setNotice(error.message))} className="ml-auto font-semibold text-orange-600">Reprint</button></div>)}</div>}
+              <div className={`overflow-x-auto transition-opacity ${loading ? 'opacity-60' : ''}`}>
                 <table className="w-full min-w-[980px] text-left">
                   <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-400">
                     <tr>
@@ -646,11 +630,16 @@ function App() {
                     {displayedOrders.map(order => <OrderRow key={order.internalId} order={order} repeat={repeatIds.has(order.internalId)} onClick={() => openOrder(order.internalId)} />)}
                   </tbody>
                 </table>
-                {filtered.length === 0 && <div className="py-14 text-center text-sm text-slate-400">No orders match your filters.</div>}
+                {orders.length === 0 && <div className="py-14 text-center text-sm text-slate-400">{queue === 'printed_today' ? 'No labels have been confirmed today.' : 'No orders match your filters.'}</div>}
               </div>
-              <div className="flex items-center justify-between border-t border-slate-200 px-4 py-3">
-                <p className="text-xs text-slate-500">Showing <span className="font-semibold text-slate-700">{displayedOrders.length}</span> of {filtered.length} matching orders</p>
-                <p className="text-xs text-slate-400">Fresh, actioned-pending and complete order views.</p>
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-4 py-3">
+                <p className="text-xs text-slate-500">Showing <span className="font-semibold text-slate-700">{total === 0 ? 0 : (page - 1) * pageSize + 1}–{Math.min(page * pageSize, total)}</span> of {total} orders</p>
+                <div className="flex items-center gap-3 text-xs text-slate-500">
+                  <label>Rows per page <select aria-label="Rows per page" value={pageSize} onChange={event => { setPageSize(Number(event.target.value) as 20 | 50 | 100); setPage(1) }} className="ml-1 rounded-md border border-slate-200 bg-white px-2 py-1.5"><option value={20}>20</option><option value={50}>50</option><option value={100}>100</option></select></label>
+                  <button disabled={page <= 1 || loading} onClick={() => setPage(value => Math.max(1, value - 1))} className="rounded-md border border-slate-200 px-2.5 py-1.5 font-semibold disabled:opacity-40">Previous</button>
+                  <span>Page {page} of {totalPages}</span>
+                  <button disabled={page >= totalPages || loading} onClick={() => setPage(value => Math.min(totalPages, value + 1))} className="rounded-md border border-slate-200 px-2.5 py-1.5 font-semibold disabled:opacity-40">Next</button>
+                </div>
               </div>
             </>
           )}
@@ -664,24 +653,29 @@ function App() {
           repeat={isRepeat}
           status={status}
           callLog={callLog}
+          addressConfirmationComments={operations?.address_confirmation_comments || []}
+          timelineEvents={[
+            { action: 'Order Created', timestamp: selectedOrder.createdAt, operator: null },
+            ...callLog.map(event => ({ action: `COD call: ${event.result}`, timestamp: event.timestamp, operator: event.operator })),
+            ...(operations?.address_confirmation_comments || []).map(event => ({ action: 'Address confirmation comment', timestamp: event.timestamp, operator: event.operator })),
+            ...(operations?.human_actions || []).filter(event => !['call_logged', 'address_confirmation_commented'].includes(event.action)).map(event => ({ action: event.action.replaceAll('_', ' '), timestamp: event.timestamp, operator: event.operator })),
+            ...(operations?.timeline_events || []).map(event => ({ action: event.action.replaceAll('_', ' '), timestamp: event.timestamp, operator: event.operator })),
+            ...(selectedOrder.shipment?.booked_at ? [{ action: `${selectedOrder.shipment.provider || 'Courier'} booking confirmed`, timestamp: selectedOrder.shipment.booked_at, operator: null }] : []),
+            ...(selectedOrder.shipment?.shopify_fulfillment_synced_at ? [{ action: 'Shopify fulfilment synced', timestamp: selectedOrder.shipment.shopify_fulfillment_synced_at, operator: null }] : []),
+            ...(selectedOrder.shipment?.label_last_printed_at ? [{ action: 'Label printing confirmed', timestamp: selectedOrder.shipment.label_last_printed_at, operator: selectedOrder.shipment.label_last_printed_by }] : []),
+          ].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())}
           callResult={callResult}
           callComment={callComment}
           setCallResult={setCallResult}
           setCallComment={setCallComment}
           addressDraft={addressDraft}
           setAddressDraft={setAddressDraft}
-          updateCustomerAddress={updateCustomerAddress}
-          oneTimeDeliveryAddress={oneTimeDeliveryAddress}
-          useAsDefaultAddress={useAsDefaultAddress}
-          setUpdateCustomerAddress={setUpdateCustomerAddress}
-          setOneTimeDeliveryAddress={setOneTimeDeliveryAddress}
-          setUseAsDefaultAddress={setUseAsDefaultAddress}
           courierSyncMessage={courierSyncMessage}
           addressVerificationLine={addressVerifiedLabel}
           onClose={() => setSelectedOrderId(null)}
           onSaveCallLog={() => void saveCallLog()}
-          onSaveAddress={() => void saveAddress()}
-          onVerifyAddress={() => void verifyAddress()}
+          onSaveAddress={saveAndVerifyAddress}
+          onSaveAddressConfirmation={() => void saveAddressConfirmation()}
           bookingEligibility={bookingEligibility}
           courierOptions={courierOptions}
           courierLoading={courierLoading}
@@ -696,11 +690,14 @@ function App() {
           onSelectCourier={courier => void selectCourier(courier)}
           onBookShipment={bookShipment}
           onRefreshShipment={() => void refreshShipment()}
+          onRetryShiprocketCleanup={() => { if (selectedOrder) void retryShiprocketCleanup(selectedOrder.internalId).then(result => { if (result.status === 'cancelled' || result.status === 'not_applicable') setCourierError(''); else setCourierError(result.error || `Shiprocket cleanup: ${result.status}`); setOperations(current => current) }).catch(error => setCourierError(error.message)) }}
           onSyncShopifyFulfillment={() => void syncFulfillment()}
           onDownloadLabel={() => retrieveLabel('download')}
           onPrintLabel={() => retrieveLabel('print')}
         />
       )}
+
+      {selectedOrder && cancellationPreflight && <div className="fixed inset-0 z-[80] grid place-items-center bg-slate-950/55 p-4"><div className="w-full max-w-lg rounded-xl bg-white p-5 shadow-2xl"><h2 className="text-lg font-bold text-rose-700">Confirm order cancellation</h2><p className="mt-2 text-sm text-slate-600">Each applicable system is attempted and reported separately.</p><div className="mt-4 space-y-2 rounded-lg bg-slate-50 p-3 text-sm"><p>Mumchies OS: Will cancel</p><p>Shopify: {cancellationPreflight.shopify.exists ? 'Will cancel' : 'Not applicable'}</p><p>Shiprocket: {cancellationPreflight.shiprocket.exists ? `Will cancel unbooked order ${cancellationPreflight.shiprocket.order_id || ''}` : cancellationPreflight.shiprocket.lookup_error ? `Lookup failed: ${cancellationPreflight.shiprocket.lookup_error}` : 'Not applicable'}</p><p>Shipment/AWB: {cancellationPreflight.shipment.awb || cancellationPreflight.shiprocket.awb || 'None detected'}</p></div>{!cancellationPreflight.allowed && <p className="mt-3 rounded-lg bg-rose-50 p-3 text-sm font-semibold text-rose-700">Blocked: {cancellationPreflight.blocked_reason}</p>}{cancellationResult && <div className="mt-3 rounded-lg border border-slate-200 p-3 text-sm">{Object.entries(cancellationResult).map(([system, result]) => <p key={system}><span className="font-semibold capitalize">{system.replace('_', ' ')}:</span> {result.status}{result.error ? ` — ${result.error}` : ''}</p>)}</div>}<div className="mt-5 flex justify-end gap-2"><button onClick={() => { setCancellationPreflight(null); setCancellationResult(null) }} className="rounded-lg px-4 py-2 text-sm font-semibold text-slate-600">Close</button><button disabled={!cancellationPreflight.allowed || cancellationLoading || Boolean(cancellationResult)} onClick={() => { setCancellationLoading(true); void cancelOrder(selectedOrder.internalId, callComment).then(result => { setCancellationResult(result.results); setOperations(result.operations); setOrders(previous => previous.map(order => order.internalId === selectedOrder.internalId ? { ...order, operationalStatus: 'Cancelled' } : order)) }).catch(error => setNotice(error.message)).finally(() => setCancellationLoading(false)) }} className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40">{cancellationLoading ? 'Cancelling…' : 'Cancel affected systems'}</button></div></div></div>}
 
       {notice && <div className="fixed bottom-5 right-5 z-[60] rounded-lg bg-slate-900 px-4 py-3 text-sm font-medium text-white shadow-xl">{notice}</div>}
       {showLabels && <div className="fixed inset-0 z-[70] grid place-items-center bg-slate-950/40 p-4"><div className="max-h-[85vh] w-full max-w-3xl overflow-y-auto rounded-xl bg-white p-5 shadow-2xl">
@@ -751,24 +748,20 @@ const OrderDrawer = memo(function OrderDrawer({
   repeat,
   status,
   callLog,
+  addressConfirmationComments,
+  timelineEvents,
   callResult,
   callComment,
   setCallResult,
   setCallComment,
   addressDraft,
   setAddressDraft,
-  updateCustomerAddress,
-  oneTimeDeliveryAddress,
-  useAsDefaultAddress,
-  setUpdateCustomerAddress,
-  setOneTimeDeliveryAddress,
-  setUseAsDefaultAddress,
   courierSyncMessage,
   addressVerificationLine,
   onClose,
   onSaveCallLog,
+  onSaveAddressConfirmation,
   onSaveAddress,
-  onVerifyAddress,
   bookingEligibility,
   courierOptions,
   courierLoading,
@@ -783,6 +776,7 @@ const OrderDrawer = memo(function OrderDrawer({
   onSelectCourier,
   onBookShipment,
   onRefreshShipment,
+  onRetryShiprocketCleanup,
   onSyncShopifyFulfillment,
   onDownloadLabel,
   onPrintLabel,
@@ -791,6 +785,8 @@ const OrderDrawer = memo(function OrderDrawer({
   repeat: boolean
   status: string
   callLog: OrderOperations['call_logs']
+  addressConfirmationComments: OrderOperations['address_confirmation_comments']
+  timelineEvents: { action: string; timestamp: string; operator: string | null }[]
   callResult: CallResult
   callComment: string
   setCallResult: (value: CallResult) => void
@@ -815,18 +811,12 @@ const OrderDrawer = memo(function OrderDrawer({
     state: string
     pincode: string
   }) => void
-  updateCustomerAddress: boolean
-  oneTimeDeliveryAddress: boolean
-  useAsDefaultAddress: boolean
-  setUpdateCustomerAddress: (value: boolean) => void
-  setOneTimeDeliveryAddress: (value: boolean) => void
-  setUseAsDefaultAddress: (value: boolean) => void
   courierSyncMessage: string
   addressVerificationLine: string
   onClose: () => void
   onSaveCallLog: () => void
-  onSaveAddress: () => void
-  onVerifyAddress: () => void
+  onSaveAddress: () => Promise<{ operations: OrderOperations; validation: { status: string; blockers: string[]; warnings: string[]; shiprocket_message: string }; verified: boolean } | undefined>
+  onSaveAddressConfirmation: () => void
   bookingEligibility: {
     eligible: boolean
     missing_requirements: string[]
@@ -859,6 +849,7 @@ const OrderDrawer = memo(function OrderDrawer({
     height_cm: number | null
   }) => void
   onRefreshShipment: () => void
+  onRetryShiprocketCleanup: () => void
   onSyncShopifyFulfillment: () => void
   onDownloadLabel: () => void
   onPrintLabel: () => void
@@ -964,27 +955,11 @@ const OrderDrawer = memo(function OrderDrawer({
               <Field label="PIN Code" value={addressDraft.pincode} onChange={value => setAddressDraft({ ...addressDraft, pincode: value })} />
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
-              <button onClick={onSaveAddress} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white">Save Correction</button>
-              {isPrepaid && <button onClick={onVerifyAddress} disabled={hasVerifiedAddress} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-50">Address Verified</button>}
-              <button onClick={() => { setAddressReviewLoading(true); void validateAddress(order.internalId, addressDraft).then(setAddressReview).catch(error => setAddressReview({ status: error.message, blockers: [], warnings: [], shiprocket_message: 'Shiprocket confidence score unavailable' })).finally(() => setAddressReviewLoading(false)) }} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600">{addressReviewLoading ? 'Validating…' : 'Validate Address'}</button>
+              <button onClick={() => { setAddressReviewLoading(true); void onSaveAddress().then(result => { if (result) setAddressReview(result.validation) }).finally(() => setAddressReviewLoading(false)) }} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white">{addressReviewLoading ? 'Saving & Verifying…' : 'Save & Verify Address'}</button>
               <button onClick={() => { const query = [addressDraft.address_line1, addressDraft.address_line2, addressDraft.landmark, addressDraft.city, addressDraft.state, addressDraft.pincode, 'India'].filter(Boolean).join(', '); window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`, '_blank', 'noopener,noreferrer') }} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600">Open in Google Maps</button>
             </div>
             {addressReview && <div className={`mt-3 rounded-lg px-3 py-2 text-sm ${addressReview.blockers.length ? 'bg-rose-50 text-rose-700' : addressReview.warnings.length ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-700'}`}><p className="font-semibold">{addressReview.status}</p>{addressReview.blockers.map(value => <p key={value}>• {value}</p>)}{addressReview.warnings.map(value => <p key={value}>• {value}</p>)}<p className="mt-1 text-xs opacity-80">{addressReview.shiprocket_message}</p><p className="mt-1 text-[11px] opacity-70">Advisory only; Maps results and warnings do not block verification.</p></div>}
             <div className="mt-3 space-y-2 text-xs text-slate-600">
-              <label className="flex items-center gap-2">
-                <input type="checkbox" checked={updateCustomerAddress} onChange={event => { setUpdateCustomerAddress(event.target.checked); if (event.target.checked) setOneTimeDeliveryAddress(false) }} />
-                Update customer's saved Shopify address
-              </label>
-              <label className="flex items-center gap-2">
-                <input type="checkbox" checked={oneTimeDeliveryAddress} onChange={event => { setOneTimeDeliveryAddress(event.target.checked); if (event.target.checked) { setUpdateCustomerAddress(false); setUseAsDefaultAddress(false) } }} />
-                One-time delivery address — do not update customer account
-              </label>
-              {updateCustomerAddress && !oneTimeDeliveryAddress && (
-                <label className="flex items-center gap-2 pl-5">
-                  <input type="checkbox" checked={useAsDefaultAddress} onChange={event => setUseAsDefaultAddress(event.target.checked)} />
-                  Use as default address for future orders
-                </label>
-              )}
               {order.addressSyncResults && (
                 <div className="grid grid-cols-2 gap-1 rounded-lg bg-slate-50 p-2">
                   <span>Shopify order: {order.addressSyncResults.shopify_order}</span>
@@ -1031,27 +1006,28 @@ const OrderDrawer = memo(function OrderDrawer({
             </Section>
           )}
 
-          <Section title="COD Call Log">
+          <Section title={orderContactSectionTitle(isPrepaid)}>
             <div className="space-y-3">
-              <div className="grid gap-2 lg:grid-cols-[1fr_2fr_auto]">
+              {isPrepaid ? <div className="grid gap-2 lg:grid-cols-[2fr_auto]"><input value={callComment} onChange={e => setCallComment(e.target.value)} placeholder="Address confirmation comment (optional)" className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none" /><button onClick={onSaveAddressConfirmation} className="rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white">Save Comment</button></div> : <div className="grid gap-2 lg:grid-cols-[1fr_2fr_auto]">
                 <select value={callResult} onChange={e => setCallResult(e.target.value as CallResult)} className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none">
                   {callResults.map(result => <option key={result}>{result}</option>)}
                 </select>
                 <input value={callComment} onChange={e => setCallComment(e.target.value)} placeholder="Comment" className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none" />
                 <button onClick={onSaveCallLog} className="rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white">Save</button>
-              </div>
-              <div className="space-y-2">
+              </div>}
+              {!isPrepaid && <div className="space-y-2">
                 {callLog.length === 0 ? <p className="text-sm text-slate-400">No call attempts logged yet.</p> : callLog.map(entry => (
                   <div key={`${entry.timestamp}-${entry.result}`} className="rounded-lg border border-slate-100 px-3 py-2 text-sm">
                     <div className="flex items-center justify-between">
                       <span className="font-semibold text-slate-700">{entry.result}</span>
-                      <span className="text-xs text-slate-400">{entry.timestamp}</span>
+                      <span className="text-xs text-slate-400">{formatDateTime(entry.timestamp)}</span>
                     </div>
                     <p className="mt-1 text-xs text-slate-500">Operator: {entry.operator}</p>
                     {entry.comment && <p className="mt-1 text-xs text-slate-600">{entry.comment}</p>}
                   </div>
                 ))}
-              </div>
+              </div>}
+              {isPrepaid && <div className="space-y-2">{addressConfirmationComments.length === 0 ? <p className="text-sm text-slate-400">No address confirmation comments yet.</p> : addressConfirmationComments.map(entry => <div key={entry.timestamp} className="rounded-lg border border-slate-100 px-3 py-2 text-sm"><div className="flex justify-between gap-3"><span className="font-semibold text-slate-700">Address confirmation</span><span className="text-xs text-slate-400">{formatDateTime(entry.timestamp)}</span></div><p className="mt-1 text-xs text-slate-500">Operator: {entry.operator}</p>{entry.comment && <p className="mt-1 text-xs text-slate-600">{entry.comment}</p>}</div>)}</div>}
             </div>
           </Section>
 
@@ -1081,7 +1057,7 @@ const OrderDrawer = memo(function OrderDrawer({
                     ? <p className="mt-1">Eligible for courier lookup</p>
                     : <ul className="mt-1 list-disc space-y-0.5 pl-5">{visibleMissing.map(requirement => <li key={requirement}>{requirement}</li>)}</ul>}
               </div>
-              {courierError && <div className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{courierError}</div>}
+              {courierError && <div className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{courierError}{courierError.startsWith('Shiprocket cleanup') && <button onClick={onRetryShiprocketCleanup} className="ml-3 rounded-md border border-rose-200 bg-white px-2 py-1 font-semibold">Retry cleanup</button>}</div>}
               {courierWarnings.map(warning => <div key={warning} className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-700">{warning}</div>)}
               {selectedCourier?.provider === 'delhivery' && !selectedCourier.booking_supported && <p className="text-xs text-amber-700">Direct Delhivery booking is unavailable because the provider is not configured or this destination is not serviceable.</p>}
               {courierLoading && <p className="text-sm text-slate-500">Loading courier options…</p>}
@@ -1178,11 +1154,11 @@ const OrderDrawer = memo(function OrderDrawer({
             <details>
               <summary className="cursor-pointer text-sm font-semibold text-slate-700">Collapsed by default</summary>
               <ol className="mt-3 ml-2 border-l border-slate-200">
-                {['Order Created', 'Payment Received', 'Packed', 'Ready for Dispatch'].map((event, index) => (
-                  <li key={event} className="relative pb-5 pl-5 last:pb-0">
-                    <span className={`absolute -left-[5px] top-1 h-2.5 w-2.5 rounded-full ${index < 2 ? 'bg-[#ff6b35]' : 'bg-slate-300'}`} />
-                    <p className="text-sm font-medium text-slate-700">{event}</p>
-                    <p className="mt-0.5 text-xs text-slate-400">{index < 2 ? formatDate(order.createdAt) : 'Awaiting update'}</p>
+                {timelineEvents.map((event, index) => (
+                  <li key={`${event.action}-${event.timestamp}-${index}`} className="relative pb-5 pl-5 last:pb-0">
+                    <span className="absolute -left-[5px] top-1 h-2.5 w-2.5 rounded-full bg-[#ff6b35]" />
+                    <p className="text-sm font-medium capitalize text-slate-700">{event.action}</p>
+                    <p className="mt-0.5 text-xs text-slate-400">{formatDateTime(event.timestamp)}{event.operator ? ` · ${event.operator}` : ''}</p>
                   </li>
                 ))}
               </ol>

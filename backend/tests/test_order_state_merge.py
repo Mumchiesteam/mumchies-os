@@ -50,7 +50,7 @@ async def test_orders_endpoint_merges_persisted_operations(monkeypatch: pytest.M
         },
     )
 
-    orders = await list_orders()
+    orders = (await list_orders()).items
     assert orders[0].latest_call_result == "Callback Requested"
     assert orders[0].operational_status == "Ready for Booking"
     assert orders[0].address_verified is True

@@ -19,6 +19,9 @@ class OrderOperationsStore:
     _lock = Lock()
     _default_record = {
         "call_logs": [],
+        "address_confirmation_comments": [],
+        "cancellation": None,
+        "timeline_events": [],
         "corrected_address": None,
         "package_details": None,
         "selected_courier": None,
@@ -67,7 +70,7 @@ class OrderOperationsStore:
             return cls._read_all()
 
     @classmethod
-    def save_address(cls, order_id: str, address: dict[str, Any], courier_sync_status: str | None = None, courier_sync_error: str | None = None) -> dict[str, Any]:
+    def save_address(cls, order_id: str, address: dict[str, Any], courier_sync_status: str | None = None, courier_sync_error: str | None = None, operator: str | None = None) -> dict[str, Any]:
         with cls._lock:
             data = cls._read_all()
             record = data.get(order_id, deepcopy(cls._default_record))
@@ -79,7 +82,43 @@ class OrderOperationsStore:
             record["verified_address_snapshot"] = None
             record["courier_sync_status"] = courier_sync_status
             record["courier_sync_error"] = courier_sync_error
-            cls._record_action(record, "address_corrected")
+            cls._record_action(record, "address_corrected", operator=operator)
+            data[order_id] = record
+            cls._write_all(data)
+            return record
+
+    @classmethod
+    def append_address_confirmation(cls, order_id: str, comment: str, operator: str, timestamp: str) -> dict[str, Any]:
+        with cls._lock:
+            data = cls._read_all()
+            record = data.get(order_id, deepcopy(cls._default_record))
+            entry = {"comment": comment, "operator": operator, "timestamp": timestamp}
+            record["address_confirmation_comments"] = [entry, *record.get("address_confirmation_comments", [])]
+            cls._record_action(record, "address_confirmation_commented", timestamp, operator)
+            data[order_id] = record
+            cls._write_all(data)
+            return record
+
+    @classmethod
+    def record_timeline_event(cls, order_id: str, action: str, *, operator: str | None = None, details: dict[str, Any] | None = None, timestamp: str | None = None) -> dict[str, Any]:
+        with cls._lock:
+            data = cls._read_all()
+            record = data.get(order_id, deepcopy(cls._default_record))
+            occurred_at = timestamp or datetime.now(timezone.utc).isoformat()
+            record.setdefault("timeline_events", []).append({"action": action, "timestamp": occurred_at, "operator": operator, "details": details or {}})
+            data[order_id] = record
+            cls._write_all(data)
+            return record
+
+    @classmethod
+    def save_cancellation(cls, order_id: str, result: dict[str, Any], operator: str, timestamp: str) -> dict[str, Any]:
+        with cls._lock:
+            data = cls._read_all()
+            record = data.get(order_id, deepcopy(cls._default_record))
+            record["cancellation"] = {**result, "operator": operator, "timestamp": timestamp}
+            record["call_logs"] = [{"result": "Cancelled", "comment": result.get("comment") or "", "operator": operator, "timestamp": timestamp}, *record.get("call_logs", [])]
+            cls._record_action(record, "order_cancelled", timestamp, operator)
+            record.setdefault("timeline_events", []).append({"action": "order_cancelled", "timestamp": timestamp, "operator": operator, "details": result})
             data[order_id] = record
             cls._write_all(data)
             return record

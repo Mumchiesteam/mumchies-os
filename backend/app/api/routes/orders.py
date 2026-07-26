@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import re
 from zoneinfo import ZoneInfo
@@ -25,6 +25,7 @@ router = APIRouter(prefix="/orders", tags=["orders"])
 
 
 class AddressPayload(BaseModel):
+    operator: str | None = None
     customer_name: str | None = None
     phone: str | None = None
     address_line1: str | None = None
@@ -48,6 +49,22 @@ class CallLogPayload(BaseModel):
     comment: str | None = None
 
 
+class AddressConfirmationPayload(BaseModel):
+    comment: str = ""
+    operator: str = Field(...)
+
+
+class SaveVerifyAddressPayload(AddressPayload):
+    operator: str = Field(...)
+
+
+class CancellationPayload(BaseModel):
+    operator: str = Field(...)
+    comment: str | None = None
+    cancel_shopify: bool = True
+    cancel_shiprocket: bool = True
+
+
 class VerifyAddressPayload(BaseModel):
     operator: str = Field(...)
     verified_at: str | None = None
@@ -66,6 +83,14 @@ class AddressValidationPayload(BaseModel):
     city: str | None = None
     state: str | None = None
     pincode: str | None = None
+
+
+class OrdersPage(BaseModel):
+    items: list[ShopifyOrder]
+    page: int
+    page_size: int
+    total: int
+    total_pages: int
 
 
 def _merged_operational_state(order: ShopifyOrder, operations: dict[str, object]) -> ShopifyOrder:
@@ -103,11 +128,9 @@ def _merged_operational_state(order: ShopifyOrder, operations: dict[str, object]
     })
 
 
-@router.get("", response_model=list[ShopifyOrder])
-async def list_orders(db: Session = Depends(get_db)) -> list[ShopifyOrder]:
-    """Return the latest Shopify orders through a read-only integration."""
+async def _load_orders(db: Session, *, force_refresh: bool = False) -> list[ShopifyOrder]:
     try:
-        orders = await ShopifyService().get_latest_orders(force_refresh=True)
+        orders = await ShopifyService().get_latest_orders(force_refresh=force_refresh)
         operations_map = OrderOperationsStore.all()
         shipments = get_shipments_by_order_id(db)
         merged_orders: list[ShopifyOrder] = []
@@ -122,6 +145,86 @@ async def list_orders(db: Session = Depends(get_db)) -> list[ShopifyOrder]:
         raise HTTPException(status_code=502, detail="Shopify could not provide orders. Check the store, token, and API version.") from error
     except httpx.HTTPError as error:
         raise HTTPException(status_code=502, detail="Unable to reach Shopify.") from error
+
+
+def _is_inactive(order: ShopifyOrder) -> bool:
+    text = " ".join(filter(None, [
+        order.fulfillment_status, order.shopify_status, order.cancelled_at,
+        " ".join(order.tags), str(order.external_tracking.status if order.external_tracking else ""),
+    ])).casefold()
+    return bool(order.cancelled_at) or any(value in text for value in ("cancel", "fulfilled", "shipped", "picked up", "dispatched", "in transit", "out for delivery", "delivered"))
+
+
+def _matches_queue(order: ShopifyOrder, queue: str, now: datetime) -> bool:
+    created = datetime.fromisoformat(order.created_date.replace("Z", "+00:00"))
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    shipment = order.shipment or {}
+    if queue == "fresh":
+        return not _is_inactive(order) and created >= now - timedelta(hours=24)
+    if queue == "previous":
+        return not _is_inactive(order) and created < now - timedelta(hours=24)
+    if queue == "labels_to_print":
+        return shipment.get("booking_status") == "booked" and bool(shipment.get("awb")) and shipment.get("label_print_status") == "not_printed"
+    if queue == "awaiting_confirmation":
+        return shipment.get("label_print_status") == "awaiting_confirmation"
+    if queue == "printed_today":
+        printed = shipment.get("label_last_printed_at")
+        return bool(printed) and datetime.fromisoformat(str(printed).replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Kolkata")).date() == now.astimezone(ZoneInfo("Asia/Kolkata")).date()
+    return True
+
+
+@router.get("", response_model=OrdersPage)
+async def list_orders(
+    page: int = 1,
+    page_size: int = 20,
+    queue: str = "all",
+    search: str = "",
+    payment: str = "all",
+    risk: str = "all",
+    sort: str = "newest",
+    db: Session = Depends(get_db),
+) -> OrdersPage:
+    """Return one filtered page of orders. The client never receives the unpaged collection."""
+    if page < 1:
+        raise HTTPException(status_code=422, detail="page must be at least 1.")
+    if page_size not in {20, 50, 100}:
+        raise HTTPException(status_code=422, detail="page_size must be one of 20, 50, or 100.")
+    if queue not in {"fresh", "previous", "all", "labels_to_print", "awaiting_confirmation", "printed_today"}:
+        raise HTTPException(status_code=422, detail="Unknown orders queue.")
+    orders = await _load_orders(db)
+    now = datetime.now(timezone.utc)
+    needle = search.strip().casefold()
+    filtered = []
+    for order in orders:
+        if not _matches_queue(order, queue, now):
+            continue
+        searchable = " ".join(filter(None, [
+            order.order_number, order.shopify_name, order.customer_name, order.phone,
+            " ".join(f"{product.product_name} {product.sku or ''}" for product in order.products),
+        ])).casefold()
+        if needle and needle not in searchable:
+            continue
+        display_payment = {"cod": "cod", "partial_cod": "partial cod", "prepaid": "prepaid"}.get(order.payment_type, order.payment_type)
+        if payment != "all" and display_payment != payment:
+            continue
+        order_risk = "high" if "high" in " ".join(order.tags).casefold() else "medium" if "medium" in " ".join(order.tags).casefold() else "low"
+        if risk != "all" and order_risk != risk:
+            continue
+        filtered.append(order)
+    reverse = sort not in {"oldest", "value_asc"}
+    if sort in {"value_asc", "value_desc"}:
+        filtered.sort(key=lambda value: float(value.total_amount), reverse=reverse)
+    elif sort in {"cod_first", "prepaid_first"}:
+        preferred = "prepaid" if sort == "prepaid_first" else "cod"
+        filtered.sort(key=lambda value: (value.payment_type != preferred and not (preferred == "cod" and value.payment_type == "partial_cod"), -datetime.fromisoformat(value.created_date.replace("Z", "+00:00")).timestamp()))
+    else:
+        filtered.sort(key=lambda value: datetime.fromisoformat(value.created_date.replace("Z", "+00:00")), reverse=reverse)
+    total = len(filtered)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    effective_page = min(page, total_pages)
+    start = (effective_page - 1) * page_size
+    return OrdersPage(items=filtered[start:start + page_size], page=effective_page, page_size=page_size, total=total, total_pages=total_pages)
 
 
 @router.get("/{order_id}/operations")
@@ -211,7 +314,7 @@ def _export_row(order: ShopifyOrder) -> list[object]:
 
 @router.post("/export")
 async def export_orders(payload: ExportPayload, db: Session = Depends(get_db)):
-    orders = await list_orders(db)
+    orders = await _load_orders(db)
     selected = orders if payload.mode == "full" else [order for order in orders if order.order_id in set(payload.order_ids)]
     headers = ["Order Number", "Order Date", "Order Time", "Customer", "Phone", "City", "State", "Pincode", "Total Value", "Amount Paid", "COD / Outstanding", "Payment Type", "Financial Status", "Risk", "Customer Type", "Operational Status", "Call Attempts", "Address Verification", "Address Confidence", "Address Category", "Courier Provider", "Courier", "AWB", "Shipment Status", "Booking Time", "Label Print Status", "Last Printed Time"]
     workbook = Workbook()
@@ -332,6 +435,7 @@ async def update_order_address(order_id: str, payload: AddressPayload, db: Sessi
         address,
         courier_sync_status=payload.courier_sync_status,
         courier_sync_error=payload.courier_sync_error,
+        operator=payload.operator,
     )
     results: dict[str, object] = {
         "shopify_order": "failed",
@@ -397,6 +501,24 @@ async def update_order_address(order_id: str, payload: AddressPayload, db: Sessi
     return OrderOperationsStore.save_address_sync_results(order_id, results)
 
 
+@router.post("/{order_id}/address/save-verify")
+async def save_and_verify_address(order_id: str, payload: SaveVerifyAddressPayload, db: Session = Depends(get_db)) -> dict[str, object]:
+    address = AddressValidationPayload(**payload.model_dump())
+    validation = await validate_order_address(order_id, address, db)
+    saved = await update_order_address(order_id, AddressPayload(**{
+        **payload.model_dump(),
+        "update_customer_address": True,
+        "one_time_delivery_address": False,
+        "use_as_default_address": False,
+    }), db)
+    verified = False
+    if not validation["blockers"]:
+        snapshot = {key: getattr(payload, key) for key in ("customer_name", "phone", "address_line1", "address_line2", "landmark", "city", "state", "pincode")}
+        saved = OrderOperationsStore.verify_address(order_id, payload.operator, snapshot, datetime.now(timezone.utc).isoformat())
+        verified = True
+    return {"operations": saved, "validation": validation, "verified": verified}
+
+
 @router.post("/{order_id}/call-logs")
 async def add_call_log(order_id: str, payload: CallLogPayload) -> dict[str, object]:
     entry = {
@@ -406,6 +528,73 @@ async def add_call_log(order_id: str, payload: CallLogPayload) -> dict[str, obje
         "comment": payload.comment,
     }
     return OrderOperationsStore.append_call_log(order_id, entry)
+
+
+@router.post("/{order_id}/address-confirmation-comments")
+async def add_address_confirmation_comment(order_id: str, payload: AddressConfirmationPayload) -> dict[str, object]:
+    return OrderOperationsStore.append_address_confirmation(order_id, payload.comment.strip(), payload.operator, datetime.now(timezone.utc).isoformat())
+
+
+async def _cancellation_preflight(order_id: str, db: Session) -> dict[str, object]:
+    shipment = get_shipment(db, order_id)
+    shopify = await ShopifyService().get_order_cancellation_context(order_id)
+    upstream = None
+    shiprocket_error = None
+    try:
+        upstream = await ShiprocketService().find_existing_order(order_id)
+    except (ShiprocketAPIError, ShiprocketConfigurationError) as error:
+        shiprocket_error = str(error)
+    upstream_awb = ShiprocketService._upstream_shipment(upstream)[1] if upstream else None
+    upstream_status = str(upstream.get("status") or "").strip().casefold() if upstream else ""
+    local_awb = shipment.awb if shipment else None
+    fulfillment = str(shopify.get("fulfillment_status") or "").casefold()
+    protected = bool(local_awb or upstream_awb or upstream_status in {"shipped", "delivered", "in transit", "out for delivery", "pickup scheduled", "ready to ship"} or fulfillment in {"fulfilled", "shipped", "delivered", "in transit", "out for delivery"})
+    return {
+        "allowed": not protected,
+        "shopify": shopify,
+        "shiprocket": {"exists": bool(upstream), "order_id": str(upstream.get("id")) if upstream and upstream.get("id") is not None else None, "status": upstream.get("status") if upstream else None, "awb": upstream_awb, "lookup_error": shiprocket_error},
+        "shipment": {"exists": shipment is not None, "provider": shipment.provider if shipment else None, "awb": local_awb, "status": shipment.latest_status if shipment else None},
+        "blocked_reason": "Booked/AWB or shipped orders require a separate explicit cancellation workflow." if protected else None,
+    }
+
+
+@router.get("/{order_id}/cancellation/preflight")
+async def cancellation_preflight(order_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
+    return await _cancellation_preflight(order_id, db)
+
+
+@router.post("/{order_id}/cancel")
+async def cancel_order(order_id: str, payload: CancellationPayload, db: Session = Depends(get_db)) -> dict[str, object]:
+    preflight = await _cancellation_preflight(order_id, db)
+    if not preflight["allowed"]:
+        raise HTTPException(status_code=409, detail=preflight["blocked_reason"])
+    results: dict[str, object] = {
+        "mumchies_os": {"status": "cancelled"},
+        "shopify": {"status": "not_applicable"},
+        "shiprocket": {"status": "not_applicable"},
+        "comment": payload.comment,
+    }
+    if preflight["shiprocket"].get("lookup_error"):
+        results["shiprocket"] = {"status": "failed", "error": preflight["shiprocket"]["lookup_error"], "cancel_on_channel": False}
+    if preflight["shopify"].get("cancelled"):
+        results["shopify"] = {"status": "already_cancelled"}
+    elif payload.cancel_shopify and preflight["shopify"]["exists"]:
+        try:
+            shopify_result = await ShopifyService().cancel_order(order_id)
+            results["shopify"] = shopify_result
+        except (ShopifySyncError, httpx.HTTPError) as error:
+            results["shopify"] = {"status": "failed", "error": str(error)}
+    if payload.cancel_shiprocket and preflight["shiprocket"]["exists"]:
+        try:
+            upstream = await ShiprocketService().find_existing_order(order_id)
+            if upstream:
+                await ShiprocketService().cancel_unbooked_order(upstream)
+                results["shiprocket"] = {"status": "cancelled", "cancel_on_channel": False}
+        except (ShiprocketAPIError, ShiprocketConfigurationError) as error:
+            results["shiprocket"] = {"status": "failed", "error": str(error), "cancel_on_channel": False}
+    timestamp = datetime.now(timezone.utc).isoformat()
+    operations = OrderOperationsStore.save_cancellation(order_id, results, payload.operator, timestamp)
+    return {"results": results, "preflight": preflight, "operations": operations, "timestamp": timestamp, "operator": payload.operator}
 
 
 @router.post("/{order_id}/address/verify")
