@@ -216,6 +216,62 @@ async def test_duplicate_booking_is_prevented(db):
 
 
 @pytest.mark.anyio
+async def test_shadowfax_unsupported_client_order_lookup_does_not_block_booking(db):
+    class OfficialTransport(MockTransport):
+        async def find_booking(self, _merchant_order_id):
+            raise ProviderConfigurationError(
+                "The official Shadowfax specification does not document lookup by client_order_id. Reconcile using a known AWB.",
+                provider="shadowfax",
+                operation="reconciliation",
+            )
+
+    transport = OfficialTransport()
+    adapter = ShadowfaxAdapter(token="secret", base_url="https://official.invalid", transport=transport)
+
+    result = await CourierPlatformService().book(
+        db,
+        order_id="shadowfax-new",
+        merchant_order_id="1004",
+        adapter=adapter,
+        request={},
+        operator="Operator",
+    )
+
+    assert result["shipment"]["awb"] == "AWB-1"
+    assert transport.booking_calls == 1
+
+
+@pytest.mark.anyio
+async def test_shadowfax_explicit_reconciliation_keeps_unsupported_lookup_warning(db):
+    class OfficialTransport(MockTransport):
+        async def find_booking(self, _merchant_order_id):
+            raise ProviderConfigurationError(
+                "The official Shadowfax specification does not document lookup by client_order_id. Reconcile using a known AWB.",
+                provider="shadowfax",
+                operation="reconciliation",
+            )
+
+    adapter = ShadowfaxAdapter(token="secret", base_url="https://official.invalid", transport=OfficialTransport())
+    upsert_shipment(
+        db,
+        "shadowfax-reconcile",
+        provider="shadowfax",
+        provider_order_id="1005",
+        booking_status="booking_uncertain",
+        booking_confidence="uncertain",
+        reconciliation_status="pending",
+    )
+
+    with pytest.raises(ProviderConfigurationError, match="does not document lookup by client_order_id"):
+        await CourierPlatformService().reconcile(
+            db,
+            order_id="shadowfax-reconcile",
+            adapter=adapter,
+            operator="Operator",
+        )
+
+
+@pytest.mark.anyio
 async def test_uncertain_booking_blocks_retry(db):
     class TimeoutTransport(MockTransport):
         async def create_booking(self, _request): self.booking_calls += 1; raise TimeoutError("timeout")

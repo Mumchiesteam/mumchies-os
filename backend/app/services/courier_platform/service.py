@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.repositories.shiprocket import get_shipment, snapshot, upsert_shipment
-from app.services.courier_platform.base import CourierAdapter, ProviderError
+from app.services.courier_platform.base import CourierAdapter, ProviderConfigurationError, ProviderError
 from app.services.courier_platform.models import BookingConfidence, BookingResult, NormalizedShipmentStatus, ReconciliationStatus
 from app.services.order_operations import OrderOperationsStore
 
@@ -28,7 +28,17 @@ class CourierPlatformService:
                 raise ProviderError("A previous booking has an uncertain outcome. Reconcile it before retrying.", provider=adapter.provider, operation="booking", uncertain=True)
             return {"shipment": snapshot(existing), "existing": True}
 
-        upstream = await adapter.reconcile_booking(merchant_order_id)
+        try:
+            upstream = await adapter.reconcile_booking(merchant_order_id)
+        except ProviderConfigurationError as error:
+            unsupported_shadowfax_lookup = (
+                adapter.provider == "shadowfax"
+                and error.operation == "reconciliation"
+                and "does not document lookup by client_order_id" in str(error)
+            )
+            if not unsupported_shadowfax_lookup:
+                raise
+            upstream = None
         if upstream:
             persisted = self.persist_booking(db, order_id, upstream)
             OrderOperationsStore.record_timeline_event(order_id, "courier_booking_reconciled", operator=operator, details={"provider": adapter.provider, "provider_order_id": upstream.provider_order_id, "awb": upstream.awb})
