@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import mapped_column
 
 from app.db.base import Base
@@ -22,9 +22,15 @@ class ShiprocketShipment(Base):
     booking_status = mapped_column(String(64), nullable=True)
     booked_at = mapped_column(DateTime(timezone=True), nullable=True)
     latest_status = mapped_column(String(128), nullable=True)
+    normalized_status = mapped_column(String(64), nullable=True)
+    courier_service = mapped_column(String(128), nullable=True)
+    latest_tracking_at = mapped_column(DateTime(timezone=True), nullable=True)
+    latest_scan = mapped_column(Text, nullable=True)
+    terminal_status = mapped_column(String(64), nullable=True)
     last_synced_at = mapped_column(DateTime(timezone=True), nullable=True)
     tracking_url = mapped_column(Text, nullable=True)
     label_url = mapped_column(Text, nullable=True)
+    label_format = mapped_column(String(16), nullable=True)
     expected_delivery_date = mapped_column(String(64), nullable=True)
     delivered_at = mapped_column(DateTime(timezone=True), nullable=True)
     address_sync_status = mapped_column(String(64), nullable=True)
@@ -50,6 +56,14 @@ class ShiprocketShipment(Base):
     label_print_count = mapped_column(Integer, nullable=False, default=0)
     last_print_batch_id = mapped_column(String(64), nullable=True)
     label_tracking_activated_at = mapped_column(DateTime(timezone=True), nullable=True)
+    raw_provider_response = mapped_column(Text, nullable=True)
+    booking_confidence = mapped_column(String(32), nullable=True)
+    reconciliation_status = mapped_column(String(32), nullable=True)
+    reconciliation_error = mapped_column(Text, nullable=True)
+    ndr_reason = mapped_column(Text, nullable=True)
+    ndr_attempt = mapped_column(Integer, nullable=True)
+    ndr_remarks = mapped_column(Text, nullable=True)
+    ndr_operator_action = mapped_column(Text, nullable=True)
     address_confidence_score = mapped_column(Float, nullable=True)
     address_confidence_category = mapped_column(String(64), nullable=True)
     address_confidence_source = mapped_column(String(64), nullable=True)
@@ -76,3 +90,18 @@ class LabelPrintBatchItem(Base):
     order_id = mapped_column(String(32), primary_key=True)
     position = mapped_column(Integer, nullable=False)
     status = mapped_column(String(32), nullable=False)
+
+
+class CourierWebhookEvent(Base):
+    __tablename__ = "courier_webhook_events"
+    __table_args__ = (UniqueConstraint("provider", "provider_event_id", name="uq_courier_webhook_provider_event"),)
+
+    id = mapped_column(String(64), primary_key=True)
+    provider = mapped_column(String(32), nullable=False)
+    provider_event_id = mapped_column(String(128), nullable=False)
+    order_id = mapped_column(String(32), nullable=True)
+    payload_hash = mapped_column(String(64), nullable=False)
+    received_at = mapped_column(DateTime(timezone=True), nullable=False)
+    processed_at = mapped_column(DateTime(timezone=True), nullable=True)
+    status = mapped_column(String(32), nullable=False)
+    error = mapped_column(Text, nullable=True)

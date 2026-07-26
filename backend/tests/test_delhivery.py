@@ -16,7 +16,7 @@ from app.db.session import get_db
 from app.repositories.shiprocket import get_shipment, upsert_shipment
 from app.schemas.orders import OrderProduct, ShippingAddress, ShopifyOrder
 from app.services import delhivery as module
-from app.services.delhivery import DelhiveryError, DelhiveryService, shadowfax_zone_d_quote
+from app.services.delhivery import DelhiveryError, DelhiveryService
 
 
 class Response:
@@ -334,12 +334,6 @@ async def test_cancellation_contract(monkeypatch):
     result = await DelhiveryService(token="token", pickup="Mumchies Foods").cancel("WB1")
     assert result["status"] is True
     assert client.calls[0][2]["json"]["cancellation"] == "true"
-
-
-def test_shadowfax_zone_d_is_unchanged():
-    quote = shadowfax_zone_d_quote(True)
-    assert quote["rate"] == 59
-    assert quote["booking_supported"] is False
 
 
 def test_missing_postcode_blocks_delhivery_payload():

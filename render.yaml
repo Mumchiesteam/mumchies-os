@@ -63,6 +63,8 @@ services:
         sync: false
       - key: SHADOWFAX_TOKEN
         sync: false
+      - key: SHADOWFAX_BASE_URL
+        sync: false
     disk:
       name: mumchies-os-data
       mountPath: /var/data/mumchies

@@ -2,7 +2,7 @@
 
 Internal operations platform for Mumchies Foods. It consolidates daily ecommerce
 operations — pulling orders from Shopify, verifying addresses, confirming COD orders by
-phone, booking couriers (Shiprocket / Delhivery, with Shadowfax as a manual fallback),
+phone, booking couriers through provider-neutral adapters (Shiprocket / Delhivery / Shadowfax),
 generating shipping labels, and syncing fulfilment back to Shopify.
 
 The primary user is a **non-technical business operator**. Design priorities, in order:
@@ -28,7 +28,7 @@ The primary user is a **non-technical business operator**. Design priorities, in
              │  Shopify    │                    │  Local data store │         │ Courier providers │
              │ Admin API   │                    │  SQLite + JSON    │         │ Shiprocket /      │
              │ (orders,    │                    │  (on-disk files)  │         │ Delhivery /       │
-             │ fulfilment) │                    └───────────────────┘         │ Shadowfax(manual) │
+             │ fulfilment) │                    └───────────────────┘         │ Shadowfax Direct  │
              └─────────────┘                                                  └───────────────────┘
 ```
 
@@ -195,7 +195,7 @@ Settings load from environment (`.env` in `backend/`), via `app/core/config.py`:
   Shopify Admin API app credentials (a client-credentials flow, not a static token).
 - `shiprocket_email`, `shiprocket_password`, `shiprocket_pickup` — Shiprocket account.
 - `delhivery_token`, `delhivery_pickup` — direct Delhivery account.
-- `shadowfax_token` — Shadowfax (booking is manual; token reserved).
+- `shadowfax_token` / `shadowfax_base_url` — backend-only Shadowfax Direct configuration.
 - `shopify_notify_customer_on_fulfillment` — whether Shopify emails the customer on fulfilment.
 
 Secrets live only in `.env` (gitignored) and, in a hosted setup, as host environment
@@ -220,7 +220,7 @@ Package details entered (weight + dimensions)
 Check Couriers ──► quotes from Shiprocket + Delhivery + Shadowfax estimate (cheapest first)
         │
         ▼
-Select courier ──► Book Shipment (Shiprocket API / Delhivery direct / Shadowfax = manual)
+Select courier ──► Book Shipment through the selected provider adapter
         │
         ▼
 Label print batch generated (A6 for Delhivery) ──► confirm printed
@@ -248,7 +248,7 @@ Shopify fulfilment + tracking synced back
 | **Shopify** | Source of orders, customers, fulfilment. Read orders; write fulfilment/tracking/address. | Automated (read + write) |
 | **Shiprocket** | Courier aggregator: serviceability quotes, booking, AWB, tracking, label. | Automated booking |
 | **Delhivery** | Direct courier account: quotes, manifestation, native A6 label, tracking. | Automated booking |
-| **Shadowfax** | Zone-D fallback estimate only. | **Manual** — quote shown, booking done in Shadowfax's own portal |
+| **Shadowfax** | Provider-neutral Direct adapter, persistence, reconciliation, tracking, cancellation, labels and NDR contracts. | Transport fails closed until the official Forward Integration endpoint contract is wired. |
 
 ---
 

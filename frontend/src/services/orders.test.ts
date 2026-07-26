@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { clearReconciliationFilter, getOrders, reconciliationDataset, reconciliationFilterLabel, selectReconciliationFilter, shiprocketCancellationMessage, shouldRemoveCleanupRecord, verifyShiprocketOnlyCancellation, type OrdersReconciliationSummary, type ReconciliationRecord, type ShiprocketCancellationResult, type ShiprocketCleanupRecord } from './orders'
+import { cancelCourierShipment, clearReconciliationFilter, getOrders, reconciliationDataset, reconciliationFilterLabel, reconcileCourierBooking, refreshShiprocketShipment, selectReconciliationFilter, shiprocketCancellationMessage, shouldRemoveCleanupRecord, verifyShiprocketOnlyCancellation, type OrdersReconciliationSummary, type ReconciliationRecord, type ShiprocketCancellationResult, type ShiprocketCleanupRecord } from './orders'
 
 const response = (pageSize: number, total = 0) => new Response(JSON.stringify({
   items: [],
@@ -43,6 +43,19 @@ describe('orders pagination client', () => {
     expect(result.counts.fresh).toBe(64)
     expect(result.counts.new_orders).toBe(64)
     expect(result.counts.pending_booking).toBe(8)
+  })
+})
+
+describe('provider-neutral courier client', () => {
+  it.each([
+    ['tracking', refreshShiprocketShipment, '/courier/tracking/refresh'],
+    ['reconciliation', reconcileCourierBooking, '/courier/reconcile'],
+    ['cancellation', cancelCourierShipment, '/courier/cancel'],
+  ] as const)('uses the common %s endpoint', async (_name, action, path) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ provider: 'shadowfax', shipment: null, result: { status: 'cancelled', message: 'ok' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    await action('1')
+    expect(String(fetchMock.mock.calls[0][0])).toContain(path)
+    expect(fetchMock.mock.calls).toHaveLength(1)
   })
 })
 

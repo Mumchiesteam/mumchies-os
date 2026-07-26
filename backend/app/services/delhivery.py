@@ -436,22 +436,4 @@ class DelhiveryService:
             return int(float(value)) if value not in (None, "") else None
         except (TypeError, ValueError):
             return None
-
-
-def shadowfax_zone_d_quote(cod: bool) -> dict[str, Any]:
-    return {
-        "courier_id": "shadowfax:manual-zone-d",
-        "courier_name": "Shadowfax 360 Manual",
-        "rate": 59.0,
-        "cod_charge": 0.0 if cod else None,
-        "total_estimated_shipping_cost": 59.0,
-        "estimated_delivery_days": None,
-        "expected_delivery_date": None,
-        "rating": None,
-        "cod_supported": True,
-        "prepaid_supported": True,
-        "mode": "surface",
-        "provider": "shadowfax",
-        "booking_supported": False,
-        "rate_note": "Zone D fallback; GST extra; booking is manual",
-    }
+# End of DelhiveryService.

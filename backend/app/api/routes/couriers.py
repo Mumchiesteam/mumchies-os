@@ -13,7 +13,9 @@ from app.db.session import get_db
 from app.repositories.shiprocket import get_shipment, snapshot as shipment_snapshot, upsert_shipment
 from app.schemas.orders import ShopifyOrder
 from app.services.order_operations import OrderOperationsStore
-from app.services.delhivery import DelhiveryError, DelhiveryService, shadowfax_zone_d_quote
+from app.services.delhivery import DelhiveryError, DelhiveryService
+from app.services.courier_platform import ProviderError, courier_registry
+from app.services.courier_platform.service import CourierPlatformService
 from app.services.shipment_status import has_existing_shipment_evidence
 from app.services.shiprocket import (
     BookingEligibilityResult,
@@ -44,6 +46,10 @@ class BookingPayload(PackageDetailsPayload):
     courier_id: str
     provider: str | None = None
     courier_name: str | None = None
+
+
+class ProviderActionPayload(BaseModel):
+    operator: str = "Mumchies OS"
 
 
 async def _sync_shopify_after_booking(db: Session, order: ShopifyOrder) -> dict[str, object] | None:
@@ -232,6 +238,30 @@ def _build_delhivery_payload(order: ShopifyOrder, operations: dict[str, object],
     }
 
 
+def _build_provider_booking_request(order: ShopifyOrder, operations: dict[str, object], package: PackageDetailsPayload) -> dict[str, object]:
+    """Provider-neutral booking input. Adapters alone translate this into official payloads."""
+    address = _order_latest_address(order, operations)
+    if not isinstance(address, dict):
+        raise HTTPException(status_code=400, detail="Latest operational address is missing.")
+    phone = str(address.get("phone") or order.phone or "").strip()
+    pincode = str(address.get("pincode") or "").strip()
+    if not phone or not pincode:
+        raise HTTPException(status_code=400, detail="Customer phone and delivery postcode are required.")
+    return {
+        "merchant_order_id": order.order_number,
+        "customer": {
+            "name": str(address.get("customer_name") or order.customer_name or "Customer"),
+            "phone": phone, "email": order.email,
+            "address_line1": address.get("address_line1") or address.get("address"),
+            "address_line2": address.get("address_line2"), "landmark": address.get("landmark"),
+            "city": address.get("city"), "state": address.get("state"), "pincode": pincode, "country": "India",
+        },
+        "payment": {"mode": _order_payment_mode(order), "cod_amount": float(order.cod_collectable_amount), "order_total": float(order.order_total)},
+        "package": package.model_dump(),
+        "items": [{"name": item.product_name, "sku": item.sku, "quantity": item.quantity, "price": float(item.price)} for item in order.products],
+    }
+
+
 @router.get("/health")
 async def shiprocket_health() -> dict[str, object]:
     try:
@@ -313,7 +343,25 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
         except (DelhiveryError, httpx.HTTPError):
             # One provider failing must not hide otherwise valid courier options.
             provider_warnings.append("Direct Delhivery is temporarily unavailable.")
-        normalized_quotes.append(shadowfax_zone_d_quote(cod))
+        try:
+            adapter = courier_registry.get("shadowfax")
+            shadowfax = await adapter.serviceability({
+                "pickup_pincode": pickup_postcode, "delivery_pincode": delivery_postcode,
+                "weight_kg": package.weight_kg, "payment_mode": "COD" if cod else "Prepaid",
+                "cod_amount": float(order.cod_collectable_amount) if cod else 0,
+            })
+            normalized_quotes.extend({
+                "courier_id": quote.service_id, "courier_name": quote.courier_name,
+                "rate": quote.charges or 0, "cod_charge": quote.cod_charge,
+                "total_estimated_shipping_cost": quote.charges or 0,
+                "estimated_delivery_days": quote.estimated_delivery_days,
+                "expected_delivery_date": quote.expected_delivery_date, "rating": None,
+                "cod_supported": True, "prepaid_supported": True,
+                "mode": quote.service_type, "provider": quote.provider,
+                "booking_supported": quote.serviceable, "rate_note": quote.reason or "Shadowfax Direct",
+            } for quote in shadowfax.quotes)
+        except ProviderError as error:
+            provider_warnings.append(str(error))
     except ShiprocketConfigurationError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     except ShiprocketAPIError as error:
@@ -358,7 +406,17 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
         if payload.provider and payload.provider.lower() != provider:
             raise HTTPException(status_code=400, detail="Requested provider does not match the stored courier selection.")
         if provider == "shadowfax":
-            raise HTTPException(status_code=409, detail="Shadowfax booking is manual. Use the displayed Zone D estimate in the Shadowfax portal.")
+            adapter = courier_registry.get("shadowfax")
+            request = _build_provider_booking_request(order, operations, package)
+            try:
+                result = await CourierPlatformService().book(
+                    db, order_id=order_id, merchant_order_id=order.order_number,
+                    adapter=adapter, request=request, operator="Mumchies OS",
+                )
+            except ProviderError as error:
+                raise HTTPException(status_code=503 if error.operation in {"authenticate", "serviceability", "booking"} else 409, detail=str(error)) from error
+            synchronized = await _sync_shopify_after_booking(db, order)
+            return {"provider": "shadowfax", **result, "shipment": synchronized or result.get("shipment")}
         if provider == "delhivery":
             service = DelhiveryService()
             if not service.configured:
@@ -445,6 +503,44 @@ async def retry_unused_shiprocket_cleanup(order_id: str, db: Session = Depends(g
     if shipment is None or shipment.provider != "delhivery" or not shipment.awb or shipment.booking_status != "booked":
         raise HTTPException(status_code=409, detail="Shiprocket cleanup is available only after a successful direct Delhivery booking with a confirmed AWB.")
     return await _cleanup_unused_shiprocket_order(order_id, shipment.provider_order_id or order_id)
+
+
+@booking_router.post("/{order_id}/courier/reconcile")
+async def reconcile_provider_booking(order_id: str, payload: ProviderActionPayload, db: Session = Depends(get_db)) -> dict[str, object]:
+    shipment = get_shipment(db, order_id)
+    if shipment is None:
+        raise HTTPException(status_code=404, detail="Shipment not found.")
+    provider = shipment.provider or "shiprocket"
+    try:
+        result = await CourierPlatformService().reconcile(db, order_id=order_id, adapter=courier_registry.get(provider), operator=payload.operator)
+        return {"provider": provider, "shipment": result}
+    except ProviderError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@booking_router.post("/{order_id}/courier/tracking/refresh")
+async def refresh_provider_tracking(order_id: str, payload: ProviderActionPayload, db: Session = Depends(get_db)) -> dict[str, object]:
+    shipment = get_shipment(db, order_id)
+    if shipment is None:
+        raise HTTPException(status_code=404, detail="Shipment not found.")
+    provider = shipment.provider or "shiprocket"
+    try:
+        result = await CourierPlatformService().track(db, order_id=order_id, adapter=courier_registry.get(provider), operator=payload.operator)
+        return {"provider": provider, "shipment": result}
+    except ProviderError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+
+@booking_router.post("/{order_id}/courier/cancel")
+async def cancel_provider_shipment(order_id: str, payload: ProviderActionPayload, db: Session = Depends(get_db)) -> dict[str, object]:
+    shipment = get_shipment(db, order_id)
+    if shipment is None:
+        raise HTTPException(status_code=404, detail="Shipment not found.")
+    provider = shipment.provider or "shiprocket"
+    try:
+        return await CourierPlatformService().cancel(db, order_id=order_id, adapter=courier_registry.get(provider), operator=payload.operator)
+    except ProviderError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.post("/orders/{order_id}/couriers/select")

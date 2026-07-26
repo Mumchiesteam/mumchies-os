@@ -8,6 +8,9 @@ from pathlib import Path
 from uuid import uuid4
 
 from pypdf import PdfReader, PdfWriter
+from PIL import Image
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -17,6 +20,7 @@ from app.services.delhivery import DelhiveryError, DelhiveryService
 from app.services.delhivery_label import DelhiveryLabelError, render_delhivery_label
 from app.services.shiprocket import ShiprocketService
 from app.services.shopify import ShopifyService
+from app.services.courier_platform import LabelFormat, ProviderError, courier_registry
 
 LABEL_DIR = settings.data_dir / "label_batches"
 LABEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -58,13 +62,56 @@ def print_ready_pdf(source: bytes) -> bytes:
 async def official_label(shipment: ShiprocketShipment) -> bytes:
     if not shipment.awb:
         raise LabelPrintError("Shipment has no AWB.")
-    if shipment.provider == "delhivery":
-        response = await DelhiveryService().label(shipment.awb)
-    elif shipment.provider == "shiprocket" and shipment.shipment_id:
-        response = await ShiprocketService().fetch_label(shipment.shipment_id)
-    else:
-        raise LabelPrintError("This provider does not expose an official PDF label.")
-    return response.content
+    try:
+        return (await courier_registry.get(str(shipment.provider or "shiprocket")).download_label({
+            "order_id": shipment.order_id, "provider_order_id": shipment.provider_order_id,
+            "shipment_id": shipment.shipment_id, "awb": shipment.awb, "label_url": shipment.label_url,
+        })).content
+    except ProviderError as error:
+        raise LabelPrintError(str(error)) from error
+
+
+def image_label_to_pdf(source: bytes, label_format: LabelFormat) -> bytes:
+    """Convert a provider-defined 4x6 image to a 4x6 PDF without scaling."""
+    try:
+        image = Image.open(BytesIO(source))
+        dpi = image.info.get("dpi")
+        if not dpi or not dpi[0] or not dpi[1]:
+            raise LabelPrintError("Image label has no DPI metadata; exact 4 x 6 output cannot be guaranteed.")
+        width_pt, height_pt = image.width * 72 / float(dpi[0]), image.height * 72 / float(dpi[1])
+        target = next(((w, h) for w, h in TARGETS if abs(width_pt - w) <= 2 and abs(height_pt - h) <= 2), None)
+        if target is None:
+            raise LabelPrintError(f"Image label is {width_pt:.0f} x {height_pt:.0f} points, not an exact 4 x 6 label.")
+        target_width, target_height = target
+        output = BytesIO()
+        pdf = canvas.Canvas(output, pagesize=(target_width, target_height))
+        pdf.drawImage(ImageReader(image), 0, 0, width=target_width, height=target_height, preserveAspectRatio=True, anchor="c")
+        pdf.showPage(); pdf.save()
+        return output.getvalue()
+    except LabelPrintError:
+        raise
+    except Exception as error:
+        raise LabelPrintError(f"Provider returned an invalid {label_format.value} label.") from error
+
+
+class LabelService:
+    """Provider-neutral 4x6 thermal-label preparation; backend stays printer-driver agnostic."""
+    async def print_ready(self, shipment: ShiprocketShipment) -> bytes:
+        if shipment.provider == "delhivery":
+            if not shipment.awb: raise LabelPrintError("Shipment has no AWB.")
+            try:
+                data = await DelhiveryService().label_data(shipment.awb)
+                return render_delhivery_label(data, await _matching_shopify_order(shipment.order_id))
+            except (DelhiveryError, DelhiveryLabelError) as error:
+                raise LabelPrintError(str(error)) from error
+        try:
+            result = await courier_registry.get(str(shipment.provider or "shiprocket")).download_label({
+                "order_id": shipment.order_id, "provider_order_id": shipment.provider_order_id,
+                "shipment_id": shipment.shipment_id, "awb": shipment.awb, "label_url": shipment.label_url,
+            })
+        except ProviderError as error:
+            raise LabelPrintError(str(error)) from error
+        return print_ready_pdf(result.content) if result.format == LabelFormat.PDF else image_label_to_pdf(result.content, result.format)
 
 
 async def _matching_shopify_order(order_id: str):
@@ -81,16 +128,9 @@ async def _print_ready_page(shipment: ShiprocketShipment) -> bytes:
     """Dispatch per-provider label preparation. Delhivery is rendered natively from Delhivery's
     own documented packing-slip JSON (no A4 PDF is fetched at all); every other provider
     (Shiprocket) keeps the original official-PDF + box-detection behaviour unchanged."""
-    if shipment.provider == "delhivery":
-        if not shipment.awb:
-            raise LabelPrintError("Shipment has no AWB.")
-        try:
-            data = await DelhiveryService().label_data(shipment.awb)
-            order = await _matching_shopify_order(shipment.order_id)
-            return render_delhivery_label(data, order)
-        except (DelhiveryError, DelhiveryLabelError) as error:
-            raise LabelPrintError(str(error)) from error
-    return print_ready_pdf(await official_label(shipment))
+    if shipment.provider in {None, "shiprocket"}:
+        return print_ready_pdf(await official_label(shipment))
+    return await LabelService().print_ready(shipment)
 
 
 async def create_batch(db: Session, order_ids: list[str], operator: str) -> LabelPrintBatch:
@@ -100,8 +140,6 @@ async def create_batch(db: Session, order_ids: list[str], operator: str) -> Labe
     if any(shipment is None for shipment in shipments):
         raise LabelPrintError("One or more selected shipments do not exist.")
     providers = {shipment.provider for shipment in shipments if shipment}
-    if len(providers) != 1:
-        raise LabelPrintError("Create separate print batches for Shiprocket and Delhivery.")
     active = db.scalars(
         select(LabelPrintBatchItem).where(
             LabelPrintBatchItem.order_id.in_(order_ids),
@@ -124,7 +162,7 @@ async def create_batch(db: Session, order_ids: list[str], operator: str) -> Labe
     with path.open("wb") as handle:
         writer.write(handle)
     now = datetime.now(timezone.utc)
-    batch = LabelPrintBatch(id=batch_id, provider=str(next(iter(providers))), created_at=now, created_by=operator, status="awaiting_confirmation", pdf_cache_path=str(path))
+    batch = LabelPrintBatch(id=batch_id, provider=str(next(iter(providers))) if len(providers) == 1 else "mixed", created_at=now, created_by=operator, status="awaiting_confirmation", pdf_cache_path=str(path))
     db.add(batch)
     for position, shipment in enumerate(shipments):
         shipment.label_print_status = "awaiting_confirmation"

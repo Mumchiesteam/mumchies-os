@@ -442,39 +442,29 @@ async def _official_shipping_label(order_id: str, db: Session, *, inline: bool =
             raise HTTPException(status_code=404, detail="No courier shipment exists for this order.")
         if not shipment.awb:
             raise HTTPException(status_code=404, detail="No AWB exists for this shipment.")
-        if shipment.provider == "delhivery":
-            if shipment.booking_status != "booked":
-                raise HTTPException(status_code=409, detail="The Delhivery shipment is not yet manifested and label-eligible.")
-            response = await DelhiveryService().label(shipment.awb)
-            reference = shipment.provider_order_id or order_id
-            filename = f"delhivery-{reference}-{shipment.awb}.pdf"
-        else:
-            if not shipment.shipment_id:
-                raise HTTPException(status_code=404, detail="No Shiprocket shipment ID exists for this order.")
-            response = await ShiprocketService().fetch_label(shipment.shipment_id)
-            filename = f"shipping-label-{shipment.awb}.pdf"
-        content = response.content
-        if print_ready:
-            from app.services.label_printing import LabelPrintError, print_ready_pdf
-            try:
-                content = print_ready_pdf(content)
-            except LabelPrintError as error:
-                raise HTTPException(status_code=409, detail=str(error)) from error
+        if shipment.booking_status and shipment.booking_status != "booked":
+            raise HTTPException(status_code=409, detail="The shipment is not confirmed and label-eligible.")
+        from app.services.label_printing import LabelPrintError, LabelService
+        from app.services.courier_platform import ProviderError, courier_registry
+        try:
+            if print_ready:
+                content, media_type, extension = await LabelService().print_ready(shipment), "application/pdf", "pdf"
+            else:
+                label = await courier_registry.get(str(shipment.provider or "shiprocket")).download_label(shipment_snapshot(shipment))
+                content, media_type, extension = label.content, label.content_type, label.format.value
+        except (LabelPrintError, ProviderError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        filename = f"{shipment.provider or 'courier'}-{shipment.provider_order_id or order_id}-{shipment.awb}.{extension}"
         return StreamingResponse(
             iter([content]),
-            media_type="application/pdf",
+            media_type=media_type,
             headers={
                 "Content-Disposition": f'{"inline" if inline else "attachment"}; filename="{filename}"',
                 "Cache-Control": "private, no-store",
                 "X-Content-Type-Options": "nosniff",
             },
         )
-    except DelhiveryError as error:
-        status_code = 503 if error.status_code in {401, 403} else 502
-        raise HTTPException(status_code=status_code, detail=str(error)) from error
-    except ShiprocketConfigurationError as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
-    except ShiprocketAPIError as error:
+    except (DelhiveryError, ShiprocketConfigurationError, ShiprocketAPIError) as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
 

@@ -122,9 +122,15 @@ export interface Order {
     booking_status: string | null
     booked_at: string | null
     latest_status: string | null
+    normalized_status: string | null
+    courier_service: string | null
+    latest_tracking_at: string | null
+    latest_scan: string | null
+    terminal_status: string | null
     last_synced_at: string | null
     tracking_url: string | null
     label_url: string | null
+    label_format: 'pdf' | 'png' | 'jpeg' | null
     expected_delivery_date: string | null
     delivered_at: string | null
     address_sync_status: string | null
@@ -149,6 +155,14 @@ export interface Order {
     label_last_printed_by: string | null
     label_print_count: number
     last_print_batch_id: string | null
+    raw_provider_response: string | null
+    booking_confidence: 'confirmed' | 'uncertain' | 'reconciled' | null
+    reconciliation_status: 'not_required' | 'pending' | 'confirmed' | 'failed' | 'manual_review' | null
+    reconciliation_error: string | null
+    ndr_reason: string | null
+    ndr_attempt: number | null
+    ndr_remarks: string | null
+    ndr_operator_action: string | null
     address_confidence_score: number | null
     address_confidence_category: string | null
   } | null
@@ -714,12 +728,33 @@ export async function bookShiprocketShipment(orderId: string, payload: {
 }
 
 export async function refreshShiprocketShipment(orderId: string): Promise<{ provider: string; shipment: Order['shipment'] }> {
-  const response = await apiFetch(`${apiBase}/api/v1/couriers/shiprocket/orders/${orderId}/refresh`, { method: 'POST' })
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/courier/tracking/refresh`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operator: 'Amit Kumar' }) })
   if (!response.ok) {
     const body = await response.json().catch(() => null)
     throw new Error(body?.detail?.message || body?.detail || 'Could not refresh shipment status.')
   }
   return response.json()
+}
+
+export async function reconcileCourierBooking(orderId: string): Promise<{ provider: string; shipment: Order['shipment'] }> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/courier/reconcile`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operator: 'Amit Kumar' }) })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail || 'Could not reconcile the courier booking.')
+  return body
+}
+
+export async function refreshCourierTracking(orderId: string): Promise<{ provider: string; shipment: Order['shipment'] }> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/courier/tracking/refresh`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operator: 'Amit Kumar' }) })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail || 'Could not refresh courier tracking.')
+  return body
+}
+
+export async function cancelCourierShipment(orderId: string): Promise<{ result: { status: string; message: string }; shipment: Order['shipment'] }> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/courier/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operator: 'Amit Kumar' }) })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail || 'Could not cancel courier shipment.')
+  return body
 }
 
 export async function syncShopifyFulfillment(orderId: string): Promise<{ order_id: string; shipment: Order['shipment'] }> {

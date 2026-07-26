@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     delhivery_token: str | None = None
     delhivery_pickup: str | None = None
     shadowfax_token: str | None = None
+    shadowfax_base_url: str | None = None
 
     @field_validator("database_url", mode="before")
     @classmethod

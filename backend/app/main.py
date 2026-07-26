@@ -13,7 +13,8 @@ app = FastAPI(title=settings.app_name, version=settings.app_version)
 @app.middleware("http")
 async def require_authentication(request: Request, call_next):
     public_paths = {"/health", f"{settings.api_v1_prefix}/auth/login", f"{settings.api_v1_prefix}/auth/logout"}
-    if not settings.auth_enabled or request.method == "OPTIONS" or request.url.path in public_paths:
+    signed_provider_webhook = request.method == "POST" and request.url.path.startswith(f"{settings.api_v1_prefix}/couriers/webhooks/")
+    if not settings.auth_enabled or request.method == "OPTIONS" or request.url.path in public_paths or signed_provider_webhook:
         return await call_next(request)
     if not settings.auth_session_secret:
         return JSONResponse(status_code=503, content={"detail": "Authentication is not configured."})

@@ -32,6 +32,8 @@ import {
   requestLabelReprint,
   retryShiprocketCleanup,
   refreshShiprocketShipment,
+  reconcileCourierBooking,
+  cancelCourierShipment,
   saveAndVerifyOrderAddress,
   saveOrderPackage,
   selectShiprocketCourier,
@@ -554,6 +556,26 @@ function App() {
     }
   }
 
+  const reconcileShipment = async () => {
+    if (!selectedOrder) return
+    setShipmentRefreshLoading(true); setCourierError('')
+    try {
+      const result = await reconcileCourierBooking(selectedOrder.internalId)
+      setOrders(prev => prev.map(order => order.internalId === selectedOrder.internalId ? { ...order, shipment: result.shipment } : order))
+      setOperations(await getOrderOperations(selectedOrder.internalId)); setNotice('Booking reconciliation completed')
+    } catch (err) { setCourierError((err as Error).message) } finally { setShipmentRefreshLoading(false) }
+  }
+
+  const cancelShipment = async () => {
+    if (!selectedOrder || !window.confirm('Cancel this courier shipment only? Shipped and delivered shipments are protected.')) return
+    setShipmentRefreshLoading(true); setCourierError('')
+    try {
+      const result = await cancelCourierShipment(selectedOrder.internalId)
+      setOrders(prev => prev.map(order => order.internalId === selectedOrder.internalId ? { ...order, shipment: result.shipment } : order))
+      setOperations(await getOrderOperations(selectedOrder.internalId)); setNotice(result.result.message)
+    } catch (err) { setCourierError((err as Error).message) } finally { setShipmentRefreshLoading(false) }
+  }
+
   const syncFulfillment = async () => {
     if (!selectedOrder) return
     setShopifySyncLoading(true)
@@ -747,6 +769,8 @@ function App() {
           onSelectCourier={courier => void selectCourier(courier)}
           onBookShipment={bookShipment}
           onRefreshShipment={() => void refreshShipment()}
+          onReconcileShipment={() => void reconcileShipment()}
+          onCancelShipment={() => void cancelShipment()}
           onRetryShiprocketCleanup={() => { if (selectedOrder) void retryShiprocketCleanup(selectedOrder.internalId).then(result => { if (result.status === 'cancelled' || result.status === 'not_applicable') setCourierError(''); else setCourierError(result.error || `Shiprocket cleanup: ${result.status}`); setOperations(current => current) }).catch(error => setCourierError(error.message)) }}
           onSyncShopifyFulfillment={() => void syncFulfillment()}
           onDownloadLabel={() => retrieveLabel('download')}
@@ -863,6 +887,8 @@ const OrderDrawer = memo(function OrderDrawer({
   onSelectCourier,
   onBookShipment,
   onRefreshShipment,
+  onReconcileShipment,
+  onCancelShipment,
   onRetryShiprocketCleanup,
   onSyncShopifyFulfillment,
   onDownloadLabel,
@@ -936,6 +962,8 @@ const OrderDrawer = memo(function OrderDrawer({
     height_cm: number | null
   }) => void
   onRefreshShipment: () => void
+  onReconcileShipment: () => void
+  onCancelShipment: () => void
   onRetryShiprocketCleanup: () => void
   onSyncShopifyFulfillment: () => void
   onDownloadLabel: () => void
@@ -1134,7 +1162,7 @@ const OrderDrawer = memo(function OrderDrawer({
               </div>
               <div className="flex flex-wrap gap-2">
                 <button disabled={!canCheckCouriers || courierLoading} onClick={() => void onCheckCouriers(packageNumbers)} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Check Couriers</button>
-                <button disabled={!canBookShipment} onClick={() => void onBookShipment(packageNumbers)} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400">{bookingLoading ? (selectedCourier?.provider === 'delhivery' ? 'Booking with Delhivery…' : 'Booking…') : selectedCourier?.provider === 'shadowfax' ? 'Manual booking only' : 'Book Shipment'}</button>
+                <button disabled={!canBookShipment} onClick={() => void onBookShipment(packageNumbers)} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400">{bookingLoading ? `Booking with ${selectedCourier?.courier_name || 'courier'}…` : 'Book Shipment'}</button>
               </div>
               <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-sm text-slate-600">
                 <p className="font-medium text-slate-700">Eligibility</p>
@@ -1185,11 +1213,13 @@ const OrderDrawer = memo(function OrderDrawer({
                   <p>Shipment ID: {shipment.shipment_id || '—'}</p>
                   <p>Booked at: {shipment.booked_at ? formatDateTime(shipment.booked_at) : '—'}</p>
                   <p>Latest status: {shipment.latest_status || '—'}</p>
-                  {(shipment.provider === 'shiprocket' || shipment.provider === 'delhivery') && shipment.shipment_id && (
+                  {shipment.provider && shipment.shipment_id && (
                     <button onClick={onRefreshShipment} disabled={shipmentRefreshLoading} className="mt-2 rounded-md border border-emerald-200 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-800 disabled:opacity-60">
                       {shipmentRefreshLoading ? 'Refreshing…' : 'Refresh Shipment Status'}
                     </button>
                   )}
+                  {(shipment.booking_confidence === 'uncertain' || shipment.reconciliation_status === 'pending' || shipment.reconciliation_status === 'manual_review') && <button onClick={onReconcileShipment} disabled={shipmentRefreshLoading} className="ml-2 mt-2 rounded-md border border-amber-200 bg-white px-3 py-1.5 text-xs font-semibold text-amber-800 disabled:opacity-60">Retry Verification</button>}
+                  {shipment.reconciliation_error && <p className="mt-2 text-xs text-rose-700">{shipment.reconciliation_error}</p>}
                 </div>
               )}
               {courierOptions.length === 0 && <p className="text-xs text-slate-500">{courierSyncMessage}</p>}
@@ -1256,14 +1286,15 @@ const OrderDrawer = memo(function OrderDrawer({
         <footer className="absolute inset-x-0 bottom-0 flex items-center gap-2 border-t border-slate-200 bg-white px-4 py-3 shadow-[0_-8px_20px_rgba(15,23,42,.05)]">
           {shipment?.awb ? (
             <>
-              {(shipment.provider === 'shiprocket' || shipment.provider === 'delhivery') ? (
+              {shipment.provider ? (
                 <button disabled={labelLoading} onClick={onDownloadLabel} className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-semibold text-white disabled:opacity-60">
                   <Icon name="truck" size={16} />
-                  {labelLoading ? 'Fetching Delhivery label…' : shipment.provider === 'delhivery' ? 'Download Official PDF' : 'Download Label PDF'}
+                  {labelLoading ? 'Preparing 4×6 label…' : 'Download 4×6 Label'}
                 </button>
-              ) : <div className="flex flex-1 items-center justify-center rounded-lg bg-slate-100 px-3 py-2.5 text-sm font-semibold text-slate-500">Official provider PDF label unavailable</div>}
-              {shipment.provider === 'delhivery' && <button disabled={labelLoading} onClick={onPrintLabel} className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700 disabled:opacity-60">Open / Print Official PDF</button>}
+              ) : <div className="flex flex-1 items-center justify-center rounded-lg bg-slate-100 px-3 py-2.5 text-sm font-semibold text-slate-500">Provider label unavailable</div>}
+              <button disabled={labelLoading} onClick={onPrintLabel} className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700 disabled:opacity-60">Open / Print Label</button>
               <button onClick={() => window.open(shipment.tracking_url || `${apiBase}/api/v1/couriers/shiprocket/orders/${order.internalId}/tracking`, '_blank', 'noopener,noreferrer')} className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Open Tracking</button>
+              <button disabled={shipmentRefreshLoading || ['picked_up', 'in_transit', 'out_for_delivery', 'delivered', 'rto'].includes(shipment.normalized_status || '')} onClick={onCancelShipment} className="rounded-lg border border-rose-200 px-3 py-2.5 text-sm font-semibold text-rose-700 disabled:opacity-40">Cancel Shipment</button>
             </>
           ) : (
             <button
@@ -1272,7 +1303,7 @@ const OrderDrawer = memo(function OrderDrawer({
               className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
             >
               <Icon name="truck" size={16} />
-              {bookingLoading ? (selectedCourier?.provider === 'delhivery' ? 'Booking with Delhivery…' : 'Booking…') : selectedCourier?.provider === 'shadowfax' ? 'Shadowfax booking is manual' : selectedCourierId ? 'Book Shipment' : 'Select a courier above'}
+              {bookingLoading ? `Booking with ${selectedCourier?.courier_name || 'courier'}…` : selectedCourierId ? 'Book Shipment' : 'Select a courier above'}
             </button>
           )}
           <button onClick={onClose} className="rounded-lg px-2 py-2.5 text-sm font-semibold text-slate-500 hover:bg-slate-50">Close</button>
