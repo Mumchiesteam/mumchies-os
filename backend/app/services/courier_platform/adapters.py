@@ -159,6 +159,9 @@ class ShadowfaxAdapter(CourierAdapter):
     def __init__(self, *, token: str | None = None, base_url: str | None = None, transport: ShadowfaxTransport | None = None) -> None:
         self._token = token if token is not None else settings.shadowfax_token
         self._base_url = (base_url if base_url is not None else settings.shadowfax_base_url or "").rstrip("/")
+        if transport is None and self._token and self._base_url:
+            from app.services.courier_platform.shadowfax_http import ShadowfaxHTTPTransport
+            transport = ShadowfaxHTTPTransport(token=self._token, base_url=self._base_url)
         self._transport = transport
 
     @property
@@ -171,7 +174,7 @@ class ShadowfaxAdapter(CourierAdapter):
         errors = []
         if not self._token: errors.append("SHADOWFAX_TOKEN is not configured.")
         if not self._base_url: errors.append("SHADOWFAX_BASE_URL is not configured.")
-        if self._transport is None: errors.append("Shadowfax Direct transport is not wired.")
+        if self._transport is None: errors.append("Shadowfax Direct transport is not configured.")
         return errors
 
     def _require_transport(self, operation: str) -> ShadowfaxTransport:

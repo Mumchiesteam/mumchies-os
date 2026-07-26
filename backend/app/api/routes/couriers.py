@@ -46,6 +46,7 @@ class BookingPayload(PackageDetailsPayload):
     courier_id: str
     provider: str | None = None
     courier_name: str | None = None
+    operator: str = "Mumchies OS"
 
 
 class ProviderActionPayload(BaseModel):
@@ -238,8 +239,8 @@ def _build_delhivery_payload(order: ShopifyOrder, operations: dict[str, object],
     }
 
 
-def _build_provider_booking_request(order: ShopifyOrder, operations: dict[str, object], package: PackageDetailsPayload) -> dict[str, object]:
-    """Provider-neutral booking input. Adapters alone translate this into official payloads."""
+async def _build_provider_booking_request(order: ShopifyOrder, operations: dict[str, object], package: PackageDetailsPayload) -> dict[str, object]:
+    """Build the documented Shadowfax warehouse payload from existing OS data."""
     address = _order_latest_address(order, operations)
     if not isinstance(address, dict):
         raise HTTPException(status_code=400, detail="Latest operational address is missing.")
@@ -247,18 +248,82 @@ def _build_provider_booking_request(order: ShopifyOrder, operations: dict[str, o
     pincode = str(address.get("pincode") or "").strip()
     if not phone or not pincode:
         raise HTTPException(status_code=400, detail="Customer phone and delivery postcode are required.")
+    if not pincode.isdigit() or len(pincode) != 6:
+        raise HTTPException(status_code=400, detail="Delivery postcode must contain exactly 6 digits.")
+    customer_address = {
+        "address_line_1": address.get("address_line1") or address.get("address"),
+        "city": address.get("city"),
+        "state": address.get("state"),
+    }
+    missing_customer = [field for field, value in customer_address.items() if not str(value or "").strip()]
+    if missing_customer:
+        raise HTTPException(status_code=400, detail=f"Shipping address is missing: {', '.join(missing_customer)}.")
+
+    warehouse = await ShiprocketService().pickup_location_details()
+    if not isinstance(warehouse, dict):
+        raise HTTPException(status_code=400, detail="The configured Mumchies warehouse address could not be resolved.")
+
+    def warehouse_value(*keys: str) -> str:
+        return str(next((warehouse.get(key) for key in keys if warehouse.get(key) not in (None, "")), "")).strip()
+
+    warehouse_pincode = warehouse_value("postal_code", "pincode", "pin_code")
+    warehouse_details = {
+        "name": warehouse_value("name", "pickup_location"),
+        "contact": warehouse_value("phone", "contact", "mobile"),
+        "address_line_1": warehouse_value("address", "address_1", "address_line_1"),
+        "address_line_2": warehouse_value("address_2", "address_line_2"),
+        "city": warehouse_value("city"),
+        "state": warehouse_value("state"),
+        "pincode": int(warehouse_pincode) if warehouse_pincode.isdigit() and len(warehouse_pincode) == 6 else None,
+        "unique_code": warehouse_value("pickup_location"),
+    }
+    required_warehouse = ("name", "contact", "address_line_1", "city", "state", "pincode")
+    missing_warehouse = [field for field in required_warehouse if not warehouse_details.get(field)]
+    if missing_warehouse:
+        raise HTTPException(
+            status_code=400,
+            detail=f"The configured Mumchies warehouse address is missing: {', '.join(missing_warehouse)}.",
+        )
+
+    product_details = []
+    for index, item in enumerate(order.products):
+        if item.quantity <= 0 or float(item.price) < 0 or not item.product_name.strip():
+            raise HTTPException(status_code=400, detail=f"Product line {index + 1} is invalid.")
+        product = {
+            "sku_name": item.product_name,
+            "price": float(item.price),
+            "additional_details": {"quantity": item.quantity},
+        }
+        if item.sku:
+            product["sku_id"] = item.sku
+        product_details.append(product)
+
+    payment_mode = _order_payment_mode(order)
+    product_value = sum(float(item.price) * item.quantity for item in order.products)
     return {
-        "merchant_order_id": order.order_number,
-        "customer": {
-            "name": str(address.get("customer_name") or order.customer_name or "Customer"),
-            "phone": phone, "email": order.email,
-            "address_line1": address.get("address_line1") or address.get("address"),
-            "address_line2": address.get("address_line2"), "landmark": address.get("landmark"),
-            "city": address.get("city"), "state": address.get("state"), "pincode": pincode, "country": "India",
+        "order_type": "warehouse",
+        "order_details": {
+            "client_order_id": order.order_number,
+            "actual_weight": max(round(package.weight_kg * 1000), 1),
+            "volumetric_weight": max(round((package.length_cm * package.breadth_cm * package.height_cm) / 5000 * 1000), 1),
+            "product_value": product_value,
+            "payment_mode": payment_mode,
+            "cod_amount": float(order.cod_collectable_amount) if payment_mode == "COD" else 0,
+            "total_amount": float(order.order_total),
+            "order_service": "regular",
         },
-        "payment": {"mode": _order_payment_mode(order), "cod_amount": float(order.cod_collectable_amount), "order_total": float(order.order_total)},
-        "package": package.model_dump(),
-        "items": [{"name": item.product_name, "sku": item.sku, "quantity": item.quantity, "price": float(item.price)} for item in order.products],
+        "customer_details": {
+            "name": str(address.get("customer_name") or address.get("name") or order.customer_name or "Customer"),
+            "contact": phone,
+            "address_line_1": customer_address["address_line_1"],
+            "address_line_2": " ".join(filter(None, [address.get("address_line2"), address.get("landmark")])),
+            "city": customer_address["city"],
+            "state": customer_address["state"],
+            "pincode": int(pincode),
+        },
+        "pickup_details": dict(warehouse_details),
+        "rto_details": dict(warehouse_details),
+        "product_details": product_details,
     }
 
 
@@ -407,11 +472,11 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
             raise HTTPException(status_code=400, detail="Requested provider does not match the stored courier selection.")
         if provider == "shadowfax":
             adapter = courier_registry.get("shadowfax")
-            request = _build_provider_booking_request(order, operations, package)
+            request = await _build_provider_booking_request(order, operations, package)
             try:
                 result = await CourierPlatformService().book(
                     db, order_id=order_id, merchant_order_id=order.order_number,
-                    adapter=adapter, request=request, operator="Mumchies OS",
+                    adapter=adapter, request=request, operator=payload.operator,
                 )
             except ProviderError as error:
                 raise HTTPException(status_code=503 if error.operation in {"authenticate", "serviceability", "booking"} else 409, detail=str(error)) from error

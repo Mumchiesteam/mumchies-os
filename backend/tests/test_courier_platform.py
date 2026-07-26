@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from io import BytesIO
 
 import pytest
+import httpx
 from PIL import Image
 from pypdf import PdfReader
 from reportlab.pdfgen import canvas
@@ -19,15 +21,139 @@ from app.services.courier_platform import (
     ProviderError, ReconciliationStatus, ShadowfaxAdapter, courier_registry,
 )
 from app.services.courier_platform.service import CourierPlatformService
+from app.services.courier_platform.shadowfax_http import ShadowfaxHTTPTransport
 from app.services.courier_platform.webhooks import WebhookHandler, process_webhook, webhook_registry
 from app.services.courier_platform.models import TrackingResult
 from app.services.label_printing import LabelPrintError, LabelService, confirm_batch, create_batch, image_label_to_pdf, print_ready_pdf
+from app.api.routes.couriers import PackageDetailsPayload, _build_provider_booking_request
+from app.schemas.orders import OrderProduct, ShippingAddress, ShopifyOrder
 
 
 def exact_pdf(width: int = 288, height: int = 432) -> bytes:
     output = BytesIO(); document = canvas.Canvas(output, pagesize=(width, height))
     document.drawString(20, 20, "provider label"); document.showPage(); document.save()
     return output.getvalue()
+
+
+def official_booking_payload() -> dict:
+    return {
+        "order_type": "warehouse",
+        "order_details": {"client_order_id": "STAGE-1", "product_value": 500, "payment_mode": "Prepaid", "cod_amount": 0},
+        "customer_details": {"name": "Test", "contact": "9999999999", "address_line_1": "Test", "city": "Bengaluru", "state": "Karnataka", "pincode": 560077},
+        "pickup_details": {"contact": "9999999999", "address_line_1": "Test", "city": "Bengaluru", "state": "Karnataka", "pincode": 560077},
+        "rto_details": {"name": "Test", "contact": "9999999999", "address_line_1": "Test", "city": "Bengaluru", "state": "Karnataka", "pincode": 560077},
+        "product_details": [{"sku_name": "Test item", "price": 500}],
+    }
+
+
+@pytest.mark.anyio
+async def test_shadowfax_booking_payload_uses_shopify_package_operator_and_warehouse_configuration(monkeypatch):
+    async def pickup_location(_self):
+        return {
+            "pickup_location": "Mumchies Warehouse",
+            "name": "Mumchies Foods",
+            "phone": "9876543210",
+            "address": "10 Factory Road",
+            "address_2": "Industrial Area",
+            "city": "Bengaluru",
+            "state": "Karnataka",
+            "pin_code": "560077",
+        }
+
+    monkeypatch.setattr("app.api.routes.couriers.ShiprocketService.pickup_location_details", pickup_location)
+    order = ShopifyOrder(
+        order_id="gid-1", order_number="323999", created_date="2026-07-27T00:00:00Z",
+        customer_name="Customer Name", phone="9999999999", email="customer@example.com",
+        shipping_address=ShippingAddress(name="Customer Name", address="12 Main Road", landmark="Near Park", city="Delhi", state="Delhi", pincode="110001"),
+        products=[OrderProduct(product_name="Cookies", sku="COOKIE-1", quantity=2, weight_grams=250, price=Decimal("250"))],
+        total_amount=Decimal("500"), order_total=Decimal("500"), cod_collectable_amount=Decimal("500"),
+        payment_type="cod", tags=[],
+    )
+    payload = await _build_provider_booking_request(
+        order, {}, PackageDetailsPayload(weight_kg=0.5, length_cm=20, breadth_cm=15, height_cm=10)
+    )
+    assert payload["order_type"] == "warehouse"
+    assert payload["order_details"] == {
+        "client_order_id": "323999", "actual_weight": 500, "volumetric_weight": 600,
+        "product_value": 500.0, "payment_mode": "COD", "cod_amount": 500.0,
+        "total_amount": 500.0, "order_service": "regular",
+    }
+    assert payload["customer_details"] == {
+        "name": "Customer Name", "contact": "9999999999", "address_line_1": "12 Main Road",
+        "address_line_2": "Near Park", "city": "Delhi", "state": "Delhi", "pincode": 110001,
+    }
+    expected_warehouse = {
+        "name": "Mumchies Foods", "contact": "9876543210", "address_line_1": "10 Factory Road",
+        "address_line_2": "Industrial Area", "city": "Bengaluru", "state": "Karnataka",
+        "pincode": 560077, "unique_code": "Mumchies Warehouse",
+    }
+    assert payload["pickup_details"] == expected_warehouse
+    assert payload["rto_details"] == expected_warehouse
+    assert payload["product_details"] == [{"sku_name": "Cookies", "sku_id": "COOKIE-1", "price": 250.0, "additional_details": {"quantity": 2}}]
+
+
+@pytest.mark.anyio
+async def test_official_shadowfax_http_transport_contract():
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.headers["authorization"] == "Token staging-secret"
+        assert request.headers["content-type"] == "application/json"
+        if request.url.path.endswith("/serviceability/"):
+            return httpx.Response(200, json=[{"code": 560077, "services": ["Regular", "Surface"]}])
+        if request.url.path.endswith("/v3/clients/orders/"):
+            assert request.method == "POST"
+            assert __import__("json").loads(request.content) == official_booking_payload()
+            return httpx.Response(200, json={"message": "Success", "errors": None, "data": {"id": 42, "client_order_id": "STAGE-1", "awb_number": "SF-STAGE-1", "status": "new", "customer_track_url": "https://exp.shadowfax.in/test"}})
+        if request.url.path.endswith("/track/"):
+            return httpx.Response(200, json={"message": "Success", "order_details": {"awb_number": "SF-STAGE-1", "status": "ofd", "customer_track_url": "https://exp.shadowfax.in/test"}, "tracking_details": [{"created": "2026-07-27T10:00:00Z", "location": "BLR Hub", "status_id": "ofd", "remarks": "Item OFD"}]})
+        if request.url.path.endswith("/cancel/"):
+            assert __import__("json").loads(request.content) == {"request_id": "SF-STAGE-1", "cancel_remarks": "Request cancelled by customer"}
+            return httpx.Response(200, json={"responseMsg": "Request has been marked as cancelled", "responseCode": 200})
+        raise AssertionError(str(request.url))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = ShadowfaxHTTPTransport(token="staging-secret", base_url="https://shadowfax.example/api", client=client)
+        assert await transport.authenticate() is True
+        serviceability = await transport.serviceability({"delivery_pincode": "560077"})
+        assert serviceability["serviceable"] is True and serviceability["service_type"] == "Regular"
+        booking = await transport.create_booking(official_booking_payload())
+        assert booking["awb"] == "SF-STAGE-1" and booking["shipment_id"] == "42"
+        tracking = await transport.track_shipment({"awb": "SF-STAGE-1"})
+        assert tracking["status"] == "ofd" and tracking["latest_scan"] == "BLR Hub"
+        cancellation = await transport.cancel_booking({"awb": "SF-STAGE-1"})
+        assert cancellation["cancelled"] is True
+    assert [request.method for request in requests] == ["GET", "GET", "POST", "GET", "POST"]
+
+
+def test_shadowfax_http_transport_accepts_configured_https_base_url_and_rejects_http():
+    transport = ShadowfaxHTTPTransport(token="secret", base_url="https://shadowfax.example/api")
+    assert transport._base_url == "https://shadowfax.example/api"
+    with pytest.raises(ProviderConfigurationError, match="valid HTTPS URL"):
+        ShadowfaxHTTPTransport(token="secret", base_url="http://shadowfax.example/api")
+
+
+@pytest.mark.anyio
+async def test_shadowfax_http_transport_rejects_application_level_booking_failure():
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"message": "Failure", "errors": "Invalid Delivery Pincode"})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = ShadowfaxHTTPTransport(token="secret", base_url="https://shadowfax.example/api", client=client)
+        with pytest.raises(ProviderError, match="Invalid Delivery Pincode"):
+            await transport.create_booking(official_booking_payload())
+
+
+@pytest.mark.anyio
+async def test_shadowfax_label_and_client_order_reconciliation_fail_closed_when_undocumented():
+    transport = ShadowfaxHTTPTransport(token="secret", base_url="https://shadowfax.example/api", client=httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(500))))
+    try:
+        with pytest.raises(ProviderConfigurationError, match="does not document a shipping-label endpoint"):
+            await transport.download_label({"awb": "SF-STAGE-1"})
+        with pytest.raises(ProviderConfigurationError, match="does not document lookup by client_order_id"):
+            await transport.find_booking("STAGE-1")
+    finally:
+        await transport._client.aclose()
 
 
 class MockTransport:

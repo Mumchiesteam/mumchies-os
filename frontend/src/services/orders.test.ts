@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cancelCourierShipment, clearReconciliationFilter, getOrders, reconciliationDataset, reconciliationFilterLabel, reconcileCourierBooking, refreshShiprocketShipment, selectReconciliationFilter, shiprocketCancellationMessage, shouldRemoveCleanupRecord, verifyShiprocketOnlyCancellation, type OrdersReconciliationSummary, type ReconciliationRecord, type ShiprocketCancellationResult, type ShiprocketCleanupRecord } from './orders'
+import { bookShiprocketShipment, cancelCourierShipment, clearReconciliationFilter, getOrders, reconciliationDataset, reconciliationFilterLabel, reconcileCourierBooking, refreshShiprocketShipment, selectReconciliationFilter, shiprocketCancellationMessage, shouldRemoveCleanupRecord, verifyShiprocketOnlyCancellation, type OrdersReconciliationSummary, type ReconciliationRecord, type ShiprocketCancellationResult, type ShiprocketCleanupRecord } from './orders'
 
 const response = (pageSize: number, total = 0) => new Response(JSON.stringify({
   items: [],
@@ -47,6 +47,13 @@ describe('orders pagination client', () => {
 })
 
 describe('provider-neutral courier client', () => {
+  it('omits operator when current-user identity is unavailable', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ provider: 'shadowfax' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    await bookShiprocketShipment('1', { provider: 'shadowfax', courier_name: 'Shadowfax Direct', courier_id: 'Regular', weight_kg: 0.5 })
+    const request = fetchMock.mock.calls[0][1] as RequestInit
+    expect(JSON.parse(String(request.body))).toEqual({ provider: 'shadowfax', courier_name: 'Shadowfax Direct', courier_id: 'Regular', weight_kg: 0.5 })
+  })
+
   it.each([
     ['tracking', refreshShiprocketShipment, '/courier/tracking/refresh'],
     ['reconciliation', reconcileCourierBooking, '/courier/reconcile'],
