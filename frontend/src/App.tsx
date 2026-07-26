@@ -17,7 +17,11 @@ import {
   exportOrders,
   getLabelQueue,
   getShiprocketCleanupPending,
+  getOrdersReconciliation,
   cancelShiprocketOnly,
+  verifyShiprocketOnlyCancellation,
+  shiprocketCancellationMessage,
+  shouldRemoveCleanupRecord,
   getActiveLabelBatches,
   labelBatchPdfUrl,
   requestLabelReprint,
@@ -34,6 +38,8 @@ import {
   type CancellationPreflight,
   type OrderCounts,
   type ShiprocketCleanupRecord,
+  type ShiprocketCancellationResult,
+  type OrdersReconciliationSummary,
 } from './services/orders'
 import { logout } from './services/auth'
 import { formatDateTime } from './utils/time'
@@ -156,6 +162,8 @@ function App() {
   const [totalPages, setTotalPages] = useState(1)
   const [counts, setCounts] = useState<OrderCounts>({ operations: 0, fresh: 0, previous: 0, all: 0, labels_to_print: 0, awaiting_confirmation: 0, printed_today: 0, new_orders: 0, pending_booking: 0, cod: 0, prepaid: 0, high_risk: 0, repeat_customers: 0, cod_collectable: 0, prepaid_value: 0 })
   const [cleanupRecords, setCleanupRecords] = useState<ShiprocketCleanupRecord[]>([])
+  const [cleanupResults, setCleanupResults] = useState<Record<string, ShiprocketCancellationResult>>({})
+  const [reconciliation, setReconciliation] = useState<OrdersReconciliationSummary | null>(null)
   const [cardFilter, setCardFilter] = useState<'pending' | 'cod' | 'prepaid' | 'risk' | 'repeat' | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const [notice, setNotice] = useState('')
@@ -203,6 +211,7 @@ function App() {
   const [printedLabels, setPrintedLabels] = useState<Set<string>>(new Set())
   const refreshLabels = useCallback(() => void getLabelQueue().then(setLabelQueue).catch(() => undefined), [])
   const refreshCleanup = useCallback(() => void getShiprocketCleanupPending().then(result => setCleanupRecords(result.items)).catch(() => undefined), [])
+  const refreshReconciliation = useCallback(() => void getOrdersReconciliation().then(setReconciliation).catch(() => undefined), [])
 
   const loadOrders = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -257,7 +266,7 @@ function App() {
     }
   }, [loadOrders])
 
-  useEffect(() => { refreshLabels(); refreshCleanup() }, [refreshCleanup, refreshLabels])
+  useEffect(() => { refreshLabels(); refreshCleanup(); refreshReconciliation() }, [refreshCleanup, refreshLabels, refreshReconciliation])
 
   useEffect(() => {
     if (selectedOrderId) return
@@ -312,6 +321,23 @@ function App() {
     setSelectedOrderId(orderId)
   }
 
+  const handleCleanupResult = (record: ShiprocketCleanupRecord, result: ShiprocketCancellationResult) => {
+    setCleanupResults(previous => ({ ...previous, [record.shiprocket_order_id]: result }))
+    setNotice(shiprocketCancellationMessage(result))
+    if (shouldRemoveCleanupRecord(result)) {
+      setCleanupRecords(previous => previous.filter(value => value.shiprocket_order_id !== record.shiprocket_order_id))
+    }
+  }
+
+  const sendShiprocketCleanup = (record: ShiprocketCleanupRecord) => {
+    if (!window.confirm(`Cancel only Shiprocket order ${record.order_number}? Shopify will not be cancelled.`)) return
+    void cancelShiprocketOnly(record).then(result => handleCleanupResult(record, result)).catch(error => setNotice(error.message))
+  }
+
+  const verifyShiprocketCleanup = (record: ShiprocketCleanupRecord) => {
+    void verifyShiprocketOnlyCancellation(record).then(result => handleCleanupResult(record, result)).catch(error => setNotice(error.message))
+  }
+
   const filtered = useMemo(() => {
     let list = orders
     if (cardFilter === 'pending') list = list.filter(order => listStatus(order) === 'Ready for Booking' && !order.shipment?.awb)
@@ -335,7 +361,7 @@ function App() {
 
   const cards = useMemo(() => {
     return [
-      { key: 'new', label: 'New Orders', value: counts.new_orders, detail: 'Rolling 24 hours' },
+      { key: 'new', label: 'New Orders', value: counts.new_orders, detail: 'Untouched orders' },
       { key: 'pending', label: 'Pending Booking', value: counts.pending_booking, detail: 'Ready to dispatch' },
       { key: 'cod', label: 'COD', value: counts.cod, detail: `${formatMoney(counts.cod_collectable)} to collect` },
       { key: 'prepaid', label: 'Prepaid', value: counts.prepaid, detail: formatMoney(counts.prepaid_value) },
@@ -352,7 +378,7 @@ function App() {
   const courierSyncMessage = operations?.courier_sync_error || ''
   const status = selectedOrder ? statusFromOrder(selectedOrder) : 'Call Pending'
   const isRepeat = selectedOrder ? repeatIds.has(selectedOrder.internalId) : false
-  const visibleCount = total
+  const visibleCount = counts.operations
   const addressVerifiedLabel = operations?.address_verified
     ? `Address Verified by ${operations.address_verified_by || 'operator'} on ${operations.address_verified_at ? formatDateTime(operations.address_verified_at) : 'unknown time'}`
     : 'Address Verification Pending'
@@ -577,6 +603,14 @@ function App() {
           </div>)}
         </section>
 
+        {reconciliation && <section className="mb-5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-bold uppercase tracking-[.12em] text-slate-400">OS / Shiprocket reconciliation</p><p className="mt-1 text-xs text-slate-500">Operational and Shiprocket totals may differ while orders sync or use another courier.</p></div><button onClick={refreshReconciliation} className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600">Refresh reconciliation</button></div><div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{[
+          ['Operations Queue', reconciliation.operations_queue],
+          ['Shiprocket New', reconciliation.shiprocket_new],
+          ['Present in Both', reconciliation.present_in_both],
+          ['Cleanup Pending', reconciliation.cleanup_pending],
+          ['Missing in Shiprocket', reconciliation.missing_in_shiprocket],
+        ].map(([label, value]) => <div key={String(label)} className="rounded-lg bg-slate-50 px-3 py-2"><p className="text-[11px] font-semibold text-slate-500">{label}</p><p className="mt-1 text-lg font-bold text-slate-900">{value}</p></div>)}</div></section>}
+
         <section className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           {cards.map(card => {
             const active = card.key === 'new' ? queue === 'fresh' && !cardFilter : cardFilter === card.key
@@ -619,7 +653,7 @@ function App() {
           ) : (
             <>
               {loading && <div className="border-b border-slate-100 bg-slate-50 px-4 py-2 text-xs font-medium text-slate-500">Updating orders…</div>}
-              {queue === 'shiprocket_cleanup' && <div className="overflow-x-auto"><table className="w-full min-w-[980px] text-left text-sm"><thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-400"><tr>{['Order No', 'Shopify Status', 'Mumchies Shipment', 'Shiprocket Status', 'Reason', 'Action'].map(value => <th key={value} className="px-4 py-3">{value}</th>)}</tr></thead><tbody className="divide-y divide-slate-100">{cleanupRecords.map(record => <tr key={record.shiprocket_order_id}><td className="px-4 py-3 font-semibold">#{record.order_number}</td><td className="px-4 py-3">{record.shopify_status}</td><td className="px-4 py-3">{record.mumchies_provider || '—'} · {record.mumchies_status || '—'}</td><td className="px-4 py-3">{record.shiprocket_status}</td><td className="px-4 py-3 text-amber-700">{record.reason}</td><td className="px-4 py-3"><button onClick={() => { if (window.confirm(`Cancel only Shiprocket order ${record.order_number}? Shopify will not be cancelled.`)) void cancelShiprocketOnly(record).then(() => { setNotice('Shiprocket order cancelled safely.'); void loadOrders() }).catch(error => setNotice(error.message)) }} className="rounded-md border border-rose-200 px-3 py-1.5 text-xs font-semibold text-rose-700">Safe Cancel in Shiprocket only</button></td></tr>)}</tbody></table>{cleanupRecords.length === 0 && <div className="py-14 text-center text-sm text-slate-400">No stale Shiprocket New orders require cleanup.</div>}</div>}
+              {queue === 'shiprocket_cleanup' && <div className="overflow-x-auto"><table className="w-full min-w-[980px] text-left text-sm"><thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-400"><tr>{['Order No', 'Shopify Status', 'Mumchies Shipment', 'Shiprocket Status', 'Reason', 'Action'].map(value => <th key={value} className="px-4 py-3">{value}</th>)}</tr></thead><tbody className="divide-y divide-slate-100">{cleanupRecords.map(record => { const result = cleanupResults[record.shiprocket_order_id] || record.last_verification; return <tr key={record.shiprocket_order_id}><td className="px-4 py-3 font-semibold">#{record.order_number}</td><td className="px-4 py-3">{record.shopify_status}</td><td className="px-4 py-3">{record.mumchies_provider || '—'} · {record.mumchies_status || '—'}</td><td className="px-4 py-3">{record.shiprocket_status}</td><td className="px-4 py-3 text-amber-700">{result ? shiprocketCancellationMessage(result) : record.reason}</td><td className="px-4 py-3"><div className="flex flex-wrap gap-2"><button onClick={() => sendShiprocketCleanup(record)} className="rounded-md border border-rose-200 px-3 py-1.5 text-xs font-semibold text-rose-700">Safe Cancel in Shiprocket only</button>{result && ['inconsistent', 'unverified'].includes(result.status) && <button onClick={() => verifyShiprocketCleanup(record)} className="rounded-md border border-amber-200 px-3 py-1.5 text-xs font-semibold text-amber-700">Retry verification</button>}<a href={`https://app.shiprocket.in/orders/processing?search=${encodeURIComponent(record.order_number)}`} target="_blank" rel="noreferrer" className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600">Open in Shiprocket</a></div></td></tr> })}</tbody></table>{cleanupRecords.length === 0 && <div className="py-14 text-center text-sm text-slate-400">No stale Shiprocket New orders require cleanup.</div>}</div>}
               {queue === 'printed_today' && orders.length > 0 && <div className="divide-y divide-slate-100 border-b border-slate-200 bg-slate-50/60">{orders.map(order => <div key={order.internalId} className="flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3 text-xs"><span className="font-semibold text-slate-700">#{order.orderNumber}</span><span className="text-slate-500">Confirmed {order.shipment?.label_last_printed_at ? formatDateTime(order.shipment.label_last_printed_at) : '—'}</span><span className="text-slate-500">Operator: {order.shipment?.label_last_printed_by || '—'}</span><button onClick={() => void requestLabelReprint(order.internalId).then(() => { setNotice('Label returned to print queue.'); refreshLabels(); void loadOrders() }).catch(error => setNotice(error.message))} className="ml-auto font-semibold text-orange-600">Reprint</button></div>)}</div>}
               <div className={`${queue === 'shiprocket_cleanup' ? 'hidden' : ''} overflow-x-auto transition-opacity ${loading ? 'opacity-60' : ''}`}>
                 <table className="w-full min-w-[980px] text-left">

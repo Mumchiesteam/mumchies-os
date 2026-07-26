@@ -437,6 +437,39 @@ export interface ShiprocketCleanupRecord {
   shiprocket_status: string
   reason: string
   shiprocket_awb: null
+  last_verification?: ShiprocketCancellationResult | null
+}
+
+export interface ShiprocketCancellationResult {
+  status: 'confirmed' | 'rejected' | 'inconsistent' | 'unverified'
+  shiprocket_order_id: string
+  channel_order_id: string
+  request_http_status: number | null
+  request_response: unknown
+  verified_top_level_status: string | null
+  verified_top_level_status_code: number | null
+  still_in_new_queue: boolean | null
+  message: string
+}
+
+export interface OrdersReconciliationSummary {
+  operations_queue: number
+  fresh_orders: number
+  previous_pending: number
+  shiprocket_new: number
+  present_in_both: number
+  cleanup_pending: number
+  missing_in_shiprocket: number
+  in_both: string[]
+  only_in_os: { order_number: string; reason: string; shiprocket_status: string | null }[]
+  only_in_shiprocket: { order_number: string; reason: string; shiprocket_status: string | null }[]
+  duplicate_mapping_anomalies: { order_number: string; os_records: number; shiprocket_records: number }[]
+}
+
+export async function getOrdersReconciliation(): Promise<OrdersReconciliationSummary> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/reconciliation-summary`)
+  if (!response.ok) throw new Error('Could not reconcile Mumchies OS and Shiprocket.')
+  return response.json()
 }
 
 export async function getShiprocketCleanupPending(): Promise<{ items: ShiprocketCleanupRecord[]; total: number }> {
@@ -445,11 +478,28 @@ export async function getShiprocketCleanupPending(): Promise<{ items: Shiprocket
   return response.json()
 }
 
-export async function cancelShiprocketOnly(record: ShiprocketCleanupRecord): Promise<void> {
+export async function cancelShiprocketOnly(record: ShiprocketCleanupRecord): Promise<ShiprocketCancellationResult> {
   const response = await apiFetch(`${apiBase}/api/v1/orders/${record.order_id}/shiprocket-only-cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shiprocket_order_id: record.shiprocket_order_id, order_number: record.order_number, operator: 'Amit Kumar' }) })
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail || 'Could not safely cancel the Shiprocket order.')
+  return body
 }
+
+export async function verifyShiprocketOnlyCancellation(record: ShiprocketCleanupRecord): Promise<ShiprocketCancellationResult> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${record.order_id}/shiprocket-only-cancel/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shiprocket_order_id: record.shiprocket_order_id, order_number: record.order_number, operator: 'Amit Kumar' }) })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail || 'Could not verify the Shiprocket cancellation.')
+  return body
+}
+
+export const shiprocketCancellationMessage = (result: ShiprocketCancellationResult) => ({
+  confirmed: 'Shiprocket order cancelled successfully.',
+  inconsistent: 'Shiprocket recorded cancellation activity, but the order still shows as NEW. Please review it in Shiprocket.',
+  rejected: 'Shiprocket rejected the cancellation.',
+  unverified: 'Cancellation request was sent, but the final Shiprocket status could not be verified.',
+}[result.status])
+
+export const shouldRemoveCleanupRecord = (result: ShiprocketCancellationResult) => result.status === 'confirmed'
 
 export const formatMoney = toMoney
 

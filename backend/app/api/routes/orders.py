@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import re
@@ -163,6 +164,42 @@ def _is_inactive(order: ShopifyOrder) -> bool:
     return bool(order.cancelled_at) or str(order.operational_status or "").casefold() in {"cancelled", "shipped", "delivered"} or any(value in text for value in ("cancel", "fulfilled", "shipped", "picked up", "dispatched", "in transit", "out for delivery", "delivered"))
 
 
+def _has_pending_exception(order: ShopifyOrder) -> bool:
+    shipment = order.shipment or {}
+    booking_status = str(shipment.get("booking_status") or "").casefold()
+    latest_status = str(shipment.get("latest_status") or "").casefold()
+    failure_words = ("fail", "error", "exception", "uncertain", "unknown", "pending", "partial")
+    booking_problem = booking_status in {"pending_awb", "awb_failed", "manifested_pending_waybill", "manifest_unknown", "manifest_partial"} or any(word in latest_status for word in failure_words)
+    fulfillment_problem = str(shipment.get("shopify_fulfillment_sync_status") or "").casefold() == "failed" or bool(shipment.get("shopify_fulfillment_sync_error"))
+    address_problem = str(shipment.get("address_sync_status") or "").casefold() == "failed" or bool(shipment.get("address_sync_error"))
+    local_sync_problem = bool(order.courier_sync_error) or str(order.courier_sync_status or "").casefold() == "failed"
+    address_results = order.address_sync_results or {}
+    local_address_problem = any(str(value).casefold() == "failed" for key, value in address_results.items() if key != "errors")
+    return booking_problem or fulfillment_problem or address_problem or local_sync_problem or local_address_problem
+
+
+def _requires_operational_action(order: ShopifyOrder) -> bool:
+    if _is_inactive(order) or str(order.latest_call_result or "").casefold() == "cancelled":
+        return False
+    shipment = order.shipment or {}
+    successfully_booked = str(shipment.get("booking_status") or "").casefold() in {"booked", "complete", "completed", "awb_assigned"} and bool(shipment.get("awb"))
+    if successfully_booked and not _has_pending_exception(order):
+        return False
+    return True
+
+
+def _is_fresh_order(order: ShopifyOrder) -> bool:
+    if not _requires_operational_action(order):
+        return False
+    if order.payment_type == "prepaid":
+        return order.human_action_count == 0
+    if order.payment_type in {"cod", "partial_cod"}:
+        if order.call_attempt_count == 0:
+            return True
+        return order.call_attempt_count == 1 and str(order.latest_call_result or "").casefold() not in {"confirmed", "cancelled"}
+    return order.human_action_count == 0
+
+
 def _base_filtered_orders(orders: list[ShopifyOrder], search: str, payment: str, risk: str) -> list[ShopifyOrder]:
     needle = search.strip().casefold()
     result = []
@@ -187,7 +224,6 @@ def _base_filtered_orders(orders: list[ShopifyOrder], search: str, payment: str,
 def _full_counts(orders: list[ShopifyOrder], now: datetime, db: Session) -> dict[str, int | float]:
     fresh = [order for order in orders if _matches_queue(order, "fresh", now)]
     previous = [order for order in orders if _matches_queue(order, "previous", now)]
-    active = [order for order in orders if not _is_inactive(order)]
     pending = [order for order in orders if order.operational_status == "Ready for Booking" and not (order.shipment or {}).get("awb")]
     cod = [order for order in orders if order.payment_type in {"cod", "partial_cod"}]
     prepaid = [order for order in orders if order.payment_type == "prepaid"]
@@ -202,7 +238,7 @@ def _full_counts(orders: list[ShopifyOrder], now: datetime, db: Session) -> dict
     shipments = db.scalars(select(ShiprocketShipment).where(ShiprocketShipment.label_print_status.in_(["not_printed", "awaiting_confirmation", "printed"]))).all() if hasattr(db, "scalars") else []
     printed_today = [value for value in shipments if value.label_print_status == "printed" and value.label_last_printed_at and (value.label_last_printed_at if value.label_last_printed_at.tzinfo else value.label_last_printed_at.replace(tzinfo=timezone.utc)).astimezone(ZoneInfo("Asia/Kolkata")).date() == local_today]
     return {
-        "operations": len(active), "fresh": len(fresh), "previous": len(previous), "all": len(orders),
+        "operations": len(fresh) + len(previous), "fresh": len(fresh), "previous": len(previous), "all": len(orders),
         "labels_to_print": sum(1 for value in shipments if value.label_print_status == "not_printed" and value.booking_status == "booked" and value.awb),
         "awaiting_confirmation": sum(1 for value in shipments if value.label_print_status == "awaiting_confirmation"),
         "printed_today": len(printed_today), "new_orders": len(fresh), "pending_booking": len(pending),
@@ -213,14 +249,11 @@ def _full_counts(orders: list[ShopifyOrder], now: datetime, db: Session) -> dict
 
 
 def _matches_queue(order: ShopifyOrder, queue: str, now: datetime) -> bool:
-    created = datetime.fromisoformat(order.created_date.replace("Z", "+00:00"))
-    if created.tzinfo is None:
-        created = created.replace(tzinfo=timezone.utc)
     shipment = order.shipment or {}
     if queue == "fresh":
-        return not _is_inactive(order) and created >= now - timedelta(hours=24)
+        return _is_fresh_order(order)
     if queue == "previous":
-        return not _is_inactive(order) and created < now - timedelta(hours=24)
+        return _requires_operational_action(order) and not _is_fresh_order(order)
     if queue == "labels_to_print":
         return shipment.get("booking_status") == "booked" and bool(shipment.get("awb")) and shipment.get("label_print_status") == "not_printed"
     if queue == "awaiting_confirmation":
@@ -675,6 +708,8 @@ async def shiprocket_cleanup_pending(db: Session = Depends(get_db)) -> dict[str,
         if awb:
             continue
         local_shipment = order.shipment or {}
+        timeline = OrderOperationsStore.get(order.order_id).get("timeline_events") or []
+        last_verification = next((event.get("details") for event in reversed(timeline) if event.get("action") == "shiprocket_cleanup_verified"), None)
         items.append({
             "order_id": order.order_id, "order_number": number,
             "shopify_status": "Cancelled" if order.cancelled_at else order.fulfillment_status or order.shopify_status or "Open",
@@ -682,9 +717,104 @@ async def shiprocket_cleanup_pending(db: Session = Depends(get_db)) -> dict[str,
             "mumchies_status": order.operational_status,
             "shiprocket_order_id": str(upstream.get("id") or ""), "shiprocket_status": upstream.get("status") or "NEW",
             "reason": reason, "shiprocket_awb": None,
+            "last_verification": last_verification,
         })
     items.sort(key=lambda value: value["order_number"], reverse=True)
     return {"items": items, "total": len(items)}
+
+
+def _shiprocket_only_reason(order: ShopifyOrder | None, upstream: dict[str, object]) -> str:
+    if order is None:
+        return "other"
+    if order.cancelled_at or str(order.shopify_status or "").casefold() == "cancelled":
+        return "cancelled in Shopify"
+    shipment = order.shipment or {}
+    provider = str(shipment.get("provider") or (order.external_tracking.provider if order.external_tracking else "")).casefold()
+    if provider == "delhivery" and (shipment.get("awb") or (order.external_tracking.awb if order.external_tracking else None)):
+        return "fulfilled through Delhivery"
+    if provider == "shadowfax" and (shipment.get("awb") or (order.external_tracking.awb if order.external_tracking else None)):
+        return "fulfilled through Shadowfax"
+    if _has_nested_cancellation_evidence(upstream):
+        return "stale Shiprocket state"
+    return "other"
+
+
+def _os_only_reason(order: ShopifyOrder, upstream: dict[str, object] | None) -> str:
+    shipment = order.shipment or {}
+    provider = str(shipment.get("provider") or (order.external_tracking.provider if order.external_tracking else "")).casefold()
+    if provider and provider != "shiprocket" and (shipment.get("awb") or (order.external_tracking.awb if order.external_tracking else None)):
+        return "routed directly to another courier"
+    if upstream is None:
+        return "not yet synced to Shiprocket"
+    if str(upstream.get("channel_order_id") or "") != order.order_number:
+        return "mapping issue"
+    if str(upstream.get("status_code") or "") == "5" or str(upstream.get("status") or "").casefold() in {"cancelled", "canceled"}:
+        return "Shiprocket order already cancelled"
+    return "other"
+
+
+@router.get("/reconciliation-summary")
+async def reconciliation_summary(db: Session = Depends(get_db)) -> dict[str, object]:
+    """Compare active OS work with Shiprocket New without implying the sets must be equal."""
+    os_orders = await _load_orders(db, force_refresh=True)
+    operations = [order for order in os_orders if _requires_operational_action(order)]
+    service = ShiprocketService()
+    try:
+        shiprocket_new = await service.list_new_orders(force_refresh=True)
+    except (ShiprocketAPIError, ShiprocketConfigurationError) as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+    os_by_number: dict[str, list[ShopifyOrder]] = {}
+    for order in operations:
+        os_by_number.setdefault(order.order_number, []).append(order)
+    sr_by_number: dict[str, list[dict[str, object]]] = {}
+    for order in shiprocket_new:
+        sr_by_number.setdefault(str(order.get("channel_order_id") or ""), []).append(order)
+
+    os_numbers = set(os_by_number)
+    sr_numbers = set(sr_by_number)
+    both = os_numbers & sr_numbers
+    only_os = os_numbers - sr_numbers
+    only_sr = sr_numbers - os_numbers
+    all_shopify_by_number = {order.order_number: order for order in os_orders}
+    lookup_limit = asyncio.Semaphore(5)
+
+    async def classify_os(number: str) -> dict[str, object]:
+        order = os_by_number[number][0]
+        try:
+            async with lookup_limit:
+                upstream = await service.find_existing_order(number)
+        except (ShiprocketAPIError, ShiprocketConfigurationError):
+            upstream = None
+            reason = "other"
+        else:
+            reason = _os_only_reason(order, upstream)
+        return {"order_number": number, "reason": reason, "shiprocket_status": (upstream or {}).get("status")}
+
+    only_os_items = await asyncio.gather(*(classify_os(number) for number in sorted(only_os)))
+    only_sr_items = [
+        {"order_number": number, "reason": _shiprocket_only_reason(all_shopify_by_number.get(number), sr_by_number[number][0]), "shiprocket_status": sr_by_number[number][0].get("status")}
+        for number in sorted(only_sr)
+    ]
+    anomalies = [
+        {"order_number": number, "os_records": len(os_by_number.get(number, [])), "shiprocket_records": len(sr_by_number.get(number, []))}
+        for number in sorted(os_numbers | sr_numbers)
+        if len(os_by_number.get(number, [])) > 1 or len(sr_by_number.get(number, [])) > 1 or not number
+    ]
+    cleanup_pending = sum(1 for item in only_sr_items if item["reason"] in {"cancelled in Shopify", "fulfilled through Delhivery", "fulfilled through Shadowfax", "stale Shiprocket state"})
+    return {
+        "operations_queue": len(operations),
+        "fresh_orders": sum(1 for order in operations if _is_fresh_order(order)),
+        "previous_pending": sum(1 for order in operations if not _is_fresh_order(order)),
+        "shiprocket_new": len(shiprocket_new),
+        "present_in_both": len(both),
+        "cleanup_pending": cleanup_pending,
+        "missing_in_shiprocket": len(only_os),
+        "in_both": sorted(both),
+        "only_in_os": only_os_items,
+        "only_in_shiprocket": only_sr_items,
+        "duplicate_mapping_anomalies": anomalies,
+    }
 
 
 @router.post("/{order_id}/shiprocket-only-cancel")
@@ -694,13 +824,106 @@ async def shiprocket_only_cancel(order_id: str, payload: ShiprocketOnlyCancellat
     upstream = next((value for value in upstream_orders if str(value.get("id") or "") == payload.shiprocket_order_id and str(value.get("channel_order_id") or "") == payload.order_number), None)
     if upstream is None:
         raise HTTPException(status_code=409, detail="The Shiprocket New order could not be found or no longer matches this order.")
+    timestamp = datetime.now(timezone.utc)
     try:
-        await service.cancel_unbooked_order(upstream)
+        request_result = await service.request_unbooked_order_cancellation(upstream)
     except (ShiprocketAPIError, ShiprocketConfigurationError) as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    result = {"status": "cancelled", "cancel_on_channel": False, "shiprocket_order_id": payload.shiprocket_order_id}
-    OrderOperationsStore.record_timeline_event(order_id, "shiprocket_cleanup", operator=payload.operator, details=result)
+        request_result = {"http_status": getattr(error, "status_code", None) or 0, "response": {"message": str(error)}, "classification": "rejected"}
+    audit = {
+        "shiprocket_order_id": payload.shiprocket_order_id,
+        "channel_order_id": payload.order_number,
+        "request_http_status": request_result["http_status"],
+        "request_response": request_result["response"],
+        "response_classification": request_result["classification"],
+        "operator": payload.operator,
+        "timestamp": timestamp.isoformat(),
+        "timestamp_ist": timestamp.astimezone(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST"),
+    }
+    OrderOperationsStore.record_timeline_event(order_id, "shiprocket_cleanup_requested", operator=payload.operator, details=audit, timestamp=timestamp.isoformat())
+    await asyncio.sleep(0.5)
+    return await _verify_shiprocket_only_cancellation(order_id, payload, service=service, request_result=request_result)
+
+
+def _has_nested_cancellation_evidence(order: dict[str, object] | None) -> bool:
+    if not order:
+        return False
+    products = order.get("products") or []
+    activities = order.get("activities") or []
+    product_cancelled = any(
+        str(product.get("status") or "").casefold() in {"cancelled", "canceled"} or str(product.get("status_code") or "") == "5"
+        for product in products if isinstance(product, dict)
+    ) if isinstance(products, list) else False
+    activity_cancelled = any("cancel" in str(activity).casefold() for activity in activities) if isinstance(activities, list) else False
+    return product_cancelled or activity_cancelled
+
+
+async def _verify_shiprocket_only_cancellation(
+    order_id: str,
+    payload: ShiprocketOnlyCancellationPayload,
+    *,
+    service: ShiprocketService | None = None,
+    request_result: dict[str, object] | None = None,
+) -> dict[str, object]:
+    service = service or ShiprocketService()
+    current: dict[str, object] | None = None
+    still_in_new: bool | None = None
+    verification_error: str | None = None
+    try:
+        current = await service.find_existing_order(payload.order_number)
+        new_orders = await service.list_new_orders(force_refresh=True)
+        still_in_new = any(
+            str(value.get("id") or "") == payload.shiprocket_order_id
+            and str(value.get("channel_order_id") or "") == payload.order_number
+            for value in new_orders
+        )
+    except (ShiprocketAPIError, ShiprocketConfigurationError) as error:
+        verification_error = str(error)
+
+    top_status = str((current or {}).get("status") or "") or None
+    raw_code = (current or {}).get("status_code")
+    try:
+        top_code = int(raw_code) if raw_code is not None else None
+    except (TypeError, ValueError):
+        top_code = None
+    top_cancelled = top_code == 5 or str(top_status or "").casefold() in {"cancelled", "canceled"}
+    classification = str((request_result or {}).get("classification") or "ambiguous")
+
+    if top_cancelled or still_in_new is False:
+        status = "confirmed"
+        message = "Shiprocket order cancelled successfully."
+    elif str(top_status or "").casefold() == "new" and _has_nested_cancellation_evidence(current):
+        status = "inconsistent"
+        message = "Shiprocket recorded cancellation activity, but the order remains NEW and can still be shipped."
+    elif classification == "rejected":
+        status = "rejected"
+        message = "Shiprocket rejected the cancellation."
+    else:
+        status = "unverified"
+        message = "Cancellation request was sent, but the final Shiprocket status could not be verified."
+
+    result: dict[str, object] = {
+        "status": status,
+        "shiprocket_order_id": payload.shiprocket_order_id,
+        "channel_order_id": payload.order_number,
+        "request_http_status": (request_result or {}).get("http_status"),
+        "request_response": (request_result or {}).get("response"),
+        "verified_top_level_status": top_status,
+        "verified_top_level_status_code": top_code,
+        "still_in_new_queue": still_in_new,
+        "message": message,
+    }
+    if verification_error:
+        result["verification_error"] = verification_error
+    timestamp = datetime.now(timezone.utc)
+    audit = {**result, "operator": payload.operator, "timestamp": timestamp.isoformat(), "timestamp_ist": timestamp.astimezone(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST")}
+    OrderOperationsStore.record_timeline_event(order_id, "shiprocket_cleanup_verified", operator=payload.operator, details=audit, timestamp=timestamp.isoformat())
     return result
+
+
+@router.post("/{order_id}/shiprocket-only-cancel/verify")
+async def verify_shiprocket_only_cancel(order_id: str, payload: ShiprocketOnlyCancellationPayload) -> dict[str, object]:
+    """Read-only retry: re-check Shiprocket state without sending another cancellation."""
+    return await _verify_shiprocket_only_cancellation(order_id, payload)
 
 
 @router.post("/{order_id}/address/verify")

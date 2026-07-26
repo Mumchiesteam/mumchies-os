@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getOrders } from './orders'
+import { getOrders, shiprocketCancellationMessage, shouldRemoveCleanupRecord, verifyShiprocketOnlyCancellation, type ShiprocketCancellationResult, type ShiprocketCleanupRecord } from './orders'
 
 const response = (pageSize: number, total = 0) => new Response(JSON.stringify({
   items: [],
@@ -43,5 +43,26 @@ describe('orders pagination client', () => {
     expect(result.counts.fresh).toBe(64)
     expect(result.counts.new_orders).toBe(64)
     expect(result.counts.pending_booking).toBe(8)
+  })
+})
+
+const cleanupRecord: ShiprocketCleanupRecord = { order_id: '6813934747726', order_number: '322835', shopify_status: 'Cancelled', mumchies_provider: null, mumchies_status: 'Cancelled', shiprocket_order_id: '1468752948', shiprocket_status: 'NEW', reason: 'Cancelled in Shopify', shiprocket_awb: null }
+const cancellationResult = (status: ShiprocketCancellationResult['status']): ShiprocketCancellationResult => ({ status, shiprocket_order_id: '1468752948', channel_order_id: '322835', request_http_status: 200, request_response: {}, verified_top_level_status: 'NEW', verified_top_level_status_code: 1, still_in_new_queue: true, message: '' })
+
+describe('Shiprocket cancellation verification client', () => {
+  it('does not display success or remove cleanup rows for inconsistent/unverified results', () => {
+    expect(shiprocketCancellationMessage(cancellationResult('inconsistent'))).toContain('still shows as NEW')
+    expect(shiprocketCancellationMessage(cancellationResult('unverified'))).toContain('could not be verified')
+    expect(shouldRemoveCleanupRecord(cancellationResult('inconsistent'))).toBe(false)
+    expect(shouldRemoveCleanupRecord(cancellationResult('unverified'))).toBe(false)
+    expect(shouldRemoveCleanupRecord(cancellationResult('confirmed'))).toBe(true)
+  })
+
+  it('uses the verification endpoint without sending another cancellation request', async () => {
+    const result = cancellationResult('inconsistent')
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(result), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    await verifyShiprocketOnlyCancellation(cleanupRecord)
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/shiprocket-only-cancel/verify')
+    expect(fetchMock.mock.calls).toHaveLength(1)
   })
 })

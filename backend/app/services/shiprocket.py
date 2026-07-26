@@ -436,6 +436,14 @@ class ShiprocketService:
         return rows
 
     async def cancel_unbooked_order(self, order: dict[str, Any]) -> dict[str, Any]:
+        result = await self.request_unbooked_order_cancellation(order)
+        if int(result["http_status"]) >= 400:
+            body = result.get("response") or {}
+            message = str(body.get("message") or body.get("error") or "Shiprocket rejected the cancellation request.") if isinstance(body, dict) else "Shiprocket rejected the cancellation request."
+            raise ShiprocketAPIError(message, status_code=int(result["http_status"]), safe_details={"operation": "cancel_order"})
+        return result
+
+    async def request_unbooked_order_cancellation(self, order: dict[str, Any]) -> dict[str, Any]:
         order_id = order.get("id")
         if order_id is None:
             raise ShiprocketAPIError("Shiprocket did not return an order identifier.", safe_details={"operation": "cancel_order"})
@@ -447,9 +455,49 @@ class ShiprocketService:
             "https://apiv2.shiprocket.in/v1/external/orders/cancel",
             {"ids": [int(order_id)], "cancel_on_channel": False},
         )
-        if response.status_code >= 400:
-            raise self._api_error(response, "cancel_order")
-        return response.json()
+        try:
+            body: Any = response.json()
+        except Exception:
+            body = {"message": "Shiprocket returned a non-JSON response."}
+        sanitized = self.sanitize_response(body)
+        return {
+            "http_status": response.status_code,
+            "response": sanitized,
+            "classification": self.classify_cancellation_response(sanitized),
+        }
+
+    @classmethod
+    def sanitize_response(cls, value: Any) -> Any:
+        """Remove credentials and other secrets before audit persistence."""
+        secret_keys = {"authorization", "token", "access_token", "password", "secret", "api_key", "apikey"}
+        if isinstance(value, dict):
+            return {
+                str(key): "[REDACTED]" if str(key).casefold() in secret_keys else cls.sanitize_response(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [cls.sanitize_response(item) for item in value]
+        return value
+
+    @staticmethod
+    def classify_cancellation_response(body: Any) -> str:
+        """Classify application-level acceptance; final success still requires a state re-fetch."""
+        if not isinstance(body, dict):
+            return "ambiguous"
+        message = " ".join(str(body.get(key) or "") for key in ("message", "error", "detail")).strip().casefold()
+        errors = body.get("errors")
+        status_code = body.get("status_code")
+        try:
+            numeric_status = int(status_code) if status_code is not None else None
+        except (TypeError, ValueError):
+            numeric_status = None
+        rejected_words = ("fail", "error", "reject", "invalid", "cannot", "can't", "unable", "not allowed", "no order")
+        if body.get("success") is False or body.get("status") is False or errors not in (None, {}, []) or (numeric_status is not None and numeric_status >= 400) or any(word in message for word in rejected_words):
+            return "rejected"
+        accepted_words = ("success", "cancelled", "canceled", "accepted", "requested")
+        if body.get("success") is True or body.get("status") is True or (numeric_status is not None and 200 <= numeric_status < 300) or ("cancel" in message and any(word in message for word in accepted_words)):
+            return "accepted"
+        return "ambiguous"
 
     @staticmethod
     def _upstream_shipment(order: dict[str, Any]) -> tuple[str | None, str | None]:

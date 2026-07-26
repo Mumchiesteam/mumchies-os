@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.api.routes import couriers, orders
-from app.api.routes.orders import AddressConfirmationPayload, CancellationPayload, SaveVerifyAddressPayload
+from app.api.routes.orders import AddressConfirmationPayload, CancellationPayload, SaveVerifyAddressPayload, ShiprocketOnlyCancellationPayload
 from app.models.shiprocket import ShiprocketShipment
 from app.db.base import Base
 from app.services import order_operations
@@ -156,3 +156,87 @@ async def test_shiprocket_cleanup_pending_classifies_cancelled_and_delhivery(db,
     assert result["total"] == 2
     assert {item["reason"] for item in result["items"]} == {"Cancelled in Shopify", "Direct Delhivery shipment"}
     assert all(item["shiprocket_awb"] is None for item in result["items"])
+
+
+def cleanup_payload():
+    return ShiprocketOnlyCancellationPayload(shiprocket_order_id="77", order_number="322835", operator="Operator")
+
+
+@pytest.mark.anyio
+async def test_shiprocket_http_200_success_requires_cancelled_top_level(tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    service_order = {"id": 77, "channel_order_id": "322835", "status": "NEW", "shipments": []}
+    async def new(_self, force_refresh=False): return [service_order]
+    async def request(_self, _order): return {"http_status": 200, "response": {"status_code": 200, "message": "Order cancelled successfully"}, "classification": "accepted"}
+    async def find(_self, _number): return {**service_order, "status": "CANCELED", "status_code": 5}
+    async def no_sleep(_seconds): return None
+    monkeypatch.setattr(orders.ShiprocketService, "list_new_orders", new)
+    monkeypatch.setattr(orders.ShiprocketService, "request_unbooked_order_cancellation", request)
+    monkeypatch.setattr(orders.ShiprocketService, "find_existing_order", find)
+    monkeypatch.setattr(orders.asyncio, "sleep", no_sleep)
+    result = await orders.shiprocket_only_cancel("1", cleanup_payload())
+    assert result["status"] == "confirmed"
+    assert result["verified_top_level_status_code"] == 5
+
+
+@pytest.mark.anyio
+async def test_shiprocket_http_200_application_rejection_is_not_success(tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    current = {"id": 77, "channel_order_id": "322835", "status": "NEW", "status_code": 1, "products": [], "activities": []}
+    async def find(_self, _number): return current
+    async def new(_self, force_refresh=False): return [current]
+    monkeypatch.setattr(orders.ShiprocketService, "find_existing_order", find)
+    monkeypatch.setattr(orders.ShiprocketService, "list_new_orders", new)
+    request = {"http_status": 200, "response": {"success": False, "message": "Cancellation not allowed"}, "classification": "rejected"}
+    result = await orders._verify_shiprocket_only_cancellation("1", cleanup_payload(), request_result=request)
+    assert result["status"] == "rejected"
+
+
+@pytest.mark.anyio
+async def test_shiprocket_nested_cancelled_but_top_level_new_is_inconsistent(tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    current = {"id": 77, "channel_order_id": "322835", "status": "NEW", "status_code": 1, "products": [{"status": "CANCELED", "status_code": 5}], "activities": ["ORDER_CANCELLED"]}
+    async def find(_self, _number): return current
+    async def new(_self, force_refresh=False): return [current]
+    monkeypatch.setattr(orders.ShiprocketService, "find_existing_order", find)
+    monkeypatch.setattr(orders.ShiprocketService, "list_new_orders", new)
+    result = await orders._verify_shiprocket_only_cancellation("1", cleanup_payload(), request_result={"http_status": 200, "response": {}, "classification": "accepted"})
+    assert result["status"] == "inconsistent"
+    assert result["still_in_new_queue"] is True
+    audit = OrderOperationsStore.get("1")["timeline_events"][-1]
+    assert audit["details"]["operator"] == "Operator"
+    assert audit["details"]["timestamp_ist"].endswith(" IST")
+
+
+@pytest.mark.anyio
+async def test_shiprocket_disappearing_from_new_confirms_cancellation(tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    async def find(_self, _number): return {"id": 77, "channel_order_id": "322835", "status": "PROCESSING", "status_code": 18}
+    async def new(_self, force_refresh=False): return []
+    monkeypatch.setattr(orders.ShiprocketService, "find_existing_order", find)
+    monkeypatch.setattr(orders.ShiprocketService, "list_new_orders", new)
+    result = await orders._verify_shiprocket_only_cancellation("1", cleanup_payload(), request_result={"http_status": 200, "response": {}, "classification": "ambiguous"})
+    assert result["status"] == "confirmed"
+    assert result["still_in_new_queue"] is False
+
+
+@pytest.mark.anyio
+async def test_verification_retry_does_not_resend_cancellation(tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    calls = {"send": 0}
+    async def send(_self, _order): calls["send"] += 1; raise AssertionError("verification resent cancellation")
+    async def find(_self, _number): return {"id": 77, "channel_order_id": "322835", "status": "NEW", "status_code": 1}
+    async def new(_self, force_refresh=False): return [{"id": 77, "channel_order_id": "322835", "status": "NEW"}]
+    monkeypatch.setattr(orders.ShiprocketService, "request_unbooked_order_cancellation", send)
+    monkeypatch.setattr(orders.ShiprocketService, "find_existing_order", find)
+    monkeypatch.setattr(orders.ShiprocketService, "list_new_orders", new)
+    result = await orders.verify_shiprocket_only_cancel("1", cleanup_payload())
+    assert result["status"] == "unverified"
+    assert calls["send"] == 0
+
+
+def test_shiprocket_response_classification_and_secret_sanitizing():
+    assert ShiprocketService.classify_cancellation_response({"status_code": 200, "message": "Cancelled successfully"}) == "accepted"
+    assert ShiprocketService.classify_cancellation_response({"success": False, "message": "Cancellation not allowed"}) == "rejected"
+    assert ShiprocketService.classify_cancellation_response({"message": "Request received"}) == "ambiguous"
+    assert ShiprocketService.sanitize_response({"token": "secret", "message": "ok"}) == {"token": "[REDACTED]", "message": "ok"}
