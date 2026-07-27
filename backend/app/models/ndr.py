@@ -63,5 +63,6 @@ class NDRSyncRun(Base):
     cases_created = mapped_column(Integer, nullable=False, default=0)
     cases_updated = mapped_column(Integer, nullable=False, default=0)
     error = mapped_column(Text, nullable=True)
+    source_health = mapped_column(JSON, nullable=True)
     actor_user_id = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
     actor_name = mapped_column(String(120), nullable=True)

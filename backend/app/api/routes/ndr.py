@@ -33,7 +33,7 @@ def summary(db: Session = Depends(get_db)) -> dict:
     aware = lambda value: value if not value or value.tzinfo else value.replace(tzinfo=timezone.utc)
     active = [c for c in cases if c.current_status != "resolved"]
     last = db.scalar(select(NDRSyncRun).order_by(NDRSyncRun.started_at.desc()).limit(1))
-    return {"active_ndr": len(active), "new_today": sum(1 for c in cases if aware(c.first_ndr_at).date() == today), "awaiting_customer": sum(c.current_status == "awaiting_customer" for c in active), "courier_pending": sum(c.current_status == "courier_pending" for c in active), "resolved_today": sum(bool(c.resolved_at and aware(c.resolved_at).date() == today) for c in cases), "over_sla": sum((now - aware(c.first_ndr_at)).total_seconds() > 172800 for c in active), "last_sync_at": last.completed_at.isoformat() if last and last.completed_at else None, "last_sync_status": last.status if last else None}
+    return {"active_ndr": len(active), "new_today": sum(1 for c in cases if aware(c.first_ndr_at).date() == today), "awaiting_customer": sum(c.current_status == "awaiting_customer" for c in active), "courier_pending": sum(c.current_status == "courier_pending" for c in active), "resolved_today": sum(bool(c.resolved_at and aware(c.resolved_at).date() == today) for c in cases), "over_sla": sum((now - aware(c.first_ndr_at)).total_seconds() > 172800 for c in active), "last_sync_at": last.completed_at.isoformat() if last and last.completed_at else None, "last_sync_status": last.status if last else None, "last_sync_error": last.error if last else None, "source_health": last.source_health if last else None}
 
 
 @router.get("/cases")
@@ -68,7 +68,10 @@ def case_detail(case_id: str, db: Session = Depends(get_db)) -> dict:
 async def sync_now(request: Request, db: Session = Depends(get_db)) -> dict:
     try: run = await sync_ndr(db, trigger="manual", actor=current_user(request))
     except NDRSyncAlreadyRunning as error: raise HTTPException(409, str(error)) from error
-    return {"id": run.id, "status": run.status, "cases_seen": run.cases_seen, "cases_created": run.cases_created, "cases_updated": run.cases_updated, "completed_at": run.completed_at.isoformat() if run.completed_at else None}
+    result = {"id": run.id, "status": run.status, "cases_seen": run.cases_seen, "cases_created": run.cases_created, "cases_updated": run.cases_updated, "completed_at": run.completed_at.isoformat() if run.completed_at else None, "source_health": run.source_health, "message": run.error or "NDR sync completed."}
+    if run.status == "failed":
+        raise HTTPException(502, detail=result)
+    return result
 
 
 @router.post("/cases/{case_id}/actions")

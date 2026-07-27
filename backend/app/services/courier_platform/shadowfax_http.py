@@ -187,6 +187,33 @@ class ShadowfaxHTTPTransport:
             "provider_response": payload,
         }
 
+    async def list_ndr_shipments(self) -> list[dict[str, Any]]:
+        """Fetch current Shadowfax orders and retain delivery-failure/NDR records."""
+        rows: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            response = await self._request(
+                "GET", "/v3/clients/orders/", params={"page": page, "count": 100}
+            )
+            payload = self._json(response, "list_ndr_shipments")
+            values = payload.get("results") or payload.get("data") if isinstance(payload, dict) else payload
+            if not isinstance(values, list):
+                raise ProviderError(
+                    "Shadowfax returned an invalid order-list response.",
+                    provider="shadowfax", operation="list_ndr_shipments",
+                )
+            for item in values:
+                if not isinstance(item, dict):
+                    continue
+                text = " ".join(str(item.get(key) or "") for key in (
+                    "status", "status_display", "failure_reason", "ndr_reason", "remarks"
+                )).casefold()
+                if any(marker in text for marker in ("ndr", "undeliver", "not delivered", "delivery failed")):
+                    rows.append(item)
+            if not values or (isinstance(payload, dict) and not payload.get("next")):
+                return rows
+            page += 1
+
     async def cancel_booking(self, shipment: dict[str, Any]) -> dict[str, Any]:
         request_id = str(shipment.get("awb") or shipment.get("provider_order_id") or "").strip()
         if not request_id:

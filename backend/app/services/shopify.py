@@ -375,6 +375,13 @@ class ShopifyService:
             return orders
 
     async def _fetch_orders(self, limit: int | None = None) -> list[ShopifyOrder]:
+        return await self._fetch_orders_for_enrichment(limit, include_transactions=True)
+
+    async def get_orders_for_ndr_enrichment(self) -> list[ShopifyOrder]:
+        """Read recent orders without per-order transaction calls; NDR needs identity and fulfilment data only."""
+        return await self._fetch_orders_for_enrichment(None, include_transactions=False)
+
+    async def _fetch_orders_for_enrichment(self, limit: int | None = None, *, include_transactions: bool) -> list[ShopifyOrder]:
         access_token = await self._get_access_token()
         fields = "id,name,status,order_number,created_at,customer,email,phone,shipping_address,line_items,shipping_lines,total_price,current_total_price,total_outstanding,financial_status,fulfillment_status,cancelled_at,tags,payment_gateway_names,fulfillments"
         url = f"https://{self.store}/admin/api/{self.api_version}/orders.json"
@@ -399,7 +406,7 @@ class ShopifyService:
                 response.raise_for_status()
                 payload = response.json().get("orders", [])
                 partial_orders = [order for order in payload if str(order.get("financial_status") or "").casefold() == "partially_paid"]
-                if partial_orders:
+                if include_transactions and partial_orders:
                     summaries = await asyncio.gather(*(self._transaction_summary(client, str(order["id"]), headers) for order in partial_orders))
                     for order, summary in zip(partial_orders, summaries, strict=True):
                         order["_transaction_summary"] = summary

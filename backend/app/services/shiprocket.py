@@ -712,6 +712,28 @@ class ShiprocketService:
             raise ShiprocketAPIError(self._safe_message(response))
         return response.json()
 
+    async def list_ndr_shipments(self) -> list[dict[str, Any]]:
+        """Fetch the account-level NDR list; includes orders created outside Mumchies OS."""
+        rows: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            response = await self._get(
+                "https://apiv2.shiprocket.in/v1/external/ndr/all",
+                {"page": page, "per_page": 100},
+            )
+            if response.status_code >= 400:
+                raise self._api_error(response, "list_ndr_shipments")
+            payload = response.json()
+            batch = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(batch, list):
+                raise ShiprocketAPIError("Shiprocket returned an invalid NDR list response.")
+            rows.extend(item for item in batch if isinstance(item, dict))
+            pagination = ((payload.get("meta") or {}).get("pagination") or {}) if isinstance(payload, dict) else {}
+            total_pages = int(pagination.get("total_pages") or page)
+            if not batch or page >= total_pages:
+                return rows
+            page += 1
+
     async def fetch_label(self, shipment_id: str) -> httpx.Response:
         response = await self._post(
             "https://apiv2.shiprocket.in/v1/external/courier/generate/label",
