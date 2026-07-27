@@ -53,6 +53,8 @@ import {
 import { logout } from './services/auth'
 import { useAuth } from './auth-context'
 import { UsersPage } from './components/UsersPage'
+import { ComingSoonPage } from './components/ComingSoonPage'
+import { ReconciliationUnavailable } from './components/ReconciliationUnavailable'
 import { formatDateTime } from './utils/time'
 import { orderContactSectionTitle } from './utils/operations'
 import { EngageCircle, EngageProgress } from './components/EngageStatus'
@@ -153,7 +155,7 @@ const formatOrderDateTime = (value: string) => {
 }
 function App() {
   const authUser = useAuth()
-  const [activePage, setActivePage] = useState<'Orders' | 'Reconciliation' | 'Settings'>('Orders')
+  const [activePage, setActivePage] = useState<'Orders' | 'NDR' | 'Reconciliation' | 'Settings'>('Orders')
   const [orders, setOrders] = useState<Order[]>([])
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null)
   const [operations, setOperations] = useState<OrderOperations | null>(null)
@@ -598,7 +600,7 @@ function App() {
           </div>
           <nav className="ml-2 hidden flex-1 gap-2 overflow-x-auto md:flex">
             {navItems.filter(item => item !== 'Settings' || authUser?.role === 'owner').map(item => (
-              <button key={item} onClick={() => { if (item === 'Orders' || item === 'Reconciliation' || item === 'Settings') setActivePage(item) }} className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-medium ${item === activePage ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{item}</button>
+              <button key={item} onClick={() => { if (item === 'Orders' || item === 'NDR' || item === 'Reconciliation' || item === 'Settings') setActivePage(item) }} className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-medium ${item === activePage ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{item}</button>
             ))}
           </nav>
           <div className="ml-auto flex items-center gap-2">
@@ -611,16 +613,17 @@ function App() {
 
       <main className="mx-auto max-w-[1800px] px-4 py-5 lg:px-6">
         {activePage === 'Settings' && authUser?.role === 'owner' && <UsersPage />}
+        {activePage === 'NDR' && <ComingSoonPage title="NDR Dashboard" message="NDR Dashboard will be enabled in Sprint 2 after the backend sync engine is complete." />}
         {activePage === 'Reconciliation' && <div>
           <div className="mb-5"><p className="text-sm font-medium text-[#ff6b35]">Reconciliation</p><h2 className="mt-1 text-2xl font-bold tracking-tight">Order reconciliation</h2></div>
           <div className="mb-5 border-b border-slate-200"><button className="border-b-2 border-slate-900 px-1 pb-3 text-sm font-semibold text-slate-900">OS / Shiprocket Reconciliation</button></div>
-          <section className="mb-5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-bold uppercase tracking-[.12em] text-slate-400">OS / Shiprocket reconciliation</p><p className="mt-1 text-xs text-slate-500">Operational and Shiprocket totals may differ while orders sync or use another courier.</p></div><button onClick={refreshReconciliation} className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600">Refresh reconciliation</button></div>{reconciliation ? <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{([
+          <section className="mb-5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-bold uppercase tracking-[.12em] text-slate-400">OS / Shiprocket reconciliation</p><p className="mt-1 text-xs text-slate-500">Operational and Shiprocket totals may differ while orders sync or use another courier.</p></div><button disabled={!reconciliation} onClick={refreshReconciliation} className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400">Refresh reconciliation</button></div>{reconciliation ? <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{([
             ['operations', 'Operations Queue', reconciliation.operations_queue],
             ['shiprocket_new', 'Shiprocket New', reconciliation.shiprocket_new],
             ['both', 'Present in Both', reconciliation.present_in_both],
             ['cleanup_pending', 'Cleanup Pending', reconciliation.cleanup_pending],
             ['missing_in_shiprocket', 'Missing in Shiprocket', reconciliation.missing_in_shiprocket],
-          ] as [ReconciliationFilter, string, number][]).map(([key, label, value]) => { const active = reconciliationFilter === key; return <button type="button" aria-pressed={active} key={key} onClick={() => setReconciliationFilter(current => selectReconciliationFilter(current, key))} className={`cursor-pointer rounded-lg border px-3 py-2 text-left transition focus:outline-none focus:ring-2 focus:ring-orange-300 ${active ? 'border-orange-300 bg-orange-50 ring-2 ring-orange-100' : 'border-transparent bg-slate-50 hover:border-slate-300 hover:bg-slate-100'}`}><p className="text-[11px] font-semibold text-slate-500">{label}</p><p className="mt-1 text-lg font-bold text-slate-900">{value}</p></button> })}</div> : <p className="mt-3 text-sm text-slate-500">Reconciliation data is unavailable. Use refresh to try again.</p>}</section>
+          ] as [ReconciliationFilter, string, number][]).map(([key, label, value]) => { const active = reconciliationFilter === key; return <button type="button" aria-pressed={active} key={key} onClick={() => setReconciliationFilter(current => selectReconciliationFilter(current, key))} className={`cursor-pointer rounded-lg border px-3 py-2 text-left transition focus:outline-none focus:ring-2 focus:ring-orange-300 ${active ? 'border-orange-300 bg-orange-50 ring-2 ring-orange-100' : 'border-transparent bg-slate-50 hover:border-slate-300 hover:bg-slate-100'}`}><p className="text-[11px] font-semibold text-slate-500">{label}</p><p className="mt-1 text-lg font-bold text-slate-900">{value}</p></button> })}</div> : <ReconciliationUnavailable />}</section>
           {reconciliationFilter && <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-4"><div><h3 className="text-lg font-bold text-slate-900">{reconciliationFilterLabel(reconciliationFilter)}</h3><p className="text-sm text-slate-500">{reconciliationRows.length} orders</p></div><button onClick={() => setReconciliationFilter(clearReconciliationFilter())} className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">Clear Filter</button></div><OrdersTable orders={reconciliationOrders} repeatIds={repeatIds} onOpen={openOrder} reconciliationRows={reconciliationRows} reconciliationFilter={reconciliationFilter} cleanupRecords={cleanupRecords} cleanupResults={cleanupResults} onCleanup={sendShiprocketCleanup} onVerify={verifyShiprocketCleanup} emptyMessage="No orders match this reconciliation view." /></section>}
         </div>}
 

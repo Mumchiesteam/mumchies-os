@@ -3,11 +3,12 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.auth import hash_password
 from app.core.identity import require_owner
-from app.core.users import ROLES
+from app.core.users import ROLES, normalize_username
 from app.db.session import get_db
 from app.models.user import User
 
@@ -24,6 +25,14 @@ class PasswordReset(BaseModel):
     password_confirmation: str = Field(min_length=12)
 
 
+class UserCreate(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    display_name: str = Field(min_length=1, max_length=120)
+    role: str
+    password: str = Field(min_length=12)
+    password_confirmation: str = Field(min_length=12)
+
+
 def _public(user: User) -> dict[str, str | int | bool | None]:
     def stamp(value: datetime | None) -> str | None:
         return value.isoformat() if value else None
@@ -34,6 +43,39 @@ def _public(user: User) -> dict[str, str | int | bool | None]:
 def list_users(request: Request, db: Session = Depends(get_db)) -> list[dict[str, object]]:
     require_owner(request)
     return [_public(user) for user in db.scalars(select(User).order_by(User.username)).all()]
+
+
+@router.post("", status_code=status.HTTP_201_CREATED)
+def create_user(payload: UserCreate, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
+    require_owner(request)
+    try:
+        username = normalize_username(payload.username)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    display_name = payload.display_name.strip()
+    if not display_name:
+        raise HTTPException(status_code=422, detail="Display name is required.")
+    if payload.role not in {"admin", "operator"}:
+        raise HTTPException(status_code=422, detail="Role must be Admin or Operator.")
+    if payload.password != payload.password_confirmation:
+        raise HTTPException(status_code=422, detail="Passwords do not match.")
+    if db.scalar(select(User.id).where(User.username == username)) is not None:
+        raise HTTPException(status_code=409, detail="That username is already in use.")
+    user = User(
+        username=username,
+        display_name=display_name,
+        password_hash=hash_password(payload.password),
+        role=payload.role,
+        is_active=True,
+    )
+    db.add(user)
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="That username is already in use.") from error
+    db.refresh(user)
+    return _public(user)
 
 
 @router.put("/{user_id}")

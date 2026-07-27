@@ -1,0 +1,3 @@
+export function ComingSoonPage({ title, message }: { title: string; message: string }) {
+  return <section className="grid min-h-[420px] place-items-center rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm"><div><div className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-orange-50 text-xl text-[#ff6b35]">⌛</div><h2 className="mt-4 text-2xl font-bold tracking-tight text-slate-900">{title}</h2><p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-slate-500">{message}</p><span className="mt-5 inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-bold uppercase tracking-wider text-slate-500">Coming Soon</span></div></section>
+}
