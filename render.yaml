@@ -45,6 +45,10 @@ services:
         value: none
       - key: SHOPIFY_STORE
         sync: false
+      - key: SHOPIFY_STORE_URL
+        sync: false
+      - key: SHOPIFY_TOKEN
+        sync: false
       - key: SHOPIFY_CLIENT_ID
         sync: false
       - key: SHOPIFY_CLIENT_SECRET
@@ -63,7 +67,15 @@ services:
         sync: false
       - key: SHADOWFAX_TOKEN
         sync: false
+      - key: SHADOWFAX_EMAIL
+        sync: false
+      - key: SHADOWFAX_PASSWORD_SECRET
+        sync: false
       - key: SHADOWFAX_BASE_URL
+        sync: false
+      - key: GDRIVE_FOLDER_ID
+        sync: false
+      - key: GDRIVE_SERVICE_ACCOUNT_JSON
         sync: false
     disk:
       name: mumchies-os-data

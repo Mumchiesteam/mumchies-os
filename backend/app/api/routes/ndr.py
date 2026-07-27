@@ -31,7 +31,7 @@ def summary(db: Session = Depends(get_db)) -> dict:
     now = datetime.now(timezone.utc); today = now.date()
     cases = db.scalars(select(NDRCase)).all()
     aware = lambda value: value if not value or value.tzinfo else value.replace(tzinfo=timezone.utc)
-    active = [c for c in cases if c.current_status != "resolved"]
+    active = [c for c in cases if c.current_status != "resolved" and c.source_lifecycle == "active"]
     last = db.scalar(select(NDRSyncRun).order_by(NDRSyncRun.started_at.desc()).limit(1))
     return {"active_ndr": len(active), "new_today": sum(1 for c in cases if aware(c.first_ndr_at).date() == today), "awaiting_customer": sum(c.current_status == "awaiting_customer" for c in active), "courier_pending": sum(c.current_status == "courier_pending" for c in active), "resolved_today": sum(bool(c.resolved_at and aware(c.resolved_at).date() == today) for c in cases), "over_sla": sum((now - aware(c.first_ndr_at)).total_seconds() > 172800 for c in active), "last_sync_at": last.completed_at.isoformat() if last and last.completed_at else None, "last_sync_status": last.status if last else None, "last_sync_error": last.error if last else None, "source_health": last.source_health if last else None}
 
@@ -89,7 +89,7 @@ def case_action(case_id: str, payload: NDRAction, request: Request, db: Session 
         description = note
     elif payload.action == "customer_contacted": case.customer_contacted_at = now; case.current_status = "courier_pending"; description = descriptions[payload.action]
     elif payload.action == "courier_contacted": case.courier_contacted_at = now; case.current_status = "awaiting_customer"; description = descriptions[payload.action]
-    elif payload.action == "resolve": case.current_status = "resolved"; case.resolved_at = now; case.resolution_note = note or None; description = descriptions[payload.action]
-    else: case.current_status = "new"; case.resolved_at = None; case.resolution_note = None; description = descriptions[payload.action]
+    elif payload.action == "resolve": case.current_status = "resolved"; case.source_lifecycle = "resolved"; case.resolved_at = now; case.resolution_note = note or None; description = descriptions[payload.action]
+    else: case.current_status = "new"; case.source_lifecycle = "active"; case.resolved_at = None; case.resolution_note = None; description = descriptions[payload.action]
     add_event(db, case, payload.action, description, actor=actor, data={"note": note} if note else None); db.commit(); db.refresh(case)
     return serialize_case(case)

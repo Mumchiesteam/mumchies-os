@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import hmac
+import logging
 
 from app.api.router import api_router
 from app.core.auth import read_session
@@ -12,6 +13,7 @@ from sqlalchemy import select
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
 app.state.session_factory = SessionLocal
+logging.getLogger(__name__).info("NDR source configuration: %s", settings.ndr_configuration())
 
 
 @app.middleware("http")

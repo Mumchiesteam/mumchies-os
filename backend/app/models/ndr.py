@@ -18,6 +18,7 @@ class NDRCase(Base):
     cod_amount = mapped_column(Float, nullable=False, default=0)
     shopify_order_url = mapped_column(Text, nullable=True)
     provider_tracking_url = mapped_column(Text, nullable=True)
+    source_lifecycle = mapped_column(String(32), nullable=False, default="active", index=True)
     current_status = mapped_column(String(64), nullable=False, default="new", index=True)
     provider_status = mapped_column(String(128), nullable=True)
     failure_reason = mapped_column(Text, nullable=True, index=True)

@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     auth_cookie_samesite: str = "lax"
     auth_cookie_name: str = "mumchies_session"
     shopify_store: str | None = None
+    shopify_store_url: str | None = None
+    shopify_token: str | None = None
     shopify_client_id: str | None = None
     shopify_client_secret: str | None = None
     shopify_api_version: str | None = None
@@ -34,7 +36,29 @@ class Settings(BaseSettings):
     delhivery_token: str | None = None
     delhivery_pickup: str | None = None
     shadowfax_token: str | None = None
+    shadowfax_email: str | None = None
+    shadowfax_password_secret: str | None = None
     shadowfax_base_url: str | None = None
+    gdrive_folder_id: str | None = None
+    gdrive_service_account_json: str | None = None
+
+    def ndr_configuration(self) -> dict[str, dict[str, str | bool]]:
+        """Safe startup/runtime configuration report; never includes secret values."""
+        return {
+            "shiprocket": {"configured": bool(self.shiprocket_email and self.shiprocket_password)},
+            "shadowfax": {
+                "configured": bool((self.shadowfax_email and self.shadowfax_password_secret) or self.shadowfax_token),
+                "login_configured": bool(self.shadowfax_email and self.shadowfax_password_secret),
+                "token_fallback_configured": bool(self.shadowfax_token),
+            },
+            "delhivery": {"configured": bool(self.delhivery_token)},
+            "shopify": {
+                "configured": bool((self.shopify_store_url and self.shopify_token) or (self.shopify_store and self.shopify_client_id and self.shopify_client_secret)),
+                "mode": "static_token" if self.shopify_store_url and self.shopify_token else "oauth" if self.shopify_store and self.shopify_client_id and self.shopify_client_secret else "missing",
+                "alternate_variable_detected": bool(not self.shopify_store_url and self.shopify_store),
+            },
+            "gdrive": {"configured": bool(self.gdrive_folder_id and self.gdrive_service_account_json)},
+        }
 
     @field_validator("database_url", mode="before")
     @classmethod
