@@ -51,6 +51,8 @@ import {
   type ReconciliationRecord,
 } from './services/orders'
 import { logout } from './services/auth'
+import { useAuth } from './auth-context'
+import { UsersPage } from './components/UsersPage'
 import { formatDateTime } from './utils/time'
 import { orderContactSectionTitle } from './utils/operations'
 import { EngageCircle, EngageProgress } from './components/EngageStatus'
@@ -78,7 +80,7 @@ type CourierQuote = {
   rate_note: string
 }
 
-const navItems = ['Dashboard', 'Orders', 'NDR', 'Reconciliation'] as const
+const navItems = ['Dashboard', 'Orders', 'NDR', 'Reconciliation', 'Settings'] as const
 const tabItems: { key: TabKey; label: string }[] = [
   { key: 'fresh', label: 'Fresh Orders' },
   { key: 'previous', label: 'Previous Pending Orders' },
@@ -150,7 +152,8 @@ const formatOrderDateTime = (value: string) => {
   }
 }
 function App() {
-  const [activePage, setActivePage] = useState<'Orders' | 'Reconciliation'>('Orders')
+  const authUser = useAuth()
+  const [activePage, setActivePage] = useState<'Orders' | 'Reconciliation' | 'Settings'>('Orders')
   const [orders, setOrders] = useState<Order[]>([])
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null)
   const [operations, setOperations] = useState<OrderOperations | null>(null)
@@ -407,7 +410,6 @@ function App() {
     try {
       const updated = await addOrderCallLog(selectedOrder.internalId, {
         result: callResult,
-        operator: 'Amit Kumar',
         comment: callComment,
       })
       setOperations(updated)
@@ -595,11 +597,12 @@ function App() {
             </div>
           </div>
           <nav className="ml-2 hidden flex-1 gap-2 overflow-x-auto md:flex">
-            {navItems.map(item => (
-              <button key={item} onClick={() => { if (item === 'Orders' || item === 'Reconciliation') setActivePage(item) }} className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-medium ${item === activePage ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{item}</button>
+            {navItems.filter(item => item !== 'Settings' || authUser?.role === 'owner').map(item => (
+              <button key={item} onClick={() => { if (item === 'Orders' || item === 'Reconciliation' || item === 'Settings') setActivePage(item) }} className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-medium ${item === activePage ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{item}</button>
             ))}
           </nav>
           <div className="ml-auto flex items-center gap-2">
+            <span className="hidden text-sm font-semibold text-slate-600 lg:inline">{authUser?.display_name}</span>
             <button className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"><Icon name="bell" /></button>
             <button onClick={() => void logout()} className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">Log out</button>
           </div>
@@ -607,6 +610,7 @@ function App() {
       </header>
 
       <main className="mx-auto max-w-[1800px] px-4 py-5 lg:px-6">
+        {activePage === 'Settings' && authUser?.role === 'owner' && <UsersPage />}
         {activePage === 'Reconciliation' && <div>
           <div className="mb-5"><p className="text-sm font-medium text-[#ff6b35]">Reconciliation</p><h2 className="mt-1 text-2xl font-bold tracking-tight">Order reconciliation</h2></div>
           <div className="mb-5 border-b border-slate-200"><button className="border-b-2 border-slate-900 px-1 pb-3 text-sm font-semibold text-slate-900">OS / Shiprocket Reconciliation</button></div>

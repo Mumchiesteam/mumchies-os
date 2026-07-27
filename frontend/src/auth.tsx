@@ -1,5 +1,6 @@
 import { type FormEvent, type ReactNode, useEffect, useState } from 'react'
 
+import { AuthContext, type AuthUser } from './auth-context'
 import { apiBase } from './services/orders'
 import { setCsrfToken } from './services/auth-state'
 
@@ -9,6 +10,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>('loading')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [user, setUser] = useState<AuthUser | null>(null)
 
   useEffect(() => {
     const unauthorised = () => setState('unauthenticated')
@@ -18,6 +20,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
         if (!response.ok) return setState('unauthenticated')
         const session = await response.json()
         setCsrfToken(session.csrf_token)
+        setUser({ username: session.username, display_name: session.display_name, role: session.role })
         setState('authenticated')
       })
       .catch(() => {
@@ -49,6 +52,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       }
       const session = await response.json()
       setCsrfToken(session.csrf_token)
+      setUser({ username: session.username, display_name: session.display_name, role: session.role })
       setState('authenticated')
     } catch {
       setError('Could not reach Mumchies OS. Check the server and try again.')
@@ -60,7 +64,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   if (state === 'loading') {
     return <main className="grid min-h-screen place-items-center bg-slate-50 text-sm text-slate-500">Checking session…</main>
   }
-  if (state === 'authenticated') return children
+  if (state === 'authenticated' && user) return <AuthContext.Provider value={user}>{children}</AuthContext.Provider>
 
   return (
     <main className="grid min-h-screen place-items-center bg-slate-50 px-4">

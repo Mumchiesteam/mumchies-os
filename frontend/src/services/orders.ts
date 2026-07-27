@@ -316,7 +316,7 @@ export interface OrderOperations {
 
 export const apiBase = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '')
 
-const apiFetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
+export const apiFetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
   const method = (init.method || 'GET').toUpperCase()
   const headers = new Headers(init.headers)
   if (!['GET', 'HEAD'].includes(method)) headers.set('X-CSRF-Token', getCsrfToken())
@@ -518,14 +518,14 @@ export async function getShiprocketCleanupPending(): Promise<{ items: Shiprocket
 }
 
 export async function cancelShiprocketOnly(record: ShiprocketCleanupRecord): Promise<ShiprocketCancellationResult> {
-  const response = await apiFetch(`${apiBase}/api/v1/orders/${record.order_id}/shiprocket-only-cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shiprocket_order_id: record.shiprocket_order_id, order_number: record.order_number, operator: 'Amit Kumar' }) })
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${record.order_id}/shiprocket-only-cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shiprocket_order_id: record.shiprocket_order_id, order_number: record.order_number }) })
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail || 'Could not safely cancel the Shiprocket order.')
   return body
 }
 
 export async function verifyShiprocketOnlyCancellation(record: ShiprocketCleanupRecord): Promise<ShiprocketCancellationResult> {
-  const response = await apiFetch(`${apiBase}/api/v1/orders/${record.order_id}/shiprocket-only-cancel/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shiprocket_order_id: record.shiprocket_order_id, order_number: record.order_number, operator: 'Amit Kumar' }) })
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${record.order_id}/shiprocket-only-cancel/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shiprocket_order_id: record.shiprocket_order_id, order_number: record.order_number }) })
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail || 'Could not verify the Shiprocket cancellation.')
   return body
@@ -576,7 +576,7 @@ export async function saveOrderAddress(orderId: string, payload: {
   return response.json()
 }
 
-export async function addOrderCallLog(orderId: string, payload: { result: string; timestamp?: string; operator: string; comment: string }): Promise<OrderOperations> {
+export async function addOrderCallLog(orderId: string, payload: { result: string; timestamp?: string; comment: string }): Promise<OrderOperations> {
   const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/call-logs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -589,13 +589,13 @@ export async function addOrderCallLog(orderId: string, payload: { result: string
 }
 
 export async function addAddressConfirmationComment(orderId: string, comment: string): Promise<OrderOperations> {
-  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/address-confirmation-comments`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ comment, operator: 'Amit Kumar' }) })
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/address-confirmation-comments`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ comment }) })
   if (!response.ok) throw new Error('Could not save address confirmation comment.')
   return response.json()
 }
 
 export async function saveAndVerifyOrderAddress(orderId: string, payload: Record<string, string | null>): Promise<{ operations: OrderOperations; validation: { status: string; blockers: string[]; warnings: string[]; shiprocket_message: string }; verified: boolean }> {
-  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/address/save-verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, operator: 'Amit Kumar' }) })
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/address/save-verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail || 'Could not save and verify address.')
   return body
@@ -608,7 +608,7 @@ export async function getCancellationPreflight(orderId: string): Promise<Cancell
   return response.json()
 }
 export async function cancelOrder(orderId: string, comment: string): Promise<{ results: Record<string, { status: string; error?: string }>; operations: OrderOperations }> {
-  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operator: 'Amit Kumar', comment, cancel_shopify: true, cancel_shiprocket: true }) })
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ comment, cancel_shopify: true, cancel_shiprocket: true }) })
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail || 'Could not cancel order.')
   return body
@@ -621,7 +621,7 @@ export async function retryShiprocketCleanup(orderId: string): Promise<{ status:
   return body
 }
 
-export async function verifyOrderAddress(orderId: string, payload: { operator: string; verified_at?: string; address_snapshot: OrderOperations['verified_address_snapshot'] }): Promise<OrderOperations> {
+export async function verifyOrderAddress(orderId: string, payload: { verified_at?: string; address_snapshot: OrderOperations['verified_address_snapshot'] }): Promise<OrderOperations> {
   const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/address/verify`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -756,7 +756,7 @@ export async function bookShiprocketShipment(orderId: string, payload: {
 }
 
 export async function refreshShiprocketShipment(orderId: string): Promise<{ provider: string; shipment: Order['shipment'] }> {
-  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/courier/tracking/refresh`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operator: 'Amit Kumar' }) })
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/courier/tracking/refresh`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
   if (!response.ok) {
     const body = await response.json().catch(() => null)
     throw new Error(body?.detail?.message || body?.detail || 'Could not refresh shipment status.')
@@ -765,21 +765,21 @@ export async function refreshShiprocketShipment(orderId: string): Promise<{ prov
 }
 
 export async function reconcileCourierBooking(orderId: string): Promise<{ provider: string; shipment: Order['shipment'] }> {
-  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/courier/reconcile`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operator: 'Amit Kumar' }) })
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/courier/reconcile`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail || 'Could not reconcile the courier booking.')
   return body
 }
 
 export async function refreshCourierTracking(orderId: string): Promise<{ provider: string; shipment: Order['shipment'] }> {
-  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/courier/tracking/refresh`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operator: 'Amit Kumar' }) })
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/courier/tracking/refresh`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail || 'Could not refresh courier tracking.')
   return body
 }
 
 export async function cancelCourierShipment(orderId: string): Promise<{ result: { status: string; message: string }; shipment: Order['shipment'] }> {
-  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/courier/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operator: 'Amit Kumar' }) })
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/courier/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail || 'Could not cancel courier shipment.')
   return body
@@ -836,14 +836,14 @@ export async function getLabelQueue(): Promise<{ labels_to_print: NonNullable<Or
 }
 
 export async function createLabelBatch(orderIds: string[]): Promise<{ id: string; provider: string; status: string; order_ids: string[] }> {
-  const response = await apiFetch(`${apiBase}/api/v1/labels/batches`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: orderIds, operator: 'Amit Kumar' }) })
+  const response = await apiFetch(`${apiBase}/api/v1/labels/batches`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: orderIds }) })
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail || 'Could not create label batch.')
   return body
 }
 
 export async function confirmLabelBatch(batchId: string, printedOrderIds: string[]): Promise<void> {
-  const response = await apiFetch(`${apiBase}/api/v1/labels/batches/${batchId}/confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printed_order_ids: printedOrderIds, operator: 'Amit Kumar' }) })
+  const response = await apiFetch(`${apiBase}/api/v1/labels/batches/${batchId}/confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printed_order_ids: printedOrderIds }) })
   if (!response.ok) throw new Error('Could not confirm label batch.')
 }
 

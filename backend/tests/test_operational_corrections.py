@@ -1,4 +1,5 @@
 from datetime import datetime
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -8,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from app.api.routes import couriers, orders
 from app.api.routes.orders import AddressConfirmationPayload, CancellationPayload, SaveVerifyAddressPayload, ShiprocketOnlyCancellationPayload
 from app.models.shiprocket import ShiprocketShipment
+from app.models.user import User
 from app.db.base import Base
 from app.services import order_operations
 from app.services.order_operations import OrderOperationsStore
@@ -15,6 +17,10 @@ from app.services.shiprocket import ShiprocketAPIError, ShiprocketService
 from app.services.shopify import ShopifySyncError
 from app.services.shopify import ShopifyService
 from tests.test_operations_upgrade import raw_order
+
+
+def authenticated_request(display_name="Authenticated Operator"):
+    return SimpleNamespace(state=SimpleNamespace(auth_user=User(username="operator", display_name=display_name, password_hash="unused", role="operator", is_active=True)))
 
 
 @pytest.fixture()
@@ -32,9 +38,9 @@ def db(tmp_path):
 @pytest.mark.anyio
 async def test_prepaid_address_comment_persists_operator_and_utc_timestamp(tmp_path, monkeypatch):
     monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
-    record = await orders.add_address_confirmation_comment("1", AddressConfirmationPayload(comment="Gate confirmed", operator="Operator"))
+    record = await orders.add_address_confirmation_comment("1", AddressConfirmationPayload(comment="Gate confirmed", operator="Untrusted"), authenticated_request())
     entry = record["address_confirmation_comments"][0]
-    assert entry["comment"] == "Gate confirmed" and entry["operator"] == "Operator"
+    assert entry["comment"] == "Gate confirmed" and entry["operator"] == "Authenticated Operator"
     assert datetime.fromisoformat(entry["timestamp"]).utcoffset().total_seconds() == 0
     assert record["call_logs"] == []
 
@@ -53,8 +59,8 @@ async def test_save_verify_address_validates_syncs_and_invalidates_old_verificat
     monkeypatch.setattr(orders.ShopifyService, "update_order_shipping_address", update_order)
     monkeypatch.setattr(orders.ShopifyService, "update_customer_address", update_customer)
     payload = SaveVerifyAddressPayload(operator="Operator", customer_name="Customer", phone="9999999999", address_line1="12 Main Road", landmark="Near Park", city="Delhi", state="Delhi", pincode="110001")
-    result = await orders.save_and_verify_address("1", payload, db)
-    assert result["verified"] is True and result["operations"]["address_verified_by"] == "Operator"
+    result = await orders.save_and_verify_address("1", payload, authenticated_request(), db)
+    assert result["verified"] is True and result["operations"]["address_verified_by"] == "Authenticated Operator"
     assert calls == ["order", ("customer", False)]
     OrderOperationsStore.save_address("1", {"address_line1": "Changed"}, operator="Operator")
     assert OrderOperationsStore.get("1")["address_verified"] is False
@@ -69,7 +75,7 @@ async def test_local_only_cancellation(tmp_path, monkeypatch):
     monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
     async def pf(_id, _db): return preflight(shopify=False, shiprocket=False)
     monkeypatch.setattr(orders, "_cancellation_preflight", pf)
-    result = await orders.cancel_order("1", CancellationPayload(operator="Operator"), None)
+    result = await orders.cancel_order("1", CancellationPayload(operator="Untrusted"), authenticated_request(), None)
     assert result["results"]["mumchies_os"]["status"] == "cancelled"
     assert result["results"]["shopify"]["status"] == "not_applicable"
 
@@ -85,7 +91,7 @@ async def test_shopify_and_shiprocket_cancellation_are_independent(tmp_path, mon
     monkeypatch.setattr(orders.ShopifyService, "cancel_order", shopify_cancel)
     monkeypatch.setattr(orders.ShiprocketService, "find_existing_order", find)
     monkeypatch.setattr(orders.ShiprocketService, "cancel_unbooked_order", shiprocket_cancel)
-    result = await orders.cancel_order("1", CancellationPayload(operator="Operator"), None)
+    result = await orders.cancel_order("1", CancellationPayload(operator="Untrusted"), authenticated_request(), None)
     assert result["results"]["shopify"]["status"] == "cancelled"
     assert result["results"]["shiprocket"] == {"status": "cancelled", "cancel_on_channel": False}
 
@@ -97,7 +103,7 @@ async def test_partial_cancellation_failure_is_reported_and_local_state_survives
     async def fail(_self, _id): raise ShopifySyncError("denied")
     monkeypatch.setattr(orders, "_cancellation_preflight", pf)
     monkeypatch.setattr(orders.ShopifyService, "cancel_order", fail)
-    result = await orders.cancel_order("1", CancellationPayload(operator="Operator"), None)
+    result = await orders.cancel_order("1", CancellationPayload(operator="Untrusted"), authenticated_request(), None)
     assert result["results"]["mumchies_os"]["status"] == "cancelled"
     assert result["results"]["shopify"] == {"status": "failed", "error": "denied"}
 
@@ -123,11 +129,11 @@ async def test_delhivery_cleanup_cancels_only_unbooked_and_failure_is_non_destru
     async def cancel(_self, _order): return {}
     monkeypatch.setattr(couriers.ShiprocketService, "find_existing_order", find)
     monkeypatch.setattr(couriers.ShiprocketService, "cancel_unbooked_order", cancel)
-    result = await couriers._cleanup_unused_shiprocket_order("1", "323160")
+    result = await couriers._cleanup_unused_shiprocket_order("1", "323160", "Authenticated Operator")
     assert result["status"] == "cancelled" and result["cancel_on_channel"] is False
     async def fail(_self, _order): raise ShiprocketAPIError("provider unavailable")
     monkeypatch.setattr(couriers.ShiprocketService, "cancel_unbooked_order", fail)
-    failed = await couriers._cleanup_unused_shiprocket_order("1", "323160")
+    failed = await couriers._cleanup_unused_shiprocket_order("1", "323160", "Authenticated Operator")
     assert failed["status"] == "failed"
     assert OrderOperationsStore.get("1")["timeline_events"][-1]["details"]["status"] == "failed"
 
@@ -174,7 +180,7 @@ async def test_shiprocket_http_200_success_requires_cancelled_top_level(tmp_path
     monkeypatch.setattr(orders.ShiprocketService, "request_unbooked_order_cancellation", request)
     monkeypatch.setattr(orders.ShiprocketService, "find_existing_order", find)
     monkeypatch.setattr(orders.asyncio, "sleep", no_sleep)
-    result = await orders.shiprocket_only_cancel("1", cleanup_payload())
+    result = await orders.shiprocket_only_cancel("1", cleanup_payload(), authenticated_request())
     assert result["status"] == "confirmed"
     assert result["verified_top_level_status_code"] == 5
 
@@ -188,7 +194,7 @@ async def test_shiprocket_http_200_application_rejection_is_not_success(tmp_path
     monkeypatch.setattr(orders.ShiprocketService, "find_existing_order", find)
     monkeypatch.setattr(orders.ShiprocketService, "list_new_orders", new)
     request = {"http_status": 200, "response": {"success": False, "message": "Cancellation not allowed"}, "classification": "rejected"}
-    result = await orders._verify_shiprocket_only_cancellation("1", cleanup_payload(), request_result=request)
+    result = await orders._verify_shiprocket_only_cancellation("1", cleanup_payload(), operator="Authenticated Operator", request_result=request)
     assert result["status"] == "rejected"
 
 
@@ -200,11 +206,11 @@ async def test_shiprocket_nested_cancelled_but_top_level_new_is_inconsistent(tmp
     async def new(_self, force_refresh=False): return [current]
     monkeypatch.setattr(orders.ShiprocketService, "find_existing_order", find)
     monkeypatch.setattr(orders.ShiprocketService, "list_new_orders", new)
-    result = await orders._verify_shiprocket_only_cancellation("1", cleanup_payload(), request_result={"http_status": 200, "response": {}, "classification": "accepted"})
+    result = await orders._verify_shiprocket_only_cancellation("1", cleanup_payload(), operator="Authenticated Operator", request_result={"http_status": 200, "response": {}, "classification": "accepted"})
     assert result["status"] == "inconsistent"
     assert result["still_in_new_queue"] is True
     audit = OrderOperationsStore.get("1")["timeline_events"][-1]
-    assert audit["details"]["operator"] == "Operator"
+    assert audit["details"]["operator"] == "Authenticated Operator"
     assert audit["details"]["timestamp_ist"].endswith(" IST")
 
 
@@ -215,7 +221,7 @@ async def test_shiprocket_disappearing_from_new_confirms_cancellation(tmp_path, 
     async def new(_self, force_refresh=False): return []
     monkeypatch.setattr(orders.ShiprocketService, "find_existing_order", find)
     monkeypatch.setattr(orders.ShiprocketService, "list_new_orders", new)
-    result = await orders._verify_shiprocket_only_cancellation("1", cleanup_payload(), request_result={"http_status": 200, "response": {}, "classification": "ambiguous"})
+    result = await orders._verify_shiprocket_only_cancellation("1", cleanup_payload(), operator="Authenticated Operator", request_result={"http_status": 200, "response": {}, "classification": "ambiguous"})
     assert result["status"] == "confirmed"
     assert result["still_in_new_queue"] is False
 
@@ -230,7 +236,7 @@ async def test_verification_retry_does_not_resend_cancellation(tmp_path, monkeyp
     monkeypatch.setattr(orders.ShiprocketService, "request_unbooked_order_cancellation", send)
     monkeypatch.setattr(orders.ShiprocketService, "find_existing_order", find)
     monkeypatch.setattr(orders.ShiprocketService, "list_new_orders", new)
-    result = await orders.verify_shiprocket_only_cancel("1", cleanup_payload())
+    result = await orders.verify_shiprocket_only_cancel("1", cleanup_payload(), authenticated_request())
     assert result["status"] == "unverified"
     assert calls["send"] == 0
 

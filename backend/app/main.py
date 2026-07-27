@@ -6,8 +6,12 @@ import hmac
 from app.api.router import api_router
 from app.core.auth import read_session
 from app.core.config import settings
+from app.db.session import SessionLocal
+from app.models.user import User
+from sqlalchemy import select
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
+app.state.session_factory = SessionLocal
 
 
 @app.middleware("http")
@@ -26,12 +30,20 @@ async def require_authentication(request: Request, call_next):
         response = JSONResponse(status_code=401, content={"detail": "Authentication required."})
         response.delete_cookie(settings.auth_cookie_name, path="/")
         return response
+    with request.app.state.session_factory() as db:
+        user = db.scalar(select(User).where(User.username == session.username))
+        if user is None or not user.is_active:
+            response = JSONResponse(status_code=401, content={"detail": "Authentication required."})
+            response.delete_cookie(settings.auth_cookie_name, path="/")
+            return response
+        db.expunge(user)
     if request.method not in {"GET", "HEAD"} and not hmac.compare_digest(
         request.headers.get("X-CSRF-Token", ""),
         session.csrf_token,
     ):
         return JSONResponse(status_code=403, content={"detail": "Invalid CSRF token."})
     request.state.auth_username = session.username
+    request.state.auth_user = user
     request.state.csrf_token = session.csrf_token
     return await call_next(request)
 

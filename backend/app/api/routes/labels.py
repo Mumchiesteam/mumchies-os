@@ -2,13 +2,14 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.core.identity import current_actor
 from app.models.shiprocket import LabelPrintBatch, LabelPrintBatchItem, ShiprocketShipment
 from app.repositories.shiprocket import snapshot
 from app.services.label_printing import LabelPrintError, confirm_batch, create_batch
@@ -18,12 +19,12 @@ router = APIRouter(prefix="/labels", tags=["labels"])
 
 class BatchPayload(BaseModel):
     order_ids: list[str]
-    operator: str
+    operator: str | None = None
 
 
 class ConfirmPayload(BaseModel):
     printed_order_ids: list[str]
-    operator: str
+    operator: str | None = None
 
 
 class ReprintPayload(BaseModel):
@@ -52,9 +53,9 @@ async def active_batches(db: Session = Depends(get_db)) -> list[dict[str, object
 
 
 @router.post("/batches")
-async def make_batch(payload: BatchPayload, db: Session = Depends(get_db)) -> dict[str, object]:
+async def make_batch(payload: BatchPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     try:
-        batch = await create_batch(db, payload.order_ids, payload.operator)
+        batch = await create_batch(db, payload.order_ids, current_actor(request))
         return {"id": batch.id, "provider": batch.provider, "status": batch.status, "order_ids": payload.order_ids}
     except LabelPrintError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -69,9 +70,9 @@ async def batch_pdf(batch_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/batches/{batch_id}/confirm")
-async def confirm(batch_id: str, payload: ConfirmPayload, db: Session = Depends(get_db)) -> dict[str, object]:
+async def confirm(batch_id: str, payload: ConfirmPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     try:
-        batch = confirm_batch(db, batch_id, set(payload.printed_order_ids), payload.operator)
+        batch = confirm_batch(db, batch_id, set(payload.printed_order_ids), current_actor(request))
         items = db.scalars(select(LabelPrintBatchItem).where(LabelPrintBatchItem.batch_id == batch_id)).all()
         return {"id": batch.id, "status": batch.status, "items": [{"order_id": value.order_id, "status": value.status} for value in items]}
     except LabelPrintError as error:
@@ -79,7 +80,7 @@ async def confirm(batch_id: str, payload: ConfirmPayload, db: Session = Depends(
 
 
 @router.post("/orders/{order_id}/activate")
-async def activate_legacy_label(order_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
+async def activate_legacy_label(order_id: str, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     shipment = db.get(ShiprocketShipment, order_id)
     if shipment is None or not shipment.awb or shipment.booking_status != "booked":
         raise HTTPException(status_code=409, detail="Only an existing booked shipment can be added to the label queue.")
@@ -88,12 +89,13 @@ async def activate_legacy_label(order_id: str, db: Session = Depends(get_db)) ->
         shipment.label_print_status = "not_printed"
         shipment.label_print_count = 0
         shipment.label_tracking_activated_at = datetime.now(timezone.utc)
+        shipment.label_last_printed_by = current_actor(request)
         db.commit()
     return snapshot(shipment)
 
 
 @router.post("/orders/{order_id}/reprint")
-async def reprint_label(order_id: str, payload: ReprintPayload, db: Session = Depends(get_db)) -> dict[str, object]:
+async def reprint_label(order_id: str, payload: ReprintPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     shipment = db.get(ShiprocketShipment, order_id)
     if shipment is None or shipment.label_print_status != "printed":
         raise HTTPException(status_code=409, detail="Only a previously printed label can be reprinted.")
@@ -101,5 +103,6 @@ async def reprint_label(order_id: str, payload: ReprintPayload, db: Session = De
         raise HTTPException(status_code=400, detail="Explicit reprint confirmation is required.")
     shipment.label_print_status = "not_printed"
     shipment.last_print_batch_id = None
+    shipment.label_last_printed_by = current_actor(request)
     db.commit()
     return snapshot(shipment)

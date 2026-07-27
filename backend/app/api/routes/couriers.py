@@ -4,12 +4,13 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.core.identity import current_actor
 from app.repositories.shiprocket import get_shipment, snapshot as shipment_snapshot, upsert_shipment
 from app.schemas.orders import ShopifyOrder
 from app.services.order_operations import OrderOperationsStore
@@ -368,8 +369,9 @@ async def shiprocket_health() -> dict[str, object]:
 
 
 @router.post("/orders/{order_id}/package")
-async def save_package_details(order_id: str, payload: PackageDetailsPayload) -> dict[str, object]:
+async def save_package_details(order_id: str, payload: PackageDetailsPayload, request: Request) -> dict[str, object]:
     record = OrderOperationsStore.save_package_details(order_id, payload.model_dump())
+    OrderOperationsStore.record_timeline_event(order_id, "package_details_updated", operator=current_actor(request))
     return {"provider": "shiprocket", "package_details": record.get("package_details")}
 
 
@@ -447,7 +449,12 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
 
 
 @router.post("/orders/{order_id}/book")
-async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: Session = Depends(get_db)) -> dict[str, object]:
+async def shiprocket_book_shipment_route(order_id: str, payload: BookingPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
+    return await shiprocket_book_shipment(order_id, payload, db, current_actor(request))
+
+
+async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: Session, operator: str = "Mumchies OS") -> dict[str, object]:
+    actor = operator
     try:
         order, operations, shipment = await _load_context(order_id, db)
         package = PackageDetailsPayload.model_validate(payload.model_dump())
@@ -480,7 +487,7 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
             try:
                 result = await CourierPlatformService().book(
                     db, order_id=order_id, merchant_order_id=order.order_number,
-                    adapter=adapter, request=request, operator=payload.operator,
+                    adapter=adapter, request=request, operator=actor,
                 )
             except ProviderError as error:
                 raise HTTPException(status_code=503 if error.operation in {"authenticate", "serviceability", "booking"} else 409, detail=str(error)) from error
@@ -506,7 +513,8 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
             OrderOperationsStore.save_selected_courier(order_id, selected)
             _activate_new_label_tracking(db, order_id, result)
             synchronized = await _sync_shopify_after_booking(db, order)
-            cleanup = await _cleanup_unused_shiprocket_order(order_id, order.order_number)
+            OrderOperationsStore.record_timeline_event(order_id, "shipment_booked", operator=actor, details={"provider": "delhivery"})
+            cleanup = await _cleanup_unused_shiprocket_order(order_id, order.order_number, actor)
             return {"provider": "delhivery", **result, "shipment": synchronized or result.get("shipment"), "shiprocket_cleanup": cleanup, "warning": cleanup.get("error")}
 
         order_payload = _build_shiprocket_order_payload(order, operations, package)
@@ -522,6 +530,7 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
         OrderOperationsStore.save_selected_courier(order_id, selected)
         _activate_new_label_tracking(db, order_id, result)
         synchronized = await _sync_shopify_after_booking(db, order)
+        OrderOperationsStore.record_timeline_event(order_id, "shipment_booked", operator=actor, details={"provider": "shiprocket"})
         return {"provider": "shiprocket", **result, "shipment": synchronized or result.get("shipment")}
     except DelhiveryError as error:
         raise HTTPException(status_code=502, detail={"message": str(error), "upstream_status": error.status_code}) from error
@@ -541,12 +550,12 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
 
 
 @booking_router.post("/{order_id}/book")
-async def provider_book_shipment(order_id: str, payload: BookingPayload, db: Session = Depends(get_db)) -> dict[str, object]:
+async def provider_book_shipment(order_id: str, payload: BookingPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     """Provider-neutral booking entrypoint; delegates to the existing guarded implementation."""
-    return await shiprocket_book_shipment(order_id, payload, db)
+    return await shiprocket_book_shipment(order_id, payload, db, current_actor(request))
 
 
-async def _cleanup_unused_shiprocket_order(order_id: str, channel_order_id: str) -> dict[str, object]:
+async def _cleanup_unused_shiprocket_order(order_id: str, channel_order_id: str, operator: str) -> dict[str, object]:
     try:
         service = ShiprocketService()
         upstream = await service.find_existing_order(channel_order_id)
@@ -562,58 +571,58 @@ async def _cleanup_unused_shiprocket_order(order_id: str, channel_order_id: str)
                 result = {"status": "cancelled", "cancel_on_channel": False, "shiprocket_order_id": str(upstream.get("id"))}
     except (ShiprocketAPIError, ShiprocketConfigurationError) as error:
         result = {"status": "failed", "cancel_on_channel": False, "error": str(error)}
-    OrderOperationsStore.record_timeline_event(order_id, "shiprocket_cleanup", operator="Mumchies OS", details=result)
+    OrderOperationsStore.record_timeline_event(order_id, "shiprocket_cleanup", operator=operator, details=result)
     return result
 
 
 @router.post("/shiprocket/orders/{order_id}/cleanup-unused")
-async def retry_unused_shiprocket_cleanup(order_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
+async def retry_unused_shiprocket_cleanup(order_id: str, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     shipment = get_shipment(db, order_id)
     if shipment is None or shipment.provider != "delhivery" or not shipment.awb or shipment.booking_status != "booked":
         raise HTTPException(status_code=409, detail="Shiprocket cleanup is available only after a successful direct Delhivery booking with a confirmed AWB.")
-    return await _cleanup_unused_shiprocket_order(order_id, shipment.provider_order_id or order_id)
+    return await _cleanup_unused_shiprocket_order(order_id, shipment.provider_order_id or order_id, current_actor(request))
 
 
 @booking_router.post("/{order_id}/courier/reconcile")
-async def reconcile_provider_booking(order_id: str, payload: ProviderActionPayload, db: Session = Depends(get_db)) -> dict[str, object]:
+async def reconcile_provider_booking(order_id: str, payload: ProviderActionPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     shipment = get_shipment(db, order_id)
     if shipment is None:
         raise HTTPException(status_code=404, detail="Shipment not found.")
     provider = shipment.provider or "shiprocket"
     try:
-        result = await CourierPlatformService().reconcile(db, order_id=order_id, adapter=courier_registry.get(provider), operator=payload.operator)
+        result = await CourierPlatformService().reconcile(db, order_id=order_id, adapter=courier_registry.get(provider), operator=current_actor(request))
         return {"provider": provider, "shipment": result}
     except ProviderError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @booking_router.post("/{order_id}/courier/tracking/refresh")
-async def refresh_provider_tracking(order_id: str, payload: ProviderActionPayload, db: Session = Depends(get_db)) -> dict[str, object]:
+async def refresh_provider_tracking(order_id: str, payload: ProviderActionPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     shipment = get_shipment(db, order_id)
     if shipment is None:
         raise HTTPException(status_code=404, detail="Shipment not found.")
     provider = shipment.provider or "shiprocket"
     try:
-        result = await CourierPlatformService().track(db, order_id=order_id, adapter=courier_registry.get(provider), operator=payload.operator)
+        result = await CourierPlatformService().track(db, order_id=order_id, adapter=courier_registry.get(provider), operator=current_actor(request))
         return {"provider": provider, "shipment": result}
     except ProviderError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
 
 @booking_router.post("/{order_id}/courier/cancel")
-async def cancel_provider_shipment(order_id: str, payload: ProviderActionPayload, db: Session = Depends(get_db)) -> dict[str, object]:
+async def cancel_provider_shipment(order_id: str, payload: ProviderActionPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     shipment = get_shipment(db, order_id)
     if shipment is None:
         raise HTTPException(status_code=404, detail="Shipment not found.")
     provider = shipment.provider or "shiprocket"
     try:
-        return await CourierPlatformService().cancel(db, order_id=order_id, adapter=courier_registry.get(provider), operator=payload.operator)
+        return await CourierPlatformService().cancel(db, order_id=order_id, adapter=courier_registry.get(provider), operator=current_actor(request))
     except ProviderError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.post("/orders/{order_id}/couriers/select")
-async def select_courier(order_id: str, payload: dict[str, object]) -> dict[str, object]:
+async def select_courier(order_id: str, payload: dict[str, object], request: Request) -> dict[str, object]:
     provider = str(payload.get("provider") or "shiprocket").lower()
     selected = {
         "provider": provider,
@@ -630,6 +639,7 @@ async def select_courier(order_id: str, payload: dict[str, object]) -> dict[str,
         "mode": payload.get("mode"),
     }
     record = OrderOperationsStore.save_selected_courier(order_id, selected)
+    OrderOperationsStore.record_timeline_event(order_id, "courier_selected", operator=current_actor(request), details={"provider": provider, "courier_id": selected["courier_id"], "courier_name": selected["courier_name"]})
     return {"provider": provider, "selected_courier": record.get("selected_courier")}
 
 

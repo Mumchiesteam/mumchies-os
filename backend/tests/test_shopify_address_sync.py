@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine
@@ -8,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.api.routes.orders import AddressPayload, update_order_address
 from app.db.base import Base
+from app.models.user import User
 from app.services import order_operations as operations_module
 from app.services import shopify as shopify_module
 from app.services.shopify import ShopifyService, ShopifySyncError
@@ -62,6 +64,10 @@ def corrected():
         "customer_name": "Test Customer", "phone": "9999999999", "address_line1": "10 New Road",
         "address_line2": "Floor 2", "landmark": "Clock", "city": "Pune", "state": "Maharashtra", "pincode": "411001",
     }
+
+
+def authenticated_request():
+    return SimpleNamespace(state=SimpleNamespace(auth_user=User(username="operator", display_name="Authenticated Operator", password_hash="unused", role="operator", is_active=True)))
 
 
 def test_matching_uses_identifier_before_fields():
@@ -131,7 +137,7 @@ async def test_customer_failure_does_not_undo_local_or_order_sync(monkeypatch, t
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
     try:
-        result = await update_order_address("order-1", AddressPayload(**corrected()), db)
+        result = await update_order_address("order-1", AddressPayload(**corrected()), authenticated_request(), db)
     finally:
         db.close()
         engine.dispose()
@@ -158,7 +164,7 @@ async def test_unlinked_customer_is_not_applicable(monkeypatch, tmp_path: Path):
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
     try:
-        result = await update_order_address("order-1", AddressPayload(**corrected()), db)
+        result = await update_order_address("order-1", AddressPayload(**corrected()), authenticated_request(), db)
     finally:
         db.close()
         engine.dispose()

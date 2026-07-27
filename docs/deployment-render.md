@@ -48,7 +48,7 @@ Set these secret or environment-specific values in the Render Blueprint form:
 8. Run a controlled operational smoke test with a non-critical order before
    allowing normal production use.
 
-## Initial administrator and sessions
+## Users and sessions
 
 Create the initial administrator hash locally. The plaintext password is prompted
 interactively and is never written to the repository or command history:
@@ -69,6 +69,12 @@ default session lifetime is eight hours (`AUTH_SESSION_MINUTES=480`). Changing
 `AUTH_SESSION_SECRET` immediately invalidates all active sessions.
 Render uses `SameSite=None` because its frontend and API can have different
 hosts; state-changing API calls additionally require the per-session CSRF token.
+
+After the users migration is applied, the existing environment administrator is
+created as the database-backed owner on its first successful login. Create other
+users interactively from the API service shell with
+`python -m app.core.users create-user`; use `python -m app.core.users reset-user`
+for an interactive password reset. Passwords are never command-line arguments.
 
 All backend paths, including API documentation, require a valid session except
 `/health`, `/api/v1/auth/login`, `/api/v1/auth/logout`, and CORS preflight
@@ -103,10 +109,10 @@ business-logic-reviewed migration moves this state to PostgreSQL/object storage.
 Existing `backend/data/order_operations.json` must be migrated securely to the
 mounted disk before cutover if its current records are required.
 
-The included authentication provides one environment-configured administrator.
-It does not provide multiple users, roles, account recovery, MFA, rate limiting,
-or audit-managed credential rotation. Add those controls if the deployment's
-risk profile requires them.
+The included authentication supports database-backed owner, admin, and operator
+accounts. It does not provide MFA, automated account recovery, rate limiting, or
+audit-managed credential rotation. Add those controls if the deployment's risk
+profile requires them.
 
 ## Secrets and local development
 

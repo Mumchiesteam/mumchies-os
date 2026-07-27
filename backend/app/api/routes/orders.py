@@ -5,7 +5,7 @@ import re
 from zoneinfo import ZoneInfo
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Font
@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.db.session import get_db
+from app.core.identity import current_actor
 from app.schemas.orders import ShopifyOrder
 from app.repositories.shiprocket import get_shipment, get_shipments_by_order_id, snapshot as shipment_snapshot, sync_engage_orders
 from app.services.order_operations import OrderOperationsStore
@@ -47,21 +48,21 @@ class AddressPayload(BaseModel):
 class CallLogPayload(BaseModel):
     result: str = Field(...)
     timestamp: str | None = None
-    operator: str = Field(...)
+    operator: str | None = None
     comment: str | None = None
 
 
 class AddressConfirmationPayload(BaseModel):
     comment: str = ""
-    operator: str = Field(...)
+    operator: str | None = None
 
 
 class SaveVerifyAddressPayload(AddressPayload):
-    operator: str = Field(...)
+    operator: str | None = None
 
 
 class CancellationPayload(BaseModel):
-    operator: str = Field(...)
+    operator: str | None = None
     comment: str | None = None
     cancel_shopify: bool = True
     cancel_shiprocket: bool = True
@@ -70,11 +71,11 @@ class CancellationPayload(BaseModel):
 class ShiprocketOnlyCancellationPayload(BaseModel):
     shiprocket_order_id: str
     order_number: str
-    operator: str = Field(...)
+    operator: str | None = None
 
 
 class VerifyAddressPayload(BaseModel):
-    operator: str = Field(...)
+    operator: str | None = None
     verified_at: str | None = None
     address_snapshot: dict[str, str | None] = Field(default_factory=dict)
 
@@ -514,7 +515,7 @@ async def get_shipping_label(order_id: str, db: Session = Depends(get_db)):
 
 
 @router.put("/{order_id}/address")
-async def update_order_address(order_id: str, payload: AddressPayload, db: Session = Depends(get_db)) -> dict[str, object]:
+async def update_order_address(order_id: str, payload: AddressPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     address = {
         "customer_name": payload.customer_name,
         "phone": payload.phone,
@@ -531,7 +532,7 @@ async def update_order_address(order_id: str, payload: AddressPayload, db: Sessi
         address,
         courier_sync_status=payload.courier_sync_status,
         courier_sync_error=payload.courier_sync_error,
-        operator=payload.operator,
+        operator=current_actor(request),
     )
     results: dict[str, object] = {
         "shopify_order": "failed",
@@ -598,7 +599,7 @@ async def update_order_address(order_id: str, payload: AddressPayload, db: Sessi
 
 
 @router.post("/{order_id}/address/save-verify")
-async def save_and_verify_address(order_id: str, payload: SaveVerifyAddressPayload, db: Session = Depends(get_db)) -> dict[str, object]:
+async def save_and_verify_address(order_id: str, payload: SaveVerifyAddressPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     address = AddressValidationPayload(**payload.model_dump())
     validation = await validate_order_address(order_id, address, db)
     saved = await update_order_address(order_id, AddressPayload(**{
@@ -606,29 +607,29 @@ async def save_and_verify_address(order_id: str, payload: SaveVerifyAddressPaylo
         "update_customer_address": True,
         "one_time_delivery_address": False,
         "use_as_default_address": False,
-    }), db)
+    }), request, db)
     verified = False
     if not validation["blockers"]:
         snapshot = {key: getattr(payload, key) for key in ("customer_name", "phone", "address_line1", "address_line2", "landmark", "city", "state", "pincode")}
-        saved = OrderOperationsStore.verify_address(order_id, payload.operator, snapshot, datetime.now(timezone.utc).isoformat())
+        saved = OrderOperationsStore.verify_address(order_id, current_actor(request), snapshot, datetime.now(timezone.utc).isoformat())
         verified = True
     return {"operations": saved, "validation": validation, "verified": verified}
 
 
 @router.post("/{order_id}/call-logs")
-async def add_call_log(order_id: str, payload: CallLogPayload) -> dict[str, object]:
+async def add_call_log(order_id: str, payload: CallLogPayload, request: Request) -> dict[str, object]:
     entry = {
         "result": payload.result,
         "timestamp": payload.timestamp or datetime.now().isoformat(timespec="seconds"),
-        "operator": payload.operator,
+        "operator": current_actor(request),
         "comment": payload.comment,
     }
     return OrderOperationsStore.append_call_log(order_id, entry)
 
 
 @router.post("/{order_id}/address-confirmation-comments")
-async def add_address_confirmation_comment(order_id: str, payload: AddressConfirmationPayload) -> dict[str, object]:
-    return OrderOperationsStore.append_address_confirmation(order_id, payload.comment.strip(), payload.operator, datetime.now(timezone.utc).isoformat())
+async def add_address_confirmation_comment(order_id: str, payload: AddressConfirmationPayload, request: Request) -> dict[str, object]:
+    return OrderOperationsStore.append_address_confirmation(order_id, payload.comment.strip(), current_actor(request), datetime.now(timezone.utc).isoformat())
 
 
 async def _cancellation_preflight(order_id: str, db: Session) -> dict[str, object]:
@@ -660,7 +661,7 @@ async def cancellation_preflight(order_id: str, db: Session = Depends(get_db)) -
 
 
 @router.post("/{order_id}/cancel")
-async def cancel_order(order_id: str, payload: CancellationPayload, db: Session = Depends(get_db)) -> dict[str, object]:
+async def cancel_order(order_id: str, payload: CancellationPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     preflight = await _cancellation_preflight(order_id, db)
     if not preflight["allowed"]:
         raise HTTPException(status_code=409, detail=preflight["blocked_reason"])
@@ -689,8 +690,9 @@ async def cancel_order(order_id: str, payload: CancellationPayload, db: Session 
         except (ShiprocketAPIError, ShiprocketConfigurationError) as error:
             results["shiprocket"] = {"status": "failed", "error": str(error), "cancel_on_channel": False}
     timestamp = datetime.now(timezone.utc).isoformat()
-    operations = OrderOperationsStore.save_cancellation(order_id, results, payload.operator, timestamp)
-    return {"results": results, "preflight": preflight, "operations": operations, "timestamp": timestamp, "operator": payload.operator}
+    actor = current_actor(request)
+    operations = OrderOperationsStore.save_cancellation(order_id, results, actor, timestamp)
+    return {"results": results, "preflight": preflight, "operations": operations, "timestamp": timestamp, "operator": actor}
 
 
 def _cleanup_reason(order: ShopifyOrder) -> str | None:
@@ -899,7 +901,8 @@ async def reconciliation_summary(db: Session = Depends(get_db)) -> dict[str, obj
 
 
 @router.post("/{order_id}/shiprocket-only-cancel")
-async def shiprocket_only_cancel(order_id: str, payload: ShiprocketOnlyCancellationPayload) -> dict[str, object]:
+async def shiprocket_only_cancel(order_id: str, payload: ShiprocketOnlyCancellationPayload, request: Request) -> dict[str, object]:
+    actor = current_actor(request)
     service = ShiprocketService()
     upstream_orders = await service.list_new_orders(force_refresh=True)
     upstream = next((value for value in upstream_orders if str(value.get("id") or "") == payload.shiprocket_order_id and str(value.get("channel_order_id") or "") == payload.order_number), None)
@@ -916,13 +919,13 @@ async def shiprocket_only_cancel(order_id: str, payload: ShiprocketOnlyCancellat
         "request_http_status": request_result["http_status"],
         "request_response": request_result["response"],
         "response_classification": request_result["classification"],
-        "operator": payload.operator,
+        "operator": actor,
         "timestamp": timestamp.isoformat(),
         "timestamp_ist": timestamp.astimezone(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST"),
     }
-    OrderOperationsStore.record_timeline_event(order_id, "shiprocket_cleanup_requested", operator=payload.operator, details=audit, timestamp=timestamp.isoformat())
+    OrderOperationsStore.record_timeline_event(order_id, "shiprocket_cleanup_requested", operator=actor, details=audit, timestamp=timestamp.isoformat())
     await asyncio.sleep(0.5)
-    return await _verify_shiprocket_only_cancellation(order_id, payload, service=service, request_result=request_result)
+    return await _verify_shiprocket_only_cancellation(order_id, payload, operator=actor, service=service, request_result=request_result)
 
 
 def _has_nested_cancellation_evidence(order: dict[str, object] | None) -> bool:
@@ -942,6 +945,7 @@ async def _verify_shiprocket_only_cancellation(
     order_id: str,
     payload: ShiprocketOnlyCancellationPayload,
     *,
+    operator: str,
     service: ShiprocketService | None = None,
     request_result: dict[str, object] | None = None,
 ) -> dict[str, object]:
@@ -996,22 +1000,22 @@ async def _verify_shiprocket_only_cancellation(
     if verification_error:
         result["verification_error"] = verification_error
     timestamp = datetime.now(timezone.utc)
-    audit = {**result, "operator": payload.operator, "timestamp": timestamp.isoformat(), "timestamp_ist": timestamp.astimezone(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST")}
-    OrderOperationsStore.record_timeline_event(order_id, "shiprocket_cleanup_verified", operator=payload.operator, details=audit, timestamp=timestamp.isoformat())
+    audit = {**result, "operator": operator, "timestamp": timestamp.isoformat(), "timestamp_ist": timestamp.astimezone(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST")}
+    OrderOperationsStore.record_timeline_event(order_id, "shiprocket_cleanup_verified", operator=operator, details=audit, timestamp=timestamp.isoformat())
     return result
 
 
 @router.post("/{order_id}/shiprocket-only-cancel/verify")
-async def verify_shiprocket_only_cancel(order_id: str, payload: ShiprocketOnlyCancellationPayload) -> dict[str, object]:
+async def verify_shiprocket_only_cancel(order_id: str, payload: ShiprocketOnlyCancellationPayload, request: Request) -> dict[str, object]:
     """Read-only retry: re-check Shiprocket state without sending another cancellation."""
-    return await _verify_shiprocket_only_cancellation(order_id, payload)
+    return await _verify_shiprocket_only_cancellation(order_id, payload, operator=current_actor(request))
 
 
 @router.post("/{order_id}/address/verify")
-async def verify_order_address(order_id: str, payload: VerifyAddressPayload) -> dict[str, object]:
+async def verify_order_address(order_id: str, payload: VerifyAddressPayload, request: Request) -> dict[str, object]:
     return OrderOperationsStore.verify_address(
         order_id,
-        operator=payload.operator,
+        operator=current_actor(request),
         snapshot=payload.address_snapshot,
         verified_at=payload.verified_at or datetime.now().isoformat(timespec="seconds"),
     )
