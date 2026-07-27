@@ -167,6 +167,14 @@ export interface Order {
     address_confidence_category: string | null
   } | null
   externalTracking: ExternalTracking | null
+  engageOrderId: string | null
+  orderConfirmation: unknown
+  orderConfirmationMessage: string | null
+  addressConfirmation: unknown
+  addressConfirmationMessage: string | null
+  codToPrepaid: unknown
+  codToPrepaidMessage: string | null
+  engageLastSyncedAt: string | null
 }
 
 interface ApiOrder {
@@ -259,6 +267,14 @@ interface ApiOrder {
   } | null
   shipment: Order['shipment']
   external_tracking: { provider: string | null; awb: string | null; status: string | null; tracking_url: string | null } | null
+  engage_order_id: string | null
+  order_confirmation: unknown
+  order_confirmation_message: string | null
+  address_confirmation: unknown
+  address_confirmation_message: string | null
+  cod_to_prepaid: unknown
+  cod_to_prepaid_message: string | null
+  engage_last_synced_at: string | null
 }
 
 export interface OrderOperations {
@@ -353,6 +369,9 @@ export interface OrderCounts {
   repeat_customers: number
   cod_collectable: number
   prepaid_value: number
+  awaiting_order_confirmation: number
+  awaiting_address_verification: number
+  cod_conversion_pending: number
 }
 
 export interface OrdersQuery {
@@ -363,6 +382,9 @@ export interface OrdersQuery {
   payment?: string
   risk?: string
   sort?: string
+  orderConfirmation?: string
+  addressVerification?: string
+  codToPrepaid?: string
 }
 
 export const mapApiOrder = (item: ApiOrder): Order => {
@@ -383,6 +405,9 @@ export const mapApiOrder = (item: ApiOrder): Order => {
     correctedAddress: item.corrected_address, courierSyncStatus: item.courier_sync_status, courierSyncError: item.courier_sync_error,
     addressSyncResults: item.address_sync_results, packageDetails: item.package_details, selectedCourier: item.selected_courier, shipment: item.shipment,
     externalTracking: item.external_tracking ? { provider: item.external_tracking.provider, awb: item.external_tracking.awb, status: item.external_tracking.status, trackingUrl: item.external_tracking.tracking_url } : null,
+    engageOrderId: item.engage_order_id, orderConfirmation: item.order_confirmation, orderConfirmationMessage: item.order_confirmation_message,
+    addressConfirmation: item.address_confirmation, addressConfirmationMessage: item.address_confirmation_message,
+    codToPrepaid: item.cod_to_prepaid, codToPrepaidMessage: item.cod_to_prepaid_message, engageLastSyncedAt: item.engage_last_synced_at,
   }
 }
 
@@ -395,6 +420,9 @@ export async function getOrders(query: OrdersQuery = {}, signal?: AbortSignal): 
     payment: query.payment ?? 'all',
     risk: query.risk ?? 'all',
     sort: query.sort ?? 'newest',
+    order_confirmation: query.orderConfirmation ?? 'all',
+    address_verification: query.addressVerification ?? 'all',
+    cod_to_prepaid: query.codToPrepaid ?? 'all',
   })
   const response = await apiFetch(`${apiBase}/api/v1/orders?${params}`, { signal })
   if (!response.ok) {

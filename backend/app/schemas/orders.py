@@ -70,8 +70,16 @@ class ShopifyOrder(BaseModel):
     address_sync_results: dict[str, str | dict[str, str | None]] | None = None
     package_details: dict[str, float | str | None] | None = None
     selected_courier: dict[str, str | float | None] | None = None
-    shipment: dict[str, str | float | None] | None = None
+    shipment: dict[str, object] | None = None
     first_action_at: str | None = None
     human_action_count: int = 0
     call_attempt_count: int = 0
     external_tracking: ExternalTracking | None = None
+    engage_order_id: str | None = None
+    order_confirmation: object | None = None
+    order_confirmation_message: str | None = None
+    address_confirmation: object | None = None
+    address_confirmation_message: str | None = None
+    cod_to_prepaid: object | None = None
+    cod_to_prepaid_message: str | None = None
+    engage_last_synced_at: str | None = None

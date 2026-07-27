@@ -53,6 +53,8 @@ import {
 import { logout } from './services/auth'
 import { formatDateTime } from './utils/time'
 import { orderContactSectionTitle } from './utils/operations'
+import { EngageCircle } from './components/EngageStatus'
+import { displayEngageValue, engageCategory, engageStyle, engageTooltip } from './utils/engage'
 
 type IconName = 'grid' | 'bag' | 'alert' | 'users' | 'chart' | 'settings' | 'search' | 'bell' | 'filter' | 'chevron' | 'more' | 'eye' | 'truck' | 'calendar' | 'close' | 'copy' | 'phone' | 'external' | 'repeat' | 'tag' | 'edit' | 'call'
 type TabKey = 'fresh' | 'previous' | 'all' | 'labels_to_print' | 'awaiting_confirmation' | 'printed_today' | 'shiprocket_cleanup'
@@ -107,6 +109,8 @@ const reconciliationRecordToOrder = (record: ReconciliationRecord): Order => {
     firstActionAt: null, humanActionCount: 0, callAttemptCount: 0, latestCallResult: null, operationalStatus: record.status,
     addressVerified: false, addressVerifiedAt: null, addressVerifiedBy: null, verifiedAddressSnapshot: null, correctedAddress: null,
     courierSyncStatus: null, courierSyncError: null, addressSyncResults: null, packageDetails: null, selectedCourier: null, shipment: null, externalTracking: null,
+    engageOrderId: null, orderConfirmation: null, orderConfirmationMessage: null, addressConfirmation: null,
+    addressConfirmationMessage: null, codToPrepaid: null, codToPrepaidMessage: null, engageLastSyncedAt: null,
   }
 }
 const riskStyle: Record<RiskLevel, string> = { High: 'bg-rose-50 text-rose-700 ring-rose-100', Medium: 'bg-amber-50 text-amber-700 ring-amber-100', Low: 'bg-emerald-50 text-emerald-700 ring-emerald-100' }
@@ -185,12 +189,15 @@ function App() {
   const [search, setSearch] = useState('')
   const [payment, setPayment] = useState('All payments')
   const [risk, setRisk] = useState('All risks')
+  const [orderConfirmationFilter, setOrderConfirmationFilter] = useState('All')
+  const [addressVerificationFilter, setAddressVerificationFilter] = useState('All')
+  const [codToPrepaidFilter, setCodToPrepaidFilter] = useState('All')
   const [sort, setSort] = useState('Newest first')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<20 | 50 | 100>(20)
   const [total, setTotal] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
-  const [counts, setCounts] = useState<OrderCounts>({ operations: 0, fresh: 0, previous: 0, all: 0, labels_to_print: 0, awaiting_confirmation: 0, printed_today: 0, new_orders: 0, pending_booking: 0, cod: 0, prepaid: 0, high_risk: 0, repeat_customers: 0, cod_collectable: 0, prepaid_value: 0 })
+  const [counts, setCounts] = useState<OrderCounts>({ operations: 0, fresh: 0, previous: 0, all: 0, labels_to_print: 0, awaiting_confirmation: 0, printed_today: 0, new_orders: 0, pending_booking: 0, cod: 0, prepaid: 0, high_risk: 0, repeat_customers: 0, cod_collectable: 0, prepaid_value: 0, awaiting_order_confirmation: 0, awaiting_address_verification: 0, cod_conversion_pending: 0 })
   const [cleanupRecords, setCleanupRecords] = useState<ShiprocketCleanupRecord[]>([])
   const [cleanupResults, setCleanupResults] = useState<Record<string, ShiprocketCancellationResult>>({})
   const [reconciliation, setReconciliation] = useState<OrdersReconciliationSummary | null>(null)
@@ -242,8 +249,6 @@ function App() {
   const [printedLabels, setPrintedLabels] = useState<Set<string>>(new Set())
   const refreshLabels = useCallback(() => void getLabelQueue().then(setLabelQueue).catch(() => undefined), [])
   const refreshCleanup = useCallback(() => void getShiprocketCleanupPending().then(result => setCleanupRecords(result.items)).catch(() => undefined), [])
-  const refreshReconciliation = useCallback(() => void getOrdersReconciliation().then(setReconciliation).catch(() => undefined), [])
-
   const loadOrders = useCallback(async (signal?: AbortSignal) => {
     try {
       setLoading(true)
@@ -263,6 +268,9 @@ function App() {
         search,
         payment: payment === 'All payments' ? 'all' : payment.toLowerCase(),
         risk: risk === 'All risks' ? 'all' : risk.toLowerCase(),
+        orderConfirmation: orderConfirmationFilter.toLowerCase(),
+        addressVerification: addressVerificationFilter.toLowerCase(),
+        codToPrepaid: codToPrepaidFilter.toLowerCase(),
         sort: { 'Newest first': 'newest', 'Oldest first': 'oldest', 'COD first': 'cod_first', 'Prepaid first': 'prepaid_first', 'Value high to low': 'value_desc', 'Value low to high': 'value_asc' }[sort] || 'newest',
       }, signal)
       setOrders(data.items)
@@ -286,7 +294,9 @@ function App() {
     } finally {
       if (!signal?.aborted) setLoading(false)
     }
-  }, [page, pageSize, payment, queue, risk, search, sort])
+  }, [addressVerificationFilter, codToPrepaidFilter, orderConfirmationFilter, page, pageSize, payment, queue, risk, search, sort])
+
+  const refreshReconciliation = useCallback(() => void getOrdersReconciliation().then(setReconciliation).catch(() => undefined), [])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -400,6 +410,9 @@ function App() {
       { key: 'prepaid', label: 'Prepaid', value: counts.prepaid, detail: formatMoney(counts.prepaid_value) },
       { key: 'risk', label: 'High Risk', value: counts.high_risk, detail: 'Active orders' },
       { key: 'repeat', label: 'Repeat Customers', value: counts.repeat_customers, detail: 'Known customers' },
+      { key: 'engage-oc', label: 'Awaiting Order Confirmation', value: counts.awaiting_order_confirmation, detail: 'Engage pending' },
+      { key: 'engage-av', label: 'Awaiting Address Verification', value: counts.awaiting_address_verification, detail: 'Engage pending' },
+      { key: 'engage-cp', label: 'COD Conversion Pending', value: counts.cod_conversion_pending, detail: 'Engage pending' },
     ]
   }, [counts])
 
@@ -686,6 +699,9 @@ function App() {
             <div className="flex flex-wrap items-center gap-2">
               <Filter value={payment} onChange={value => { setPayment(value); setPage(1) }} options={['All payments', 'COD', 'Partial COD', 'Prepaid']} />
               <Filter value={risk} onChange={value => { setRisk(value); setPage(1) }} options={['All risks', 'High', 'Medium', 'Low']} />
+              <Filter value={orderConfirmationFilter} onChange={value => { setOrderConfirmationFilter(value); setPage(1) }} options={['All', 'Pending', 'Successful', 'Disabled', 'Unknown']} label="Order Confirmation" />
+              <Filter value={addressVerificationFilter} onChange={value => { setAddressVerificationFilter(value); setPage(1) }} options={['All', 'Pending', 'Successful', 'Disabled', 'Unknown']} label="Address Verification" />
+              <Filter value={codToPrepaidFilter} onChange={value => { setCodToPrepaidFilter(value); setPage(1) }} options={['All', 'Pending', 'Successful', 'Disabled', 'Unknown']} label="COD → Prepaid" />
               <Filter value={sort} onChange={value => { setSort(value); setPage(1) }} options={['Newest first', 'Oldest first', 'COD first', 'Prepaid first', 'Value high to low', 'Value low to high']} />
             </div>
           </div>}
@@ -792,8 +808,8 @@ function App() {
   )
 }
 
-function Filter({ value, onChange, options }: { value: string; onChange: (value: string) => void; options: string[] }) {
-  return <select value={value} onChange={e => onChange(e.target.value)} className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-600 outline-none focus:border-orange-300">{options.map(option => <option key={option}>{option}</option>)}</select>
+function Filter({ value, onChange, options, label }: { value: string; onChange: (value: string) => void; options: string[]; label?: string }) {
+  return <label className="flex items-center gap-1 text-xs text-slate-500">{label && <span>{label}</span>}<select aria-label={label} value={value} onChange={e => onChange(e.target.value)} className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-600 outline-none focus:border-orange-300">{options.map(option => <option key={option}>{option}</option>)}</select></label>
 }
 
 const reconciliationReason = (reason: string | null) => ({
@@ -819,7 +835,7 @@ function OrdersTable({ orders: tableOrders, repeatIds: repeats, onOpen, loading:
 }) {
   const showReason = filter === 'missing_in_shiprocket' || filter === 'cleanup_pending'
   const showShiprocket = filter === 'shiprocket_new' || filter === 'both' || filter === 'cleanup_pending'
-  const columns = ['Order No', 'Date / Time', 'Customer', 'Amount', 'Payment', 'Risk', 'Status', ...(showReason ? ['Reconciliation Reason'] : []), ...(showShiprocket ? ['Shiprocket Status'] : []), 'Actions']
+  const columns = ['Order No', 'Date / Time', 'Customer', 'Amount', 'Payment', 'Risk', 'Status', 'Engage', ...(showReason ? ['Reconciliation Reason'] : []), ...(showShiprocket ? ['Shiprocket Status'] : []), 'Actions']
   return <div className={`overflow-x-auto transition-opacity ${tableLoading ? 'opacity-60' : ''}`}><table className="w-full min-w-[980px] text-left"><thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-400"><tr>{columns.map(column => <th key={column} className="whitespace-nowrap px-4 py-3.5">{column}</th>)}</tr></thead><tbody className="divide-y divide-slate-100">{tableOrders.map((order, index) => { const record = metadata[index]; const cleanupRecord = record?.shiprocket_order_id ? cleanup.find(value => value.shiprocket_order_id === record.shiprocket_order_id) : undefined; const cleanupResult = cleanupRecord ? results[cleanupRecord.shiprocket_order_id] || cleanupRecord.last_verification : null; return <OrderRow key={`${order.internalId}:${record?.shiprocket_order_id || ''}`} order={order} repeat={repeats.has(order.internalId)} onClick={() => onOpen(order.internalId)} drawerEnabled={record?.order !== null} reconciliationReason={showReason ? reconciliationReason(record?.reason || null) : null} shiprocketStatus={showShiprocket ? record?.shiprocket_status || '—' : null} extraActions={<>{filter === 'cleanup_pending' && cleanupRecord && onCleanup && <button onClick={event => { event.stopPropagation(); onCleanup(cleanupRecord) }} className="rounded-md border border-rose-200 px-2 py-1 text-[10px] font-semibold text-rose-700">Safe Cancel</button>}{cleanupResult && ['inconsistent', 'unverified'].includes(cleanupResult.status) && cleanupRecord && onVerify && <button onClick={event => { event.stopPropagation(); onVerify(cleanupRecord) }} className="rounded-md border border-amber-200 px-2 py-1 text-[10px] font-semibold text-amber-700">Retry verification</button>}{record?.shiprocket_order_id && <a onClick={event => event.stopPropagation()} href={`https://app.shiprocket.in/orders/processing?search=${encodeURIComponent(record.order_number)}`} target="_blank" rel="noreferrer" className="rounded-md border border-slate-200 px-2 py-1 text-[10px] font-semibold text-slate-600">Shiprocket</a>}</>} /> })}</tbody></table>{tableOrders.length === 0 && <div className="py-14 text-center text-sm text-slate-400">{emptyMessage}</div>}</div>
 }
 
@@ -842,6 +858,7 @@ const OrderRow = memo(function OrderRow({ order, repeat, onClick, drawerEnabled 
       <td className="px-4 py-3.5"><span className={`rounded-md px-2 py-1 text-[11px] font-bold ${order.payment === 'Prepaid' ? 'bg-emerald-50 text-emerald-700' : order.payment === 'Partial COD' ? 'bg-orange-100 text-orange-800' : 'bg-amber-50 text-amber-700'}`}>{order.payment}</span>{order.payment !== 'Prepaid' && attempt && <p className="mt-1 text-[10px] font-semibold text-slate-400">{attempt}</p>}{order.payment === 'Partial COD' && <p className="mt-1 whitespace-nowrap text-[10px] text-slate-500">{formatMoney(order.paidAmount)} paid · {formatMoney(order.codCollectableAmount)} due</p>}</td>
       <td className="px-4 py-3.5"><span className={`rounded-md px-2 py-1 text-[11px] font-bold ring-1 ring-inset ${riskStyle[order.risk]}`}>{order.risk} Risk</span></td>
       <td className="px-4 py-3.5"><span className={`whitespace-nowrap rounded-md px-2 py-1 text-[11px] font-bold ${status}`}>{statusText}</span></td>
+      <td className="px-2 py-3.5"><div className="flex gap-1"><EngageCircle label="OC" stageName="Order Confirmation" value={order.orderConfirmation} message={order.orderConfirmationMessage} /><EngageCircle label="AV" stageName="Address Verification" value={order.addressConfirmation} message={order.addressConfirmationMessage} /><EngageCircle label="CP" stageName="COD to Prepaid" value={order.codToPrepaid} message={order.codToPrepaidMessage} /></div></td>
       {reason && <td className="px-4 py-3.5 text-xs font-medium text-amber-700">{reason}</td>}
       {shiprocketStatus && <td className="px-4 py-3.5 text-xs font-semibold text-slate-600">{shiprocketStatus}</td>}
       <td className="px-4 py-3.5">
@@ -1046,6 +1063,16 @@ const OrderDrawer = memo(function OrderDrawer({
         </header>
 
         <div className="flex-1 overflow-y-auto pb-24">
+          <Section title="Engage RTO Suite">
+            <p className="mb-2 text-[11px] text-slate-400">Last synced: {order.engageLastSyncedAt ? formatDateTime(order.engageLastSyncedAt) : 'Not synced'}</p>
+            <div className="space-y-2">
+              {([
+                ['Order Confirmation', order.orderConfirmation, order.orderConfirmationMessage],
+                ['Address Verification', order.addressConfirmation, order.addressConfirmationMessage],
+                ['COD → Prepaid', order.codToPrepaid, order.codToPrepaidMessage],
+              ] as Array<[string, unknown, string | null]>).map(([label, value, message]) => <div key={label} className="flex items-center gap-3 rounded-lg border border-slate-100 px-3 py-2 text-sm"><span title={engageTooltip(label, value, message)} className={`h-3 w-3 shrink-0 rounded-full ${engageStyle(value).split(' ')[0]}`} /><div className="min-w-0 flex-1"><p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{label}</p><p className="break-words font-medium text-slate-700">{message || '—'}</p><p className="mt-0.5 text-[10px] text-slate-400">Raw value: <code>{displayEngageValue(value)}</code>{engageCategory(value) === 'unknown' && <span className="ml-1 font-semibold text-amber-700">Unknown</span>}</p></div></div>)}
+            </div>
+          </Section>
           <Section title="Customer">
             <div className="grid grid-cols-2 gap-3 text-sm">
               <KeyValue label="Customer Name" value={order.customerName} />

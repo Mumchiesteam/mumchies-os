@@ -7,6 +7,12 @@ from sqlalchemy.orm import Session
 
 from app.models.shiprocket import ShiprocketShipment
 
+ENGAGE_FIELDS = (
+    "engage_order_id", "order_confirmation", "order_confirmation_message",
+    "address_confirmation", "address_confirmation_message", "cod_to_prepaid",
+    "cod_to_prepaid_message", "engage_last_synced_at", "engage_raw_status",
+)
+
 
 def upsert_shipment(db: Session, order_id: str, **fields) -> ShiprocketShipment:
     shipment = db.get(ShiprocketShipment, order_id)
@@ -33,6 +39,35 @@ def get_shipments_by_order_id(db: Session) -> dict[str, ShiprocketShipment]:
     """Load shipment state once for the orders-list merge."""
     shipments = db.scalars(select(ShiprocketShipment)).all()
     return {shipment.order_id: shipment for shipment in shipments}
+
+
+def _channel_order_key(value: object) -> str:
+    return str(value).strip() if value is not None else ""
+
+
+def sync_engage_orders(db: Session, orders_by_number: dict[str, str], upstream_orders: list[dict], synced_at: datetime) -> None:
+    """Bulk-persist Engage fields already present in a Shiprocket Orders response."""
+    upstream_by_number = {_channel_order_key(row.get("channel_order_id")): row for row in upstream_orders if isinstance(row, dict)}
+    existing = get_shipments_by_order_id(db)
+    for number, order_id in orders_by_number.items():
+        normalized_number = _channel_order_key(number)
+        upstream = upstream_by_number.get(normalized_number)
+        if upstream is None:
+            continue
+        shipment = existing.get(order_id)
+        if shipment is None:
+            shipment = ShiprocketShipment(order_id=order_id)
+            db.add(shipment)
+        engage = upstream.get("engage")
+        engage = engage if isinstance(engage, dict) else None
+        shipment.shiprocket_order_id = str(upstream.get("id")) if upstream.get("id") is not None else shipment.shiprocket_order_id
+        shipment.provider_order_id = normalized_number
+        shipment.engage_order_id = str(engage.get("engage_order_id")) if engage and engage.get("engage_order_id") is not None else None
+        for field in ("order_confirmation", "order_confirmation_message", "address_confirmation", "address_confirmation_message", "cod_to_prepaid", "cod_to_prepaid_message"):
+            setattr(shipment, field, engage.get(field) if engage else None)
+        shipment.engage_raw_status = engage
+        shipment.engage_last_synced_at = synced_at
+    db.commit()
 
 
 def snapshot(shipment: ShiprocketShipment | None) -> dict[str, object | None]:
@@ -95,6 +130,14 @@ def snapshot(shipment: ShiprocketShipment | None) -> dict[str, object | None]:
             "address_confidence_category": None,
             "address_confidence_source": None,
             "address_confidence_checked_at": None,
+            "engage_order_id": None,
+            "order_confirmation": None,
+            "order_confirmation_message": None,
+            "address_confirmation": None,
+            "address_confirmation_message": None,
+            "cod_to_prepaid": None,
+            "cod_to_prepaid_message": None,
+            "engage_last_synced_at": None,
         }
     return {
         "order_id": shipment.order_id,
@@ -154,4 +197,12 @@ def snapshot(shipment: ShiprocketShipment | None) -> dict[str, object | None]:
         "address_confidence_category": shipment.address_confidence_category,
         "address_confidence_source": shipment.address_confidence_source,
         "address_confidence_checked_at": shipment.address_confidence_checked_at.isoformat() if shipment.address_confidence_checked_at else None,
+        "engage_order_id": shipment.engage_order_id,
+        "order_confirmation": shipment.order_confirmation,
+        "order_confirmation_message": shipment.order_confirmation_message,
+        "address_confirmation": shipment.address_confirmation,
+        "address_confirmation_message": shipment.address_confirmation_message,
+        "cod_to_prepaid": shipment.cod_to_prepaid,
+        "cod_to_prepaid_message": shipment.cod_to_prepaid_message,
+        "engage_last_synced_at": shipment.engage_last_synced_at.isoformat() if shipment.engage_last_synced_at else None,
     }

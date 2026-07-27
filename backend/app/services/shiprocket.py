@@ -416,6 +416,7 @@ class ShiprocketService:
                 "https://apiv2.shiprocket.in/v1/external/orders",
                 params={
                     "filter_by": "status", "filter": "1", "per_page": 100, "page": page,
+                    "is_web": 1,
                     "from": (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat(),
                     "to": datetime.now(timezone.utc).date().isoformat(),
                 },

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import mapped_column
 
 from app.db.base import Base
@@ -68,6 +68,15 @@ class ShiprocketShipment(Base):
     address_confidence_category = mapped_column(String(64), nullable=True)
     address_confidence_source = mapped_column(String(64), nullable=True)
     address_confidence_checked_at = mapped_column(DateTime(timezone=True), nullable=True)
+    engage_order_id = mapped_column(String(64), nullable=True)
+    order_confirmation = mapped_column(JSON, nullable=True)
+    order_confirmation_message = mapped_column(Text, nullable=True)
+    address_confirmation = mapped_column(JSON, nullable=True)
+    address_confirmation_message = mapped_column(Text, nullable=True)
+    cod_to_prepaid = mapped_column(JSON, nullable=True)
+    cod_to_prepaid_message = mapped_column(Text, nullable=True)
+    engage_last_synced_at = mapped_column(DateTime(timezone=True), nullable=True)
+    engage_raw_status = mapped_column(JSON, nullable=True)
 
 
 class LabelPrintBatch(Base):

@@ -15,7 +15,7 @@ from sqlalchemy import select
 
 from app.db.session import get_db
 from app.schemas.orders import ShopifyOrder
-from app.repositories.shiprocket import get_shipment, get_shipments_by_order_id, snapshot as shipment_snapshot
+from app.repositories.shiprocket import get_shipment, get_shipments_by_order_id, snapshot as shipment_snapshot, sync_engage_orders
 from app.services.order_operations import OrderOperationsStore
 from app.services.delhivery import DelhiveryError, DelhiveryService
 from app.services.shipment_status import derive_operational_status
@@ -134,6 +134,14 @@ def _merged_operational_state(order: ShopifyOrder, operations: dict[str, object]
         "first_action_at": first_action_at,
         "human_action_count": len(human_actions) or (1 if first_action_at else 0),
         "call_attempt_count": len(call_logs),
+        "engage_order_id": (operations.get("shipment") or {}).get("engage_order_id"),
+        "order_confirmation": (operations.get("shipment") or {}).get("order_confirmation"),
+        "order_confirmation_message": (operations.get("shipment") or {}).get("order_confirmation_message"),
+        "address_confirmation": (operations.get("shipment") or {}).get("address_confirmation"),
+        "address_confirmation_message": (operations.get("shipment") or {}).get("address_confirmation_message"),
+        "cod_to_prepaid": (operations.get("shipment") or {}).get("cod_to_prepaid"),
+        "cod_to_prepaid_message": (operations.get("shipment") or {}).get("cod_to_prepaid_message"),
+        "engage_last_synced_at": (operations.get("shipment") or {}).get("engage_last_synced_at"),
     })
 
 
@@ -200,7 +208,12 @@ def _is_fresh_order(order: ShopifyOrder) -> bool:
     return order.human_action_count == 0
 
 
-def _base_filtered_orders(orders: list[ShopifyOrder], search: str, payment: str, risk: str) -> list[ShopifyOrder]:
+def _engage_category(value: object) -> str:
+    raw = str(value) if value is not None else ""
+    return {"0": "pending", "1": "successful", "6": "disabled"}.get(raw, "disabled" if raw == "NA" else "unknown")
+
+
+def _base_filtered_orders(orders: list[ShopifyOrder], search: str, payment: str, risk: str, order_confirmation: str = "all", address_verification: str = "all", cod_to_prepaid: str = "all") -> list[ShopifyOrder]:
     needle = search.strip().casefold()
     result = []
     for order in orders:
@@ -216,6 +229,12 @@ def _base_filtered_orders(orders: list[ShopifyOrder], search: str, payment: str,
         tag_text = " ".join(order.tags).casefold()
         order_risk = "high" if "high" in tag_text else "medium" if "medium" in tag_text else "low"
         if risk != "all" and order_risk != risk:
+            continue
+        if order_confirmation != "all" and _engage_category(order.order_confirmation) != order_confirmation:
+            continue
+        if address_verification != "all" and _engage_category(order.address_confirmation) != address_verification:
+            continue
+        if cod_to_prepaid != "all" and _engage_category(order.cod_to_prepaid) != cod_to_prepaid:
             continue
         result.append(order)
     return result
@@ -245,6 +264,9 @@ def _full_counts(orders: list[ShopifyOrder], now: datetime, db: Session) -> dict
         "cod": len(cod), "prepaid": len(prepaid), "high_risk": len(high_risk), "repeat_customers": len(repeat),
         "cod_collectable": sum(float(order.cod_collectable_amount) for order in cod),
         "prepaid_value": sum(float(order.order_total) for order in prepaid),
+        "awaiting_order_confirmation": sum(1 for order in orders if _engage_category(order.order_confirmation) == "pending"),
+        "awaiting_address_verification": sum(1 for order in orders if _engage_category(order.address_confirmation) == "pending"),
+        "cod_conversion_pending": sum(1 for order in orders if _engage_category(order.cod_to_prepaid) == "pending"),
     }
 
 
@@ -273,6 +295,9 @@ async def list_orders(
     payment: str = "all",
     risk: str = "all",
     sort: str = "newest",
+    order_confirmation: str = "all",
+    address_verification: str = "all",
+    cod_to_prepaid: str = "all",
     db: Session = Depends(get_db),
 ) -> OrdersPage:
     """Return one filtered page of orders. The client never receives the unpaged collection."""
@@ -284,7 +309,10 @@ async def list_orders(
         raise HTTPException(status_code=422, detail="Unknown orders queue.")
     orders = await _load_orders(db)
     now = datetime.now(timezone.utc)
-    base_filtered = _base_filtered_orders(orders, search, payment, risk)
+    allowed_engage_filters = {"all", "pending", "successful", "disabled", "unknown"}
+    if any(value not in allowed_engage_filters for value in (order_confirmation, address_verification, cod_to_prepaid)):
+        raise HTTPException(status_code=422, detail="Unknown Engage filter.")
+    base_filtered = _base_filtered_orders(orders, search, payment, risk, order_confirmation, address_verification, cod_to_prepaid)
     counts = _full_counts(base_filtered, now, db)
     filtered = [order for order in base_filtered if _matches_queue(order, queue, now)]
     reverse = sort not in {"oldest", "value_asc"}
@@ -685,6 +713,8 @@ async def shiprocket_cleanup_pending(db: Session = Depends(get_db)) -> dict[str,
         upstream_orders = await ShiprocketService().list_new_orders()
     except (ShiprocketAPIError, ShiprocketConfigurationError) as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
+    if hasattr(db, "scalars"):
+        sync_engage_orders(db, {order.order_number: order.order_id for order in orders}, upstream_orders, datetime.now(timezone.utc))
     items = []
     for upstream in upstream_orders:
         number = str(upstream.get("channel_order_id") or "")
@@ -793,6 +823,8 @@ async def reconciliation_summary(db: Session = Depends(get_db)) -> dict[str, obj
         shiprocket_new = await service.list_new_orders(force_refresh=True)
     except (ShiprocketAPIError, ShiprocketConfigurationError) as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
+    if hasattr(db, "scalars"):
+        sync_engage_orders(db, {order.order_number: order.order_id for order in os_orders}, shiprocket_new, datetime.now(timezone.utc))
 
     os_by_number: dict[str, list[ShopifyOrder]] = {}
     for order in operations:
