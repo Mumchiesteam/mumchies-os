@@ -15,7 +15,7 @@ services:
     region: singapore
     rootDir: backend
     buildCommand: pip install -r requirements.txt
-    preDeployCommand: alembic upgrade head && python -m app.core.ndr sync
+    preDeployCommand: alembic upgrade head
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
@@ -76,6 +76,8 @@ services:
       - key: GDRIVE_FOLDER_ID
         sync: false
       - key: GDRIVE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: NDR_INGEST_TOKEN
         sync: false
     disk:
       name: mumchies-os-data

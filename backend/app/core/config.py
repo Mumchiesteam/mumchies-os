@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     shadowfax_base_url: str | None = None
     gdrive_folder_id: str | None = None
     gdrive_service_account_json: str | None = None
+    ndr_ingest_token: str | None = None
 
     def ndr_configuration(self) -> dict[str, dict[str, str | bool]]:
         """Safe startup/runtime configuration report; never includes secret values."""

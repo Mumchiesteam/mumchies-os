@@ -8,7 +8,10 @@ client = TestClient(app)
 def test_health_check() -> None:
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json()["status"] == "ok"
+    assert response.json()["ndr_mode"] == "github_import"
+    assert isinstance(response.json()["ndr_import_enabled"], bool)
+    assert "git_sha" in response.json()
 
 
 def test_operational_write_cors_preflight() -> None:

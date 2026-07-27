@@ -6,11 +6,13 @@ from app.db.base import Base
 class NDRCase(Base):
     __tablename__ = "ndr_cases"
     id = mapped_column(String(36), primary_key=True)
-    awb = mapped_column(String(128), nullable=False, unique=True, index=True)
+    awb = mapped_column(String(128), nullable=True, index=True)
+    source_identity = mapped_column(String(320), nullable=True, unique=True, index=True)
     order_id = mapped_column(String(64), nullable=True, index=True)
     order_number = mapped_column(String(64), nullable=True, index=True)
     provider = mapped_column(String(32), nullable=False, index=True)
     courier_name = mapped_column(String(128), nullable=True)
+    city = mapped_column(String(160), nullable=True)
     customer_name = mapped_column(String(160), nullable=True)
     customer_phone = mapped_column(String(32), nullable=True)
     customer_address = mapped_column(JSON, nullable=True)
@@ -23,6 +25,8 @@ class NDRCase(Base):
     provider_status = mapped_column(String(128), nullable=True)
     failure_reason = mapped_column(Text, nullable=True, index=True)
     recommended_action = mapped_column(Text, nullable=True)
+    whatsapp_message = mapped_column(Text, nullable=True)
+    whatsapp_url = mapped_column(Text, nullable=True)
     priority = mapped_column(String(16), nullable=False, default="medium", index=True)
     delivery_attempts = mapped_column(Integer, nullable=False, default=1)
     assigned_to_user_id = mapped_column(Integer, ForeignKey("users.id"), nullable=True, index=True)
@@ -67,3 +71,21 @@ class NDRSyncRun(Base):
     source_health = mapped_column(JSON, nullable=True)
     actor_user_id = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
     actor_name = mapped_column(String(120), nullable=True)
+
+
+class NDRImportRun(Base):
+    __tablename__ = "ndr_import_runs"
+    id = mapped_column(String(36), primary_key=True)
+    run_id = mapped_column(String(160), nullable=False, unique=True, index=True)
+    schema_version = mapped_column(Integer, nullable=False)
+    generated_at = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    status = mapped_column(String(32), nullable=False, index=True)
+    source_health = mapped_column(JSON, nullable=False)
+    source_counts = mapped_column(JSON, nullable=False)
+    rows_received = mapped_column(Integer, nullable=False, default=0)
+    created = mapped_column(Integer, nullable=False, default=0)
+    updated = mapped_column(Integer, nullable=False, default=0)
+    unchanged = mapped_column(Integer, nullable=False, default=0)
+    rejected = mapped_column(Integer, nullable=False, default=0)
+    safe_errors = mapped_column(JSON, nullable=True)

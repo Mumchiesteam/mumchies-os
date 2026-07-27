@@ -40,7 +40,10 @@ def serialize_case(case: NDRCase, *, events: list[NDREvent] | None = None) -> di
         if isinstance(value, datetime): result[key] = value.isoformat()
     result["ageing_hours"] = max(int((now-first).total_seconds()//3600),0)
     result["over_sla"] = result["ageing_hours"] > 48 and case.current_status != "resolved"
-    result["whatsapp_url"] = whatsapp_url(case.customer_phone or "", case.customer_name or "", case.failure_reason or "", case.provider_status or "")
+    # Imported runs carry the exact reason-aware link produced by the proven
+    # GitHub automation. Retain the legacy builder only for pre-import rows.
+    if not result.get("whatsapp_url"):
+        result["whatsapp_url"] = whatsapp_url(case.customer_phone or "", case.customer_name or "", case.failure_reason or "", case.provider_status or "")
     if events is not None:
         result["events"]=[{"id":e.id,"event_type":e.event_type,"description":e.description,"actor_name":e.actor_name,"event_data":e.event_data,"created_at":e.created_at.isoformat() if e.created_at else None} for e in events]
     return result

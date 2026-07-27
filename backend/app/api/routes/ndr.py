@@ -1,16 +1,19 @@
 from datetime import datetime, timedelta, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import case as sql_case, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.identity import current_user
 from app.db.session import get_db
-from app.models.ndr import NDRCase, NDREvent, NDRSyncRun
+from app.models.ndr import NDRCase, NDREvent, NDRImportRun
 from app.models.user import User
-from app.services.ndr import NDRSyncAlreadyRunning, add_event, serialize_case, sync_ndr
+from app.services.ndr import add_event, serialize_case
+from app.services.ndr_import import import_ndr, serialize_import_run
+from app.core.config import settings
+import hmac
 
 router = APIRouter(prefix="/ndr", tags=["ndr"])
 
@@ -19,6 +22,54 @@ class NDRAction(BaseModel):
     action: Literal["add_note", "assign", "customer_contacted", "courier_contacted", "resolve", "reopen"]
     note: str | None = Field(default=None, max_length=2000)
     assigned_to_user_id: int | None = None
+
+
+class NDRImportRow(BaseModel):
+    source: str = Field(min_length=1, max_length=64)
+    order_id: str = Field(default="", max_length=160)
+    awb: str = Field(default="", max_length=160)
+    customer_name: str = Field(default="", max_length=300)
+    phone: str = Field(default="", max_length=64)
+    city: str = Field(default="", max_length=160)
+    status: str = Field(default="", max_length=300)
+    failure_reason: str = Field(default="", max_length=2000)
+    attempts: int = Field(default=0, ge=0, le=100)
+    last_update: datetime | None = None
+    recommended_action: str = Field(default="", max_length=1000)
+    whatsapp_message: str = Field(default="", max_length=5000)
+    whatsapp_url: str = Field(default="", max_length=8000)
+
+
+class NDRImportPayload(BaseModel):
+    schema_version: int
+    run_id: str = Field(min_length=1, max_length=160)
+    generated_at: datetime
+    source_health: dict[str, Any]
+    source_counts: dict[str, Any]
+    rows: list[NDRImportRow]
+
+    @field_validator("schema_version")
+    @classmethod
+    def require_version_one(cls, value: int) -> int:
+        if value != 1: raise ValueError("schema_version must be 1")
+        return value
+
+
+@router.post("/import")
+def import_cases(payload: NDRImportPayload, request: Request, db: Session = Depends(get_db)) -> dict:
+    authorization = request.headers.get("Authorization", "")
+    provided = authorization[7:] if authorization.startswith("Bearer ") else ""
+    expected = settings.ndr_ingest_token or ""
+    if not expected or not provided or not hmac.compare_digest(provided, expected):
+        raise HTTPException(401, "Invalid NDR import credentials.")
+    existing = db.scalar(select(NDRImportRun).where(NDRImportRun.run_id == payload.run_id))
+    if existing:
+        return serialize_import_run(existing, idempotent=True)
+    try:
+        return serialize_import_run(import_ndr(db, payload))
+    except Exception:
+        db.rollback()
+        raise
 
 
 @router.get("/operators")
@@ -32,8 +83,8 @@ def summary(db: Session = Depends(get_db)) -> dict:
     cases = db.scalars(select(NDRCase)).all()
     aware = lambda value: value if not value or value.tzinfo else value.replace(tzinfo=timezone.utc)
     active = [c for c in cases if c.current_status != "resolved" and c.source_lifecycle == "active"]
-    last = db.scalar(select(NDRSyncRun).order_by(NDRSyncRun.started_at.desc()).limit(1))
-    return {"active_ndr": len(active), "new_today": sum(1 for c in cases if aware(c.first_ndr_at).date() == today), "awaiting_customer": sum(c.current_status == "awaiting_customer" for c in active), "courier_pending": sum(c.current_status == "courier_pending" for c in active), "resolved_today": sum(bool(c.resolved_at and aware(c.resolved_at).date() == today) for c in cases), "over_sla": sum((now - aware(c.first_ndr_at)).total_seconds() > 172800 for c in active), "last_sync_at": last.completed_at.isoformat() if last and last.completed_at else None, "last_sync_status": last.status if last else None, "last_sync_error": last.error if last else None, "source_health": last.source_health if last else None}
+    last = db.scalar(select(NDRImportRun).order_by(NDRImportRun.received_at.desc()).limit(1))
+    return {"active_ndr": len(active), "new_today": sum(1 for c in cases if aware(c.first_ndr_at).date() == today), "awaiting_customer": sum(c.current_status == "awaiting_customer" for c in active), "courier_pending": sum(c.current_status == "courier_pending" for c in active), "resolved_today": sum(bool(c.resolved_at and aware(c.resolved_at).date() == today) for c in cases), "over_sla": sum((now - aware(c.first_ndr_at)).total_seconds() > 172800 for c in active), "last_sync_at": last.received_at.isoformat() if last else None, "last_sync_status": last.status if last else None, "last_sync_error": "; ".join(last.safe_errors or []) if last else None, "source_health": last.source_health if last else None, "source_counts": last.source_counts if last else None, "last_import_run_id": last.run_id if last else None}
 
 
 @router.get("/cases")
@@ -65,13 +116,8 @@ def case_detail(case_id: str, db: Session = Depends(get_db)) -> dict:
 
 
 @router.post("/sync")
-async def sync_now(request: Request, db: Session = Depends(get_db)) -> dict:
-    try: run = await sync_ndr(db, trigger="manual", actor=current_user(request))
-    except NDRSyncAlreadyRunning as error: raise HTTPException(409, str(error)) from error
-    result = {"id": run.id, "status": run.status, "cases_seen": run.cases_seen, "cases_created": run.cases_created, "cases_updated": run.cases_updated, "completed_at": run.completed_at.isoformat() if run.completed_at else None, "source_health": run.source_health, "message": run.error or "NDR sync completed."}
-    if run.status == "failed":
-        raise HTTPException(502, detail=result)
-    return result
+async def sync_now() -> dict:
+    raise HTTPException(410, "Direct courier sync is disabled. NDR data is imported from GitHub Actions.")
 
 
 @router.post("/cases/{case_id}/actions")
