@@ -54,11 +54,13 @@ import { logout } from './services/auth'
 import { formatDateTime } from './utils/time'
 import { orderContactSectionTitle } from './utils/operations'
 import { EngageCircle, EngageProgress } from './components/EngageStatus'
+import { OrderStatusBadge } from './components/OrderStatusBadge'
+import { engageCategory } from './utils/engage'
+import { hasShipmentEvidence, isCancelled, listStatus, type OperationalStatus } from './utils/orderStatus'
 
 type IconName = 'grid' | 'bag' | 'alert' | 'users' | 'chart' | 'settings' | 'search' | 'bell' | 'filter' | 'chevron' | 'more' | 'eye' | 'truck' | 'calendar' | 'close' | 'copy' | 'phone' | 'external' | 'repeat' | 'tag' | 'edit' | 'call'
 type TabKey = 'fresh' | 'previous' | 'all' | 'labels_to_print' | 'awaiting_confirmation' | 'printed_today' | 'shiprocket_cleanup'
 type CallResult = 'No Answer' | 'Busy' | 'Switched Off' | 'Callback Requested' | 'Confirmed' | 'Cancelled' | 'Wrong Number'
-type OperationalStatus = 'Call Pending' | 'Callback Required' | 'Address Verification Pending' | 'Ready for Booking' | 'Booked' | 'Shipped' | 'NDR' | 'Delivered' | 'Cancelled' | 'Needs Review'
 type CourierQuote = {
   courier_id: string | null
   courier_name: string
@@ -147,34 +149,6 @@ const formatOrderDateTime = (value: string) => {
     time: new Intl.DateTimeFormat('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' }).format(date),
   }
 }
-const isCancelled = (order: Order) => Boolean(order.cancelledAt || order.shopifyStatus === 'cancelled' || (order.payment === 'COD' && order.tags.join(' ').toLowerCase().includes('cancel')))
-const isShipped = (order: Order) => {
-  const status = `${order.fulfillmentStatus || ''} ${order.shopifyStatus || ''} ${order.tags.join(' ')} ${order.externalTracking?.status || ''}`.toLowerCase()
-  return status.includes('fulfilled') || status.includes('partial') || status.includes('shipped') || status.includes('picked up') || status.includes('dispatched') || status.includes('in transit') || status.includes('out for delivery') || Boolean(order.externalTracking?.awb)
-}
-const isDelivered = (order: Order) => `${order.fulfillmentStatus || ''} ${order.shopifyStatus || ''} ${order.tags.join(' ')} ${order.externalTracking?.status || ''}`.toLowerCase().includes('delivered')
-const isNdr = (order: Order) => `${order.tags.join(' ')} ${order.shopifyStatus || ''}`.toLowerCase().includes('ndr')
-const isBooked = (order: Order) => Boolean(order.shipment?.awb || order.shipment?.shipment_id)
-// Any reliable evidence of an existing active shipment/fulfilment - local shipment record,
-// Shopify's own fulfilment status/tags, or an externally-detected tracking number. Shipment-
-// backed states must always outrank locally-derived operational states (call logs, address
-// verification) - see the backend's app/services/shipment_status.py, which this mirrors.
-const hasShipmentEvidence = (order: Order) => isBooked(order) || isShipped(order) || isDelivered(order) || isNdr(order)
-const listStatus = (order: Order): OperationalStatus => {
-  if (isCancelled(order)) return 'Cancelled'
-  if (isDelivered(order)) return 'Delivered'
-  if (isBooked(order)) return 'Booked'
-  if (isShipped(order)) return 'Shipped'
-  if (order.operationalStatus) return order.operationalStatus as OperationalStatus
-  if (isNdr(order)) return 'NDR'
-  return order.payment === 'Prepaid'
-    ? order.addressVerified ? 'Ready for Booking' : 'Address Verification Pending'
-    : order.latestCallResult === 'Callback Requested' ? 'Callback Required'
-      : order.latestCallResult === 'Confirmed' ? 'Ready for Booking'
-        : order.latestCallResult === 'Wrong Number' ? 'Needs Review'
-          : 'Call Pending'
-}
-
 function App() {
   const [activePage, setActivePage] = useState<'Orders' | 'Reconciliation'>('Orders')
   const [orders, setOrders] = useState<Order[]>([])
@@ -829,10 +803,8 @@ function OrdersTable({ orders: tableOrders, repeatIds: repeats, onOpen, loading:
 }
 
 const OrderRow = memo(function OrderRow({ order, repeat, onClick, drawerEnabled = true, reconciliationReason: reason = null, shiprocketStatus = null, extraActions = null }: { order: Order; repeat: boolean; onClick: () => void; drawerEnabled?: boolean; reconciliationReason?: string | null; shiprocketStatus?: string | null; extraActions?: ReactNode }) {
-  const statusText = listStatus(order)
   const placed = formatOrderDateTime(order.createdAt)
   const attempt = order.callAttemptCount > 0 ? `Attempt ${order.callAttemptCount > 5 ? '5+' : order.callAttemptCount}` : null
-  const status = statusText === 'Booked' || statusText === 'Shipped' || statusText === 'Delivered' ? 'bg-emerald-50 text-emerald-700' : statusText === 'Cancelled' || statusText === 'Needs Review' ? 'bg-rose-50 text-rose-700' : statusText === 'NDR' ? 'bg-violet-50 text-violet-700' : statusText === 'Address Verification Pending' || statusText === 'Call Pending' || statusText === 'Callback Required' ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-slate-700'
   return (
     <tr onClick={() => { if (drawerEnabled) onClick() }} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 56px' }} className={`${drawerEnabled ? 'cursor-pointer' : ''} text-sm text-slate-600 hover:bg-orange-50/50`}>
       <td className="px-4 py-3.5 font-semibold text-slate-800">{order.orderNumber}</td>
@@ -846,8 +818,8 @@ const OrderRow = memo(function OrderRow({ order, repeat, onClick, drawerEnabled 
       <td className="px-4 py-3.5 font-semibold text-slate-800">{formatMoney(order.amount)}</td>
       <td className="px-4 py-3.5"><span className={`rounded-md px-2 py-1 text-[11px] font-bold ${order.payment === 'Prepaid' ? 'bg-emerald-50 text-emerald-700' : order.payment === 'Partial COD' ? 'bg-orange-100 text-orange-800' : 'bg-amber-50 text-amber-700'}`}>{order.payment}</span>{order.payment !== 'Prepaid' && attempt && <p className="mt-1 text-[10px] font-semibold text-slate-400">{attempt}</p>}{order.payment === 'Partial COD' && <p className="mt-1 whitespace-nowrap text-[10px] text-slate-500">{formatMoney(order.paidAmount)} paid · {formatMoney(order.codCollectableAmount)} due</p>}</td>
       <td className="px-4 py-3.5"><span className={`rounded-md px-2 py-1 text-[11px] font-bold ring-1 ring-inset ${riskStyle[order.risk]}`}>{order.risk} Risk</span></td>
-      <td className="px-4 py-3.5"><span className={`whitespace-nowrap rounded-md px-2 py-1 text-[11px] font-bold ${status}`}>{statusText}</span></td>
-      <td className="px-2 py-3.5"><div className="flex gap-1"><EngageCircle label="OC" stageName="Order Confirmation" value={order.orderConfirmation} message={order.orderConfirmationMessage} /><EngageCircle label="AV" stageName="Address Verification" value={order.addressConfirmation} message={order.addressConfirmationMessage} /><EngageCircle label="CP" stageName="COD to Prepaid" value={order.codToPrepaid} message={order.codToPrepaidMessage} /></div></td>
+      <td className="px-4 py-3.5"><OrderStatusBadge order={order} /></td>
+      <td className="px-2 py-3.5"><div className="flex gap-1"><EngageCircle label="OC" stageName="Order Confirmation" value={order.orderConfirmation} message={order.orderConfirmationMessage} /><EngageCircle label="AV" stageName="Address Verification" value={order.addressConfirmation} message={order.addressConfirmationMessage} enabled={engageCategory(order.orderConfirmation) === 'successful'} /><EngageCircle label="CP" stageName="COD to Prepaid" value={order.codToPrepaid} message={order.codToPrepaidMessage} enabled={engageCategory(order.orderConfirmation) === 'successful' && engageCategory(order.addressConfirmation) === 'successful'} /></div></td>
       {reason && <td className="px-4 py-3.5 text-xs font-medium text-amber-700">{reason}</td>}
       {shiprocketStatus && <td className="px-4 py-3.5 text-xs font-semibold text-slate-600">{shiprocketStatus}</td>}
       <td className="px-4 py-3.5">

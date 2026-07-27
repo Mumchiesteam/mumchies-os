@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 
 import { EngageCircle, EngageProgress } from './components/EngageStatus'
-import { engageCategory } from './utils/engage'
+import { engageCategory, engageFlowStyles } from './utils/engage'
 
 describe('Engage status rendering', () => {
   it.each([
@@ -51,5 +51,29 @@ describe('Engage status rendering', () => {
     expect(html).toContain('Conversion disabled')
     expect(html.match(/Last synced:/g)).toHaveLength(1)
     expect(html).not.toContain('Raw value:')
+  })
+
+  it('forces downstream stages grey until every prior stage is green', () => {
+    expect(engageFlowStyles(['1', '2', '2'])).toEqual([
+      expect.stringContaining('bg-amber-400'),
+      expect.stringContaining('bg-slate-300'),
+      expect.stringContaining('bg-slate-300'),
+    ])
+    expect(engageFlowStyles(['2', '0', '2'])).toEqual([
+      expect.stringContaining('bg-emerald-500'),
+      expect.stringContaining('bg-amber-400'),
+      expect.stringContaining('bg-slate-300'),
+    ])
+    expect(engageFlowStyles(['21', '2', '2'])).toEqual([
+      expect.stringContaining('bg-emerald-500'),
+      expect.stringContaining('bg-emerald-500'),
+      expect.stringContaining('bg-emerald-500'),
+    ])
+  })
+
+  it('keeps the exact tooltip message when dependency forces a table stage grey', () => {
+    const html = renderToStaticMarkup(<EngageCircle label="AV" stageName="Address Verification" value="2" message="Exact successful message" enabled={false} />)
+    expect(html).toContain('bg-slate-300')
+    expect(html).toContain('Exact successful message')
   })
 })

@@ -54,7 +54,9 @@ def derive_operational_status(order: Any, operations: dict[str, Any] | None, shi
         or any(keyword in shipment_status for keyword in _SHIPPED_KEYWORDS)
     ):
         return "Shipped"
-    if shipment and any(shipment.get(key) for key in ("awb", "shipment_id", "shiprocket_order_id")):
+    # A Shiprocket order ID only proves that an order exists upstream. Engage sync stores that
+    # ID before courier assignment, so booking evidence requires an actual shipment/AWB.
+    if shipment and any(shipment.get(key) for key in ("awb", "shipment_id")):
         return "Booked"
     if "ndr" in tags:
         return "NDR"

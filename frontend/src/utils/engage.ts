@@ -11,6 +11,11 @@ export const engageStyle = (value: unknown) => engageCategory(value) === 'succes
     ? 'bg-amber-400 text-slate-900'
     : 'bg-slate-300 text-slate-700'
 
+export const engageFlowStyles = (values: unknown[]) => values.map((value, index) => {
+  const priorStagesComplete = values.slice(0, index).every(prior => engageCategory(prior) === 'successful')
+  return priorStagesComplete ? engageStyle(value) : 'bg-slate-300 text-slate-700'
+})
+
 export const displayEngageValue = (value: unknown) => {
   if (value == null) return '—'
   if (typeof value === 'object') {

@@ -222,6 +222,13 @@ def test_unshipped_confirmed_cod_order_remains_eligible():
     assert result.operational_status == "Ready for Booking"
 
 
+def test_shiprocket_order_id_without_shipment_does_not_mark_order_booked():
+    unbooked_order = order(fulfillment_status=None, payment_status="pending")
+    shipment = {"shiprocket_order_id": "1478516896", "awb": None, "shipment_id": None}
+    assert derive_operational_status(unbooked_order, {}, shipment) == "Call Pending"
+    assert has_existing_shipment_evidence(unbooked_order, {}, shipment) is False
+
+
 # 11. Locally booked Shiprocket/Delhivery orders remain unaffected (status shows "Booked" and
 # stays "Booked" through subsequent call logs; eligibility blocks re-booking either way).
 @pytest.mark.parametrize("provider", ["shiprocket", "delhivery"])
