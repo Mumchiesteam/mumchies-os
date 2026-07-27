@@ -53,8 +53,7 @@ import {
 import { logout } from './services/auth'
 import { formatDateTime } from './utils/time'
 import { orderContactSectionTitle } from './utils/operations'
-import { EngageCircle } from './components/EngageStatus'
-import { displayEngageValue, engageCategory, engageStyle, engageTooltip } from './utils/engage'
+import { EngageCircle, EngageProgress } from './components/EngageStatus'
 
 type IconName = 'grid' | 'bag' | 'alert' | 'users' | 'chart' | 'settings' | 'search' | 'bell' | 'filter' | 'chevron' | 'more' | 'eye' | 'truck' | 'calendar' | 'close' | 'copy' | 'phone' | 'external' | 'repeat' | 'tag' | 'edit' | 'call'
 type TabKey = 'fresh' | 'previous' | 'all' | 'labels_to_print' | 'awaiting_confirmation' | 'printed_today' | 'shiprocket_cleanup'
@@ -77,17 +76,14 @@ type CourierQuote = {
   rate_note: string
 }
 
-const navItems = ['Dashboard', 'Orders', 'NDR', 'Customers', 'Reports', 'Settings'] as const
+const navItems = ['Dashboard', 'Orders', 'NDR', 'Reconciliation'] as const
 const tabItems: { key: TabKey; label: string }[] = [
   { key: 'fresh', label: 'Fresh Orders' },
   { key: 'previous', label: 'Previous Pending Orders' },
-  { key: 'all', label: 'All Orders' },
 ]
 const dispatchItems: { key: TabKey; label: string }[] = [
   { key: 'labels_to_print', label: 'Labels to Print' },
-  { key: 'awaiting_confirmation', label: 'Awaiting Confirmation' },
   { key: 'printed_today', label: 'Printed Today' },
-  { key: 'shiprocket_cleanup', label: 'Shiprocket Cleanup Pending' },
 ]
 const callResults: CallResult[] = ['No Answer', 'Busy', 'Switched Off', 'Callback Requested', 'Confirmed', 'Cancelled', 'Wrong Number']
 const reconciliationDate = (value: string | null) => {
@@ -180,18 +176,16 @@ const listStatus = (order: Order): OperationalStatus => {
 }
 
 function App() {
+  const [activePage, setActivePage] = useState<'Orders' | 'Reconciliation'>('Orders')
   const [orders, setOrders] = useState<Order[]>([])
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null)
   const [operations, setOperations] = useState<OrderOperations | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [queue, setQueue] = useState<TabKey>('all')
+  const [queue, setQueue] = useState<TabKey>('fresh')
   const [search, setSearch] = useState('')
-  const [payment, setPayment] = useState('All payments')
-  const [risk, setRisk] = useState('All risks')
-  const [orderConfirmationFilter, setOrderConfirmationFilter] = useState('All')
-  const [addressVerificationFilter, setAddressVerificationFilter] = useState('All')
-  const [codToPrepaidFilter, setCodToPrepaidFilter] = useState('All')
+  const [payment, setPayment] = useState('All')
+  const [risk, setRisk] = useState('All')
   const [sort, setSort] = useState('Newest first')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<20 | 50 | 100>(20)
@@ -266,11 +260,8 @@ function App() {
         pageSize,
         queue,
         search,
-        payment: payment === 'All payments' ? 'all' : payment.toLowerCase(),
-        risk: risk === 'All risks' ? 'all' : risk.toLowerCase(),
-        orderConfirmation: orderConfirmationFilter.toLowerCase(),
-        addressVerification: addressVerificationFilter.toLowerCase(),
-        codToPrepaid: codToPrepaidFilter.toLowerCase(),
+        payment: payment === 'All' ? 'all' : payment.toLowerCase(),
+        risk: risk === 'All' ? 'all' : risk.toLowerCase(),
         sort: { 'Newest first': 'newest', 'Oldest first': 'oldest', 'COD first': 'cod_first', 'Prepaid first': 'prepaid_first', 'Value high to low': 'value_desc', 'Value low to high': 'value_asc' }[sort] || 'newest',
       }, signal)
       setOrders(data.items)
@@ -294,7 +285,7 @@ function App() {
     } finally {
       if (!signal?.aborted) setLoading(false)
     }
-  }, [addressVerificationFilter, codToPrepaidFilter, orderConfirmationFilter, page, pageSize, payment, queue, risk, search, sort])
+  }, [page, pageSize, payment, queue, risk, search, sort])
 
   const refreshReconciliation = useCallback(() => void getOrdersReconciliation().then(setReconciliation).catch(() => undefined), [])
 
@@ -410,9 +401,6 @@ function App() {
       { key: 'prepaid', label: 'Prepaid', value: counts.prepaid, detail: formatMoney(counts.prepaid_value) },
       { key: 'risk', label: 'High Risk', value: counts.high_risk, detail: 'Active orders' },
       { key: 'repeat', label: 'Repeat Customers', value: counts.repeat_customers, detail: 'Known customers' },
-      { key: 'engage-oc', label: 'Awaiting Order Confirmation', value: counts.awaiting_order_confirmation, detail: 'Engage pending' },
-      { key: 'engage-av', label: 'Awaiting Address Verification', value: counts.awaiting_address_verification, detail: 'Engage pending' },
-      { key: 'engage-cp', label: 'COD Conversion Pending', value: counts.cod_conversion_pending, detail: 'Engage pending' },
     ]
   }, [counts])
 
@@ -634,7 +622,7 @@ function App() {
           </div>
           <nav className="ml-2 hidden flex-1 gap-2 overflow-x-auto md:flex">
             {navItems.map(item => (
-              <button key={item} className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-medium ${item === 'Orders' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{item}</button>
+              <button key={item} onClick={() => { if (item === 'Orders' || item === 'Reconciliation') setActivePage(item) }} className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-medium ${item === activePage ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{item}</button>
             ))}
           </nav>
           <div className="ml-auto flex items-center gap-2">
@@ -645,6 +633,20 @@ function App() {
       </header>
 
       <main className="mx-auto max-w-[1800px] px-4 py-5 lg:px-6">
+        {activePage === 'Reconciliation' && <div>
+          <div className="mb-5"><p className="text-sm font-medium text-[#ff6b35]">Reconciliation</p><h2 className="mt-1 text-2xl font-bold tracking-tight">Order reconciliation</h2></div>
+          <div className="mb-5 border-b border-slate-200"><button className="border-b-2 border-slate-900 px-1 pb-3 text-sm font-semibold text-slate-900">OS / Shiprocket Reconciliation</button></div>
+          <section className="mb-5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-bold uppercase tracking-[.12em] text-slate-400">OS / Shiprocket reconciliation</p><p className="mt-1 text-xs text-slate-500">Operational and Shiprocket totals may differ while orders sync or use another courier.</p></div><button onClick={refreshReconciliation} className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600">Refresh reconciliation</button></div>{reconciliation ? <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{([
+            ['operations', 'Operations Queue', reconciliation.operations_queue],
+            ['shiprocket_new', 'Shiprocket New', reconciliation.shiprocket_new],
+            ['both', 'Present in Both', reconciliation.present_in_both],
+            ['cleanup_pending', 'Cleanup Pending', reconciliation.cleanup_pending],
+            ['missing_in_shiprocket', 'Missing in Shiprocket', reconciliation.missing_in_shiprocket],
+          ] as [ReconciliationFilter, string, number][]).map(([key, label, value]) => { const active = reconciliationFilter === key; return <button type="button" aria-pressed={active} key={key} onClick={() => setReconciliationFilter(current => selectReconciliationFilter(current, key))} className={`cursor-pointer rounded-lg border px-3 py-2 text-left transition focus:outline-none focus:ring-2 focus:ring-orange-300 ${active ? 'border-orange-300 bg-orange-50 ring-2 ring-orange-100' : 'border-transparent bg-slate-50 hover:border-slate-300 hover:bg-slate-100'}`}><p className="text-[11px] font-semibold text-slate-500">{label}</p><p className="mt-1 text-lg font-bold text-slate-900">{value}</p></button> })}</div> : <p className="mt-3 text-sm text-slate-500">Reconciliation data is unavailable. Use refresh to try again.</p>}</section>
+          {reconciliationFilter && <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-4"><div><h3 className="text-lg font-bold text-slate-900">{reconciliationFilterLabel(reconciliationFilter)}</h3><p className="text-sm text-slate-500">{reconciliationRows.length} orders</p></div><button onClick={() => setReconciliationFilter(clearReconciliationFilter())} className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">Clear Filter</button></div><OrdersTable orders={reconciliationOrders} repeatIds={repeatIds} onOpen={openOrder} reconciliationRows={reconciliationRows} reconciliationFilter={reconciliationFilter} cleanupRecords={cleanupRecords} cleanupResults={cleanupResults} onCleanup={sendShiprocketCleanup} onVerify={verifyShiprocketCleanup} emptyMessage="No orders match this reconciliation view." /></section>}
+        </div>}
+
+        <div className={activePage === 'Orders' ? '' : 'hidden'}>
         <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="text-sm font-medium text-[#ff6b35]">Orders</p>
@@ -669,18 +671,10 @@ function App() {
           </div>)}
         </section>
 
-        {reconciliation && <section className="mb-5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-bold uppercase tracking-[.12em] text-slate-400">OS / Shiprocket reconciliation</p><p className="mt-1 text-xs text-slate-500">Operational and Shiprocket totals may differ while orders sync or use another courier.</p></div><button onClick={refreshReconciliation} className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600">Refresh reconciliation</button></div><div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{([
-          ['operations', 'Operations Queue', reconciliation.operations_queue],
-          ['shiprocket_new', 'Shiprocket New', reconciliation.shiprocket_new],
-          ['both', 'Present in Both', reconciliation.present_in_both],
-          ['cleanup_pending', 'Cleanup Pending', reconciliation.cleanup_pending],
-          ['missing_in_shiprocket', 'Missing in Shiprocket', reconciliation.missing_in_shiprocket],
-        ] as [ReconciliationFilter, string, number][]).map(([key, label, value]) => { const active = reconciliationFilter === key; return <button type="button" aria-pressed={active} key={key} onClick={() => setReconciliationFilter(current => selectReconciliationFilter(current, key))} className={`cursor-pointer rounded-lg border px-3 py-2 text-left transition focus:outline-none focus:ring-2 focus:ring-orange-300 ${active ? 'border-orange-300 bg-orange-50 ring-2 ring-orange-100' : 'border-transparent bg-slate-50 hover:border-slate-300 hover:bg-slate-100'}`}><p className="text-[11px] font-semibold text-slate-500">{label}</p><p className="mt-1 text-lg font-bold text-slate-900">{value}</p></button> })}</div></section>}
-
         <section className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           {cards.map(card => {
             const active = card.key === 'new' ? queue === 'fresh' && !cardFilter : cardFilter === card.key
-            return <button key={card.key} onClick={() => { setReconciliationFilter(clearReconciliationFilter()); setPage(1); if (card.key === 'new') { setQueue('fresh'); setCardFilter(null) } else { setQueue('all'); setCardFilter(card.key as typeof cardFilter) } }} className={`rounded-xl border bg-white p-3 text-left shadow-sm transition ${active && !reconciliationFilter ? 'border-orange-300 ring-2 ring-orange-100' : 'border-slate-200 hover:border-slate-300'}`}>
+            return <button key={card.key} onClick={() => { setPage(1); if (card.key === 'new') { setQueue('fresh'); setCardFilter(null) } else { setQueue('all'); setCardFilter(card.key as typeof cardFilter) } }} className={`rounded-xl border bg-white p-3 text-left shadow-sm transition ${active ? 'border-orange-300 ring-2 ring-orange-100' : 'border-slate-200 hover:border-slate-300'}`}>
               <p className="text-xs font-semibold text-slate-500">{card.label}</p>
               <p className="mt-1 text-xl font-bold text-slate-900">{card.value}</p>
               <p className="mt-1 truncate text-[11px] text-slate-400">{card.detail}</p>
@@ -689,26 +683,20 @@ function App() {
         </section>
 
         <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-          {reconciliationFilter && <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-4"><div><h3 className="text-lg font-bold text-slate-900">{reconciliationFilterLabel(reconciliationFilter)}</h3><p className="text-sm text-slate-500">{reconciliationRows.length} orders</p></div><button onClick={() => { setReconciliationFilter(clearReconciliationFilter()); setQueue('all'); setPage(1) }} className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">Clear Filter</button></div>}
-          {!reconciliationFilter && <div className="flex flex-col gap-4 border-b border-slate-200 p-4 xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex flex-col gap-4 border-b border-slate-200 p-4 xl:flex-row xl:items-center xl:justify-between">
             <div className="relative min-w-0 flex-1 xl:max-w-sm">
               <span className="absolute left-3 top-3 text-slate-400"><Icon name="search" size={17} /></span>
               <input ref={searchRef} value={search} onChange={e => { setSearch(e.target.value); setPage(1) }} className="w-full rounded-lg border border-slate-200 py-2.5 pl-9 pr-9 text-sm outline-none placeholder:text-slate-400 focus:border-orange-300 focus:ring-2 focus:ring-orange-100" placeholder="Search by order or customer..." />
               {search && <button aria-label="Clear search" onClick={() => { setSearch(''); setPage(1); searchRef.current?.focus() }} className="absolute right-3 top-2.5 text-lg text-slate-400 hover:text-slate-700">×</button>}
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Filter value={payment} onChange={value => { setPayment(value); setPage(1) }} options={['All payments', 'COD', 'Partial COD', 'Prepaid']} />
-              <Filter value={risk} onChange={value => { setRisk(value); setPage(1) }} options={['All risks', 'High', 'Medium', 'Low']} />
-              <Filter value={orderConfirmationFilter} onChange={value => { setOrderConfirmationFilter(value); setPage(1) }} options={['All', 'Pending', 'Successful', 'Cancelled', 'Disabled', 'Unknown']} label="Order Confirmation" />
-              <Filter value={addressVerificationFilter} onChange={value => { setAddressVerificationFilter(value); setPage(1) }} options={['All', 'Pending', 'Successful', 'Cancelled', 'Disabled', 'Unknown']} label="Address Verification" />
-              <Filter value={codToPrepaidFilter} onChange={value => { setCodToPrepaidFilter(value); setPage(1) }} options={['All', 'Pending', 'Successful', 'Cancelled', 'Disabled', 'Unknown']} label="COD → Prepaid" />
-              <Filter value={sort} onChange={value => { setSort(value); setPage(1) }} options={['Newest first', 'Oldest first', 'COD first', 'Prepaid first', 'Value high to low', 'Value low to high']} />
+              <Filter value={payment} onChange={value => { setPayment(value); setPage(1) }} options={['All', 'COD', 'Partial COD', 'Prepaid']} label="Payment Type" />
+              <Filter value={risk} onChange={value => { setRisk(value); setPage(1) }} options={['All', 'High', 'Medium', 'Low']} label="Risk" />
+              <Filter value={sort} onChange={value => { setSort(value); setPage(1) }} options={['Newest first', 'Oldest first', 'COD first', 'Prepaid first', 'Value high to low', 'Value low to high']} label="Sort" />
             </div>
-          </div>}
+          </div>
 
-          {reconciliationFilter ? (
-            <OrdersTable orders={reconciliationOrders} repeatIds={repeatIds} onOpen={openOrder} reconciliationRows={reconciliationRows} reconciliationFilter={reconciliationFilter} cleanupRecords={cleanupRecords} cleanupResults={cleanupResults} onCleanup={sendShiprocketCleanup} onVerify={verifyShiprocketCleanup} emptyMessage="No orders match this reconciliation view." />
-          ) : loading && orders.length === 0 ? (
+          {loading && orders.length === 0 ? (
             <div className="grid min-h-80 place-items-center">
               <div className="text-center">
                 <span className="mx-auto block h-8 w-8 animate-spin rounded-full border-2 border-orange-200 border-t-[#ff6b35]" />
@@ -739,6 +727,7 @@ function App() {
             </>
           )}
         </section>
+        </div>
       </main>
 
       {selectedOrder && (
@@ -1064,14 +1053,11 @@ const OrderDrawer = memo(function OrderDrawer({
 
         <div className="flex-1 overflow-y-auto pb-24">
           <Section title="Engage RTO Suite">
-            <p className="mb-2 text-[11px] text-slate-400">Last synced: {order.engageLastSyncedAt ? formatDateTime(order.engageLastSyncedAt) : 'Not synced'}</p>
-            <div className="space-y-2">
-              {([
-                ['Order Confirmation', order.orderConfirmation, order.orderConfirmationMessage],
-                ['Address Verification', order.addressConfirmation, order.addressConfirmationMessage],
-                ['COD → Prepaid', order.codToPrepaid, order.codToPrepaidMessage],
-              ] as Array<[string, unknown, string | null]>).map(([label, value, message]) => <div key={label} className="flex items-center gap-3 rounded-lg border border-slate-100 px-3 py-2 text-sm"><span title={engageTooltip(label, value, message)} className={`h-3 w-3 shrink-0 rounded-full ${engageStyle(value).split(' ')[0]}`} /><div className="min-w-0 flex-1"><p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{label}</p><p className="break-words font-medium text-slate-700">{message || '—'}</p><p className="mt-0.5 text-[10px] text-slate-400">Raw value: <code>{displayEngageValue(value)}</code>{engageCategory(value) === 'unknown' && <span className="ml-1 font-semibold text-amber-700">Unknown</span>}</p></div></div>)}
-            </div>
+            <EngageProgress stages={[
+              { abbreviation: 'OC', name: 'Order Confirmation', value: order.orderConfirmation, message: order.orderConfirmationMessage },
+              { abbreviation: 'AV', name: 'Address Verification', value: order.addressConfirmation, message: order.addressConfirmationMessage },
+              { abbreviation: 'CP', name: 'COD → Prepaid', value: order.codToPrepaid, message: order.codToPrepaidMessage },
+            ]} lastSynced={order.engageLastSyncedAt ? formatDateTime(order.engageLastSyncedAt) : 'Not synced'} />
           </Section>
           <Section title="Customer">
             <div className="grid grid-cols-2 gap-3 text-sm">
