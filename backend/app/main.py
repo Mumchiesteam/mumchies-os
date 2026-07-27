@@ -9,7 +9,8 @@ from app.core.auth import read_session
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.user import User
-from sqlalchemy import select
+from app.models.ndr import NDRCase, NDRSyncRun
+from sqlalchemy import func, select
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
 app.state.session_factory = SessionLocal
@@ -61,6 +62,19 @@ app.include_router(api_router, prefix=settings.api_v1_prefix)
 
 
 @app.get("/health", tags=["health"])
-def health_check() -> dict[str, str]:
-    """Return service health without touching external dependencies."""
-    return {"status": "ok"}
+def health_check() -> dict:
+    """Return service and privacy-safe NDR pipeline health without customer data."""
+    result: dict = {"status": "ok"}
+    try:
+        with SessionLocal() as db:
+            run = db.scalar(select(NDRSyncRun).order_by(NDRSyncRun.started_at.desc()).limit(1))
+            health = run.source_health or {} if run else {}
+            result["ndr"] = {
+                "last_sync_status": run.status if run else None,
+                "case_count": db.scalar(select(func.count()).select_from(NDRCase)) or 0,
+                "source_counts": {name: value.get("accepted_count", 0) for name, value in health.items() if name in {"shiprocket", "shadowfax", "delhivery"}},
+                "phone_match_percentage": (health.get("shopify") or {}).get("match_percentage"),
+            }
+    except Exception:
+        result["ndr"] = {"last_sync_status": "unavailable"}
+    return result
