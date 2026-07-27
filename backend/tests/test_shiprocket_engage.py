@@ -47,11 +47,12 @@ def test_absent_engage_clears_existing_fields_without_failure():
 
 
 def test_engage_filter_categories_and_summary_counts():
-    assert [_engage_category(value) for value in (0, "0", 1, "1", 6, "6", "NA", 42, {"future": True}, None)] == ["pending", "pending", "successful", "successful", "disabled", "disabled", "disabled", "unknown", "unknown", "unknown"]
+    values = (0, "0", 1, "1", 2, "2", 21, "21", 3, "3", 6, "6", "NA", 42, {"future": True}, None)
+    assert [_engage_category(value) for value in values] == ["pending", "pending", "pending", "pending", "successful", "successful", "successful", "successful", "cancelled", "cancelled", "disabled", "disabled", "disabled", "unknown", "unknown", "unknown"]
     db = session()
     orders = [queue_order("1", order_confirmation=0, address_confirmation=0, cod_to_prepaid=0), queue_order("2", order_confirmation=1, address_confirmation=6, cod_to_prepaid="NA")]
     counts = _full_counts(orders, datetime.now(timezone.utc), db)
-    assert counts["awaiting_order_confirmation"] == 1
+    assert counts["awaiting_order_confirmation"] == 2
     assert counts["awaiting_address_verification"] == 1
     assert counts["cod_conversion_pending"] == 1
 
@@ -59,11 +60,12 @@ def test_engage_filter_categories_and_summary_counts():
 def test_engage_filters_use_the_same_category_mapping():
     orders = [
         queue_order("1", order_confirmation="0"),
-        queue_order("2", order_confirmation=1),
-        queue_order("3", order_confirmation="NA"),
-        queue_order("4", order_confirmation={"future": True}),
+        queue_order("2", order_confirmation=2),
+        queue_order("3", order_confirmation=3),
+        queue_order("4", order_confirmation="NA"),
+        queue_order("5", order_confirmation={"future": True}),
     ]
-    for category, expected in (("pending", "1"), ("successful", "2"), ("disabled", "3"), ("unknown", "4")):
+    for category, expected in (("pending", "1"), ("successful", "2"), ("cancelled", "3"), ("disabled", "4"), ("unknown", "5")):
         filtered = _base_filtered_orders(orders, "", "all", "all", order_confirmation=category)
         assert [order.order_number for order in filtered] == [expected]
 

@@ -210,7 +210,10 @@ def _is_fresh_order(order: ShopifyOrder) -> bool:
 
 def _engage_category(value: object) -> str:
     raw = str(value) if value is not None else ""
-    return {"0": "pending", "1": "successful", "6": "disabled"}.get(raw, "disabled" if raw == "NA" else "unknown")
+    return {
+        "0": "pending", "1": "pending", "2": "successful", "21": "successful",
+        "3": "cancelled", "6": "disabled", "NA": "disabled",
+    }.get(raw, "unknown")
 
 
 def _base_filtered_orders(orders: list[ShopifyOrder], search: str, payment: str, risk: str, order_confirmation: str = "all", address_verification: str = "all", cod_to_prepaid: str = "all") -> list[ShopifyOrder]:
@@ -309,7 +312,7 @@ async def list_orders(
         raise HTTPException(status_code=422, detail="Unknown orders queue.")
     orders = await _load_orders(db)
     now = datetime.now(timezone.utc)
-    allowed_engage_filters = {"all", "pending", "successful", "disabled", "unknown"}
+    allowed_engage_filters = {"all", "pending", "successful", "cancelled", "disabled", "unknown"}
     if any(value not in allowed_engage_filters for value in (order_confirmation, address_verification, cod_to_prepaid)):
         raise HTTPException(status_code=422, detail="Unknown Engage filter.")
     base_filtered = _base_filtered_orders(orders, search, payment, risk, order_confirmation, address_verification, cod_to_prepaid)

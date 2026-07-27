@@ -6,10 +6,21 @@ import { engageCategory } from './utils/engage'
 
 describe('Engage status rendering', () => {
   it.each([
-    [0, 'pending'], ['0', 'pending'], [1, 'successful'], ['1', 'successful'],
-    [6, 'disabled'], ['6', 'disabled'], ['NA', 'disabled'], ['future', 'unknown'],
+    [0, 'pending'], ['0', 'pending'], [1, 'pending'], ['1', 'pending'],
+    [2, 'successful'], ['2', 'successful'], [21, 'successful'], ['21', 'successful'],
+    [3, 'cancelled'], ['3', 'cancelled'], [6, 'disabled'], ['6', 'disabled'],
+    ['NA', 'disabled'], ['future', 'unknown'],
   ])('classifies raw value %s as %s', (value, expected) => {
     expect(engageCategory(value)).toBe(expected)
+  })
+
+  it.each([
+    ['1', 'bg-amber-400'], ['2', 'bg-emerald-500'], ['21', 'bg-emerald-500'],
+    ['3', 'bg-rose-500'], ['6', 'bg-slate-300'], ['NA', 'bg-slate-300'],
+  ])('renders raw value %s with %s', (value, expectedClass) => {
+    const html = renderToStaticMarkup(<EngageCircle label="OC" stageName="Order Confirmation" value={value} message="Exact Shiprocket message" />)
+    expect(html).toContain(expectedClass)
+    expect(html).toContain('Exact Shiprocket message')
   })
 
   it('renders an accessible tooltip with stage, exact message, and raw value', () => {

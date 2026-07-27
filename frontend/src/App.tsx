@@ -699,9 +699,9 @@ function App() {
             <div className="flex flex-wrap items-center gap-2">
               <Filter value={payment} onChange={value => { setPayment(value); setPage(1) }} options={['All payments', 'COD', 'Partial COD', 'Prepaid']} />
               <Filter value={risk} onChange={value => { setRisk(value); setPage(1) }} options={['All risks', 'High', 'Medium', 'Low']} />
-              <Filter value={orderConfirmationFilter} onChange={value => { setOrderConfirmationFilter(value); setPage(1) }} options={['All', 'Pending', 'Successful', 'Disabled', 'Unknown']} label="Order Confirmation" />
-              <Filter value={addressVerificationFilter} onChange={value => { setAddressVerificationFilter(value); setPage(1) }} options={['All', 'Pending', 'Successful', 'Disabled', 'Unknown']} label="Address Verification" />
-              <Filter value={codToPrepaidFilter} onChange={value => { setCodToPrepaidFilter(value); setPage(1) }} options={['All', 'Pending', 'Successful', 'Disabled', 'Unknown']} label="COD → Prepaid" />
+              <Filter value={orderConfirmationFilter} onChange={value => { setOrderConfirmationFilter(value); setPage(1) }} options={['All', 'Pending', 'Successful', 'Cancelled', 'Disabled', 'Unknown']} label="Order Confirmation" />
+              <Filter value={addressVerificationFilter} onChange={value => { setAddressVerificationFilter(value); setPage(1) }} options={['All', 'Pending', 'Successful', 'Cancelled', 'Disabled', 'Unknown']} label="Address Verification" />
+              <Filter value={codToPrepaidFilter} onChange={value => { setCodToPrepaidFilter(value); setPage(1) }} options={['All', 'Pending', 'Successful', 'Cancelled', 'Disabled', 'Unknown']} label="COD → Prepaid" />
               <Filter value={sort} onChange={value => { setSort(value); setPage(1) }} options={['Newest first', 'Oldest first', 'COD first', 'Prepaid first', 'Value high to low', 'Value low to high']} />
             </div>
           </div>}

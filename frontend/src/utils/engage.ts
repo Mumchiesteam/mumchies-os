@@ -1,7 +1,12 @@
-export const engageCategory = (value: unknown) => ({ '0': 'pending', '1': 'successful', '6': 'disabled', NA: 'disabled' } as const)[String(value)] || 'unknown'
+export const engageCategory = (value: unknown) => ({
+  '0': 'pending', '1': 'pending', '2': 'successful', '21': 'successful',
+  '3': 'cancelled', '6': 'disabled', NA: 'disabled',
+} as const)[String(value)] || 'unknown'
 
 export const engageStyle = (value: unknown) => engageCategory(value) === 'successful'
   ? 'bg-emerald-500 text-white'
+  : engageCategory(value) === 'cancelled'
+    ? 'bg-rose-500 text-white'
   : engageCategory(value) === 'pending'
     ? 'bg-amber-400 text-slate-900'
     : 'bg-slate-300 text-slate-700'
