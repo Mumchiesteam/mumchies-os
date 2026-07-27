@@ -1,26 +1,50 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { actOnNDR, getNDRCase, getNDRCases, getNDROperators, getNDRSummary, syncNDR, type NDRCase, type NDRFilters, type NDROperator, type NDRSummary } from '../services/ndr'
+import { actOnNDR, getNDRCase, getNDRCases, getNDROperators, getNDRSummary, type NDRCase, type NDRFilters, type NDROperator, type NDRSourceHealth, type NDRSummary } from '../services/ndr'
 
-const format = (value: string | null) => value ? new Date(value).toLocaleString('en-IN') : '—'
+const format = (value: string | null | undefined) => {
+  if (!value) return '—'
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleString('en-IN')
+}
 const statusStyle: Record<string,string> = { new:'bg-rose-50 text-rose-700', awaiting_customer:'bg-amber-50 text-amber-700', courier_pending:'bg-blue-50 text-blue-700', resolved:'bg-emerald-50 text-emerald-700' }
 
 export function NDRPage() {
   const [summary,setSummary]=useState<NDRSummary|null>(null), [cases,setCases]=useState<NDRCase[]>([]), [operators,setOperators]=useState<NDROperator[]>([])
-  const [filters,setFilters]=useState<NDRFilters>({}), [selected,setSelected]=useState<NDRCase|null>(null), [loading,setLoading]=useState(true), [syncing,setSyncing]=useState(false), [notice,setNotice]=useState('')
-  const load=useCallback(async()=>{ try { const [s,c,o]=await Promise.all([getNDRSummary(),getNDRCases(filters),getNDROperators()]); setSummary(s); setCases(c.items); setOperators(o) } catch(e){ setNotice((e as Error).message) } finally { setLoading(false) } },[filters])
+  const [filters,setFilters]=useState<NDRFilters>({}), [selected,setSelected]=useState<NDRCase|null>(null), [loading,setLoading]=useState(true), [refreshing,setRefreshing]=useState(false), [notice,setNotice]=useState('')
+  const load=useCallback(async()=>{ try { const [s,c,o]=await Promise.all([getNDRSummary(),getNDRCases(filters),getNDROperators()]); setSummary(s); setCases(c.items); setOperators(o); return true } catch(e){ setNotice((e as Error).message); return false } finally { setLoading(false) } },[filters])
   useEffect(()=>{ const initial=window.setTimeout(()=>void load(),0), timer=window.setInterval(()=>void load(),600000); return()=>{window.clearTimeout(initial);window.clearInterval(timer)} },[load])
   const open=async(item:NDRCase)=>{setSelected(item);try{setSelected(await getNDRCase(item.id))}catch(e){setNotice((e as Error).message)}}
   const action=async(payload:{action:string;note?:string;assigned_to_user_id?:number})=>{if(!selected)return;try{const updated=await actOnNDR(selected.id,payload);setSelected(await getNDRCase(updated.id));await load()}catch(e){setNotice((e as Error).message)}}
   const cards=summary?[['Active NDR',summary.active_ndr],['New Today',summary.new_today],['Awaiting Customer',summary.awaiting_customer],['Courier Pending',summary.courier_pending],['Resolved Today',summary.resolved_today],['Over SLA',summary.over_sla]]:[]
   return <div>
-    <div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><p className="text-sm font-medium text-[#ff6b35]">Operations</p><h2 className="mt-1 text-2xl font-bold">NDR Dashboard</h2><p className="mt-1 text-xs text-slate-500">Last sync: {format(summary?.last_sync_at||null)}</p></div><button disabled={syncing} onClick={()=>{setSyncing(true);void syncNDR().then(async result=>{await load();setNotice(result.message)}).catch(async e=>{setNotice(e.message);await load()}).finally(()=>setSyncing(false))}} className="rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50">{syncing?'Syncing…':'Sync Now'}</button></div>
+    <div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><p className="text-sm font-medium text-[#ff6b35]">Operations</p><h2 className="mt-1 text-2xl font-bold">NDR Dashboard</h2><p className="mt-1 text-xs text-slate-500">Last successful import: {format(summary?.last_successful_import_at)}</p></div><button disabled={refreshing} onClick={()=>{setRefreshing(true);void load().then(ok=>{if(ok)setNotice('Imported data refreshed.')}).finally(()=>setRefreshing(false))}} className="rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50">{refreshing?'Refreshing…':'Refresh Data'}</button></div>
     {notice&&<p role="status" className="mb-4 rounded-lg bg-slate-100 px-3 py-2 text-sm">{notice}</p>}
-    {summary?.source_health&&<section className="mb-4 flex flex-wrap gap-2 rounded-lg border bg-white p-3 text-xs">{Object.entries(summary.source_health).filter(([name])=>name!=='deduplication').map(([name,health])=><span key={name} title={health.error||health.endpoint} className={`rounded-full px-2.5 py-1 font-semibold ${health.status==='success'?'bg-emerald-50 text-emerald-700':'bg-amber-50 text-amber-800'}`}>{name==='shopify'?`Shopify enrichment: ${health.phones_matched??health.accepted_count}/${health.phones_total??health.accepted_count} matched`:`${name[0].toUpperCase()}${name.slice(1)}: ${health.status==='success'?health.accepted_count:health.error}`}</span>)}</section>}
+    {summary&&<SourceHealthBanner summary={summary}/>}
     <section className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">{cards.map(([label,value])=><div key={label} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm"><p className="text-xs font-semibold text-slate-500">{label}</p><p className="mt-1 text-2xl font-bold">{value}</p></div>)}</section>
     <Filters filters={filters} setFilters={setFilters} operators={operators}/>
     <section className="mt-4 overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm"><table className="min-w-[1700px] w-full text-left text-xs"><thead className="bg-slate-50 uppercase tracking-wide text-slate-500"><tr>{['Priority','Order Number','AWB','Customer','Phone','Courier','Current Status','Failure Reason','Recommended Action','Ageing','Assigned To','Last Update','Actions'].map(x=><th key={x} className="px-3 py-3">{x}</th>)}</tr></thead><tbody className="divide-y divide-slate-100">{cases.map(item=><tr key={item.id} className={item.over_sla?'bg-rose-50/40':''}><td className="px-3 py-3"><span className={`rounded-full px-2 py-1 font-bold uppercase ${item.priority==='high'?'bg-rose-100 text-rose-700':item.priority==='medium'?'bg-amber-100 text-amber-700':'bg-slate-100 text-slate-600'}`}>{item.priority}</span></td><td className="px-3 py-3 font-semibold">#{item.order_number||'—'}</td><td className="px-3 py-3 font-mono">{item.awb}</td><td className="px-3 py-3">{item.customer_name||'—'}</td><td className="px-3 py-3">{item.customer_phone||'—'}</td><td className="px-3 py-3">{item.courier_name||item.provider}</td><td className="px-3 py-3"><span className={`rounded-full px-2 py-1 font-semibold ${statusStyle[item.current_status]||'bg-slate-100'}`}>{item.current_status.replaceAll('_',' ')}</span></td><td className="max-w-52 px-3 py-3">{item.failure_reason}</td><td className="max-w-52 px-3 py-3">{item.recommended_action}</td><td className={`px-3 py-3 font-semibold ${item.over_sla?'text-rose-700':''}`}>{Math.floor(item.ageing_hours/24)}d {item.ageing_hours%24}h</td><td className="px-3 py-3">{item.assigned_to_name||'Unassigned'}</td><td className="px-3 py-3">{format(item.last_provider_update_at)}</td><td className="px-3 py-3"><button onClick={()=>void open(item)} className="rounded-md border px-3 py-1.5 font-semibold">Open</button></td></tr>)}</tbody></table>{!loading&&!cases.length&&<p className="p-10 text-center text-sm text-slate-500">No NDR cases match this view.</p>}{loading&&<p className="p-10 text-center text-sm text-slate-500">Loading NDR cases…</p>}</section>
     {selected&&<NDRDrawer item={selected} operators={operators} close={()=>setSelected(null)} action={action}/>}
   </div>
+}
+
+const sourceLabel: Record<string,string> = { shiprocket:'Shiprocket', shadowfax:'Shadowfax', delhivery:'Delhivery' }
+
+function SourceHealthBanner({summary}:{summary:NDRSummary}) {
+  const health=summary.source_health||{}, counts=summary.source_counts||{}
+  const warnings=Array.isArray(health.warnings)?health.warnings.filter(value=>typeof value==='string'&&value.trim()):[]
+  const sources=['shiprocket','shadowfax','delhivery']
+  const item=(name:string):NDRSourceHealth=>{
+    const value=health[name]
+    return value&&!Array.isArray(value)?value:{}
+  }
+  const badge=(name:string)=>{
+    const value=item(name), success=value.status==='success', count=value.count??counts[name]
+    const text=success&&typeof count==='number'?String(count):value.error||'Unavailable'
+    return <span key={name} title={value.error||undefined} className={`rounded-full px-2.5 py-1 font-semibold ${success?'bg-emerald-50 text-emerald-700':'bg-amber-50 text-amber-800'}`}>{sourceLabel[name]}: {text}</span>
+  }
+  const shopify=item('shopify'), matched=shopify.phones_matched??counts.phones_matched, total=shopify.phones_total??counts.phones_total
+  const shopifyText=typeof matched==='number'&&typeof total==='number'?`${matched}/${total} matched`:(shopify.error||'Unavailable')
+  return <section className="mb-4 rounded-lg border bg-white p-3 text-xs"><div className="flex flex-wrap gap-2">{sources.map(badge)}<span title={shopify.error||undefined} className={`rounded-full px-2.5 py-1 font-semibold ${shopify.status==='success'?'bg-emerald-50 text-emerald-700':'bg-amber-50 text-amber-800'}`}>Shopify enrichment: {shopifyText}</span></div>{warnings.length>0&&<ul className="mt-2 list-disc space-y-1 pl-5 text-amber-800">{warnings.map((warning,index)=><li key={`${warning}-${index}`}>{warning}</li>)}</ul>}</section>
 }
 
 function Filters({filters,setFilters,operators}:{filters:NDRFilters;setFilters:(value:NDRFilters)=>void;operators:NDROperator[]}){

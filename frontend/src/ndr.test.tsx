@@ -1,20 +1,21 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NDRPage } from './components/NDRPage'
-import { actOnNDR, getNDRCases, syncNDR } from './services/ndr'
+import { actOnNDR, getNDRCases } from './services/ndr'
 
 afterEach(() => vi.restoreAllMocks())
 
 describe('NDR operations module', () => {
-  it('renders dashboard, filters, grid columns and manual sync', () => {
+  it('renders dashboard, filters, grid columns and import-only refresh', () => {
     const html = renderToStaticMarkup(<NDRPage />)
-    for (const text of ['NDR Dashboard','Sync Now','Search order, AWB, customer or phone','Priority','Order Number','AWB','Failure Reason','Recommended Action','Assigned To','Actions']) expect(html).toContain(text)
+    for (const text of ['NDR Dashboard','Refresh Data','Last successful import','Search order, AWB, customer or phone','Priority','Order Number','AWB','Failure Reason','Recommended Action','Assigned To','Actions']) expect(html).toContain(text)
+    expect(html).not.toContain('Sync Now')
   })
-  it('uses one batch sync endpoint and persisted action endpoint', async () => {
+  it('uses only the persisted action endpoint', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }))
-    await syncNDR(); await actOnNDR('case-1', { action:'resolve', note:'Done' })
-    expect(String(fetchMock.mock.calls[0][0])).toContain('/ndr/sync')
-    expect(String(fetchMock.mock.calls[1][0])).toContain('/ndr/cases/case-1/actions')
+    await actOnNDR('case-1', { action:'resolve', note:'Done' })
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/ndr/cases/case-1/actions')
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain('/ndr/sync')
   })
   it('sends grid filters to the backend', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({items:[],total:0}), { status: 200, headers: { 'Content-Type': 'application/json' } }))
