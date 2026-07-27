@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.auth import hash_password
+from app.core.auth import MIN_PASSWORD_LENGTH, hash_password
 from app.core.identity import require_owner
 from app.core.users import ROLES, normalize_username
 from app.db.session import get_db
@@ -21,16 +21,16 @@ class UserUpdate(BaseModel):
 
 
 class PasswordReset(BaseModel):
-    password: str = Field(min_length=12)
-    password_confirmation: str = Field(min_length=12)
+    password: str = Field(min_length=MIN_PASSWORD_LENGTH)
+    password_confirmation: str = Field(min_length=MIN_PASSWORD_LENGTH)
 
 
 class UserCreate(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     display_name: str = Field(min_length=1, max_length=120)
     role: str
-    password: str = Field(min_length=12)
-    password_confirmation: str = Field(min_length=12)
+    password: str = Field(min_length=MIN_PASSWORD_LENGTH)
+    password_confirmation: str = Field(min_length=MIN_PASSWORD_LENGTH)
 
 
 def _public(user: User) -> dict[str, str | int | bool | None]:

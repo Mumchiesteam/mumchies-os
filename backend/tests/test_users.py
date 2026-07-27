@@ -121,7 +121,15 @@ def test_owner_can_deactivate_and_reactivate_user(db):
 def test_short_create_password_is_rejected_before_handler():
     with pytest.raises(ValidationError) as error:
         UserCreate(username="newuser", display_name="New User", role="operator", password="short", password_confirmation="short")
-    assert "at least 12 characters" in str(error.value)
+    assert "at least 6 characters" in str(error.value)
+
+
+def test_six_digit_numeric_password_is_allowed(db):
+    owner, _ = seed(db)
+    created = create_user(UserCreate(username="numeric", display_name="Numeric", role="operator", password="123456", password_confirmation="123456"), request_for(owner), db)
+    assert created["username"] == "numeric"
+    stored = db.query(User).filter_by(username="numeric").one()
+    assert verify_password("123456", stored.password_hash)
 
 
 @pytest.mark.parametrize("role", ["admin", "operator"])

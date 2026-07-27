@@ -58,7 +58,8 @@ cd backend
 python -m app.core.auth hash-password
 ```
 
-Use a unique password of at least 12 characters. Copy only the resulting
+Passwords must contain at least 6 characters and have no character-class
+requirements. Copy only the resulting
 `scrypt$...` value into Render as `AUTH_ADMIN_PASSWORD_HASH`, and set the chosen
 username as `AUTH_ADMIN_USERNAME`. For local development, place those two values
 in the ignored `.env` file and leave `AUTH_COOKIE_SECURE=false`.

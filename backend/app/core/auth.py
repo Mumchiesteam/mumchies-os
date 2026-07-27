@@ -15,11 +15,12 @@ from dataclasses import dataclass
 SCRYPT_N = 2**14
 SCRYPT_R = 8
 SCRYPT_P = 1
+MIN_PASSWORD_LENGTH = 6
 
 
 def hash_password(password: str) -> str:
-    if len(password) < 12:
-        raise ValueError("Password must contain at least 12 characters.")
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"Password must contain at least {MIN_PASSWORD_LENGTH} characters.")
     salt = secrets.token_bytes(16)
     derived = hashlib.scrypt(
         password.encode("utf-8"), salt=salt, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P, dklen=32
