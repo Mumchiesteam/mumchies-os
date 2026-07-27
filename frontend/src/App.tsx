@@ -53,7 +53,7 @@ import {
 import { logout } from './services/auth'
 import { useAuth } from './auth-context'
 import { UsersPage } from './components/UsersPage'
-import { ComingSoonPage } from './components/ComingSoonPage'
+import { NDRPage } from './components/NDRPage'
 import { ReconciliationUnavailable } from './components/ReconciliationUnavailable'
 import { formatDateTime } from './utils/time'
 import { orderContactSectionTitle } from './utils/operations'
@@ -613,7 +613,7 @@ function App() {
 
       <main className="mx-auto max-w-[1800px] px-4 py-5 lg:px-6">
         {activePage === 'Settings' && authUser?.role === 'owner' && <UsersPage />}
-        {activePage === 'NDR' && <ComingSoonPage title="NDR Dashboard" message="NDR Dashboard will be enabled in Sprint 2 after the backend sync engine is complete." />}
+        {activePage === 'NDR' && <NDRPage />}
         {activePage === 'Reconciliation' && <div>
           <div className="mb-5"><p className="text-sm font-medium text-[#ff6b35]">Reconciliation</p><h2 className="mt-1 text-2xl font-bold tracking-tight">Order reconciliation</h2></div>
           <div className="mb-5 border-b border-slate-200"><button className="border-b-2 border-slate-900 px-1 pb-3 text-sm font-semibold text-slate-900">OS / Shiprocket Reconciliation</button></div>
