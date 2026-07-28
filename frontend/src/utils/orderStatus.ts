@@ -4,14 +4,24 @@ export type OperationalStatus = 'Call Pending' | 'Callback Required' | 'Address 
 
 export const isCancelled = (order: Order) => Boolean(order.cancelledAt || order.shopifyStatus === 'cancelled' || (order.payment === 'COD' && order.tags.join(' ').toLowerCase().includes('cancel')))
 const isShipped = (order: Order) => {
-  const status = `${order.fulfillmentStatus || ''} ${order.shopifyStatus || ''} ${order.tags.join(' ')} ${order.externalTracking?.status || ''}`.toLowerCase()
-  return status.includes('fulfilled') || status.includes('partial') || status.includes('shipped') || status.includes('picked up') || status.includes('dispatched') || status.includes('in transit') || status.includes('out for delivery') || Boolean(order.externalTracking?.awb)
+  const ful = (order.fulfillmentStatus || '').toLowerCase()
+  const shopifySt = (order.shopifyStatus || '').toLowerCase()
+  const trackingSt = (order.externalTracking?.status || '').toLowerCase()
+  const tagsStr = order.tags.join(' ').toLowerCase()
+  if (ful === 'unfulfilled') {
+    const shippedKeywords = ['shipped', 'picked up', 'dispatched', 'in transit', 'out for delivery']
+    return shippedKeywords.some(k => trackingSt.includes(k) || tagsStr.includes(k)) || Boolean(order.externalTracking?.awb)
+  }
+  const isFulfilled = ful === 'fulfilled' || ful === 'shipped' || ful === 'partially_fulfilled' || shopifySt === 'fulfilled' || shopifySt === 'shipped'
+  const shippedKeywords = ['shipped', 'picked up', 'dispatched', 'in transit', 'out for delivery']
+  const isTrackingShipped = shippedKeywords.some(k => trackingSt.includes(k) || tagsStr.includes(k))
+  return isFulfilled || isTrackingShipped || Boolean(order.externalTracking?.awb)
 }
 const isDelivered = (order: Order) => `${order.fulfillmentStatus || ''} ${order.shopifyStatus || ''} ${order.tags.join(' ')} ${order.externalTracking?.status || ''}`.toLowerCase().includes('delivered')
 const isNdr = (order: Order) => `${order.tags.join(' ')} ${order.shopifyStatus || ''}`.toLowerCase().includes('ndr')
-const isBooked = (order: Order) => Boolean(order.shipment?.awb || order.shipment?.shipment_id)
+export const isBooked = (order: Order) => Boolean(order.shipment?.awb || order.shipment?.shipment_id)
 
-export const hasShipmentEvidence = (order: Order) => isBooked(order) || isShipped(order) || isDelivered(order) || isNdr(order)
+export const hasShipmentEvidence = (order: Order) => isBooked(order) || Boolean(order.externalTracking?.awb)
 
 export const listStatus = (order: Order): OperationalStatus => {
   if (isCancelled(order)) return 'Cancelled'

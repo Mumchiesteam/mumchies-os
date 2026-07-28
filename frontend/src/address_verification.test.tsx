@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { listStatus } from './utils/orderStatus'
+import { hasShipmentEvidence, isBooked, listStatus } from './utils/orderStatus'
 import { mapApiOrder, type Order } from './services/orders'
 
 describe('Address Verification & Order Status', () => {
@@ -9,9 +9,11 @@ describe('Address Verification & Order Status', () => {
       addressVerified: true,
       addressVerificationStatus: 'verified',
       operationalStatus: 'Address Verification Pending',
+      fulfillmentStatus: 'unfulfilled',
       tags: [],
     }
     expect(listStatus(order as Order)).toBe('Ready for Booking')
+    expect(hasShipmentEvidence(order as Order)).toBe(false)
   })
 
   it('2. Verification with advisory warning such as missing landmark: status still becomes Ready for Booking', () => {
@@ -20,6 +22,7 @@ describe('Address Verification & Order Status', () => {
       addressVerified: true,
       addressVerificationStatus: 'verified',
       operationalStatus: 'Address Verification Pending',
+      fulfillmentStatus: 'unfulfilled',
       tags: [],
       correctedAddress: {
         customer_name: 'Test Customer',
@@ -33,6 +36,7 @@ describe('Address Verification & Order Status', () => {
       },
     }
     expect(listStatus(order as Order)).toBe('Ready for Booking')
+    expect(hasShipmentEvidence(order as Order)).toBe(false)
   })
 
   it('3. Address genuinely pending: status remains Address Verification Pending', () => {
@@ -41,12 +45,52 @@ describe('Address Verification & Order Status', () => {
       addressVerified: false,
       addressVerificationStatus: 'pending',
       operationalStatus: 'Address Verification Pending',
+      fulfillmentStatus: 'unfulfilled',
       tags: [],
     }
     expect(listStatus(order as Order)).toBe('Address Verification Pending')
+    expect(hasShipmentEvidence(order as Order)).toBe(false)
   })
 
-  it('4. Maps api order containing address_verification_status correctly', () => {
+  it('4. Unfulfilled orders are not treated as booked or shipped', () => {
+    const unfulfilledOrder: Partial<Order> = {
+      payment: 'COD',
+      addressVerified: true,
+      addressVerificationStatus: 'verified',
+      operationalStatus: 'Ready for Booking',
+      fulfillmentStatus: 'unfulfilled',
+      shopifyStatus: 'unfulfilled',
+      tags: ['COD'],
+      shipment: null,
+    }
+    expect(isBooked(unfulfilledOrder as Order)).toBe(false)
+    expect(hasShipmentEvidence(unfulfilledOrder as Order)).toBe(false)
+    expect(listStatus(unfulfilledOrder as Order)).toBe('Ready for Booking')
+  })
+
+  it('5. Real provider shipment ID or AWB present is treated as booked', () => {
+    const bookedOrder: Partial<Order> = {
+      payment: 'COD',
+      addressVerified: true,
+      fulfillmentStatus: 'unfulfilled',
+      tags: [],
+      shipment: {
+        shipment_id: '12345',
+        awb: '987654321',
+        courier_name: 'Delhivery Surface',
+        latest_status: 'MANIFESTED',
+        normalized_status: 'booked',
+        tracking_url: null,
+        label_url: null,
+        provider: 'shiprocket',
+      } as unknown as Order['shipment'],
+    }
+    expect(isBooked(bookedOrder as Order)).toBe(true)
+    expect(hasShipmentEvidence(bookedOrder as Order)).toBe(true)
+    expect(listStatus(bookedOrder as Order)).toBe('Booked')
+  })
+
+  it('6. Maps api order containing address_verification_status correctly', () => {
     const apiOrder = {
       order_id: 'ord_123',
       order_number: '323522',
@@ -66,7 +110,7 @@ describe('Address Verification & Order Status', () => {
       cod_collectable_amount: 0,
       payment_type: 'prepaid',
       payment_status: 'paid',
-      fulfillment_status: null,
+      fulfillment_status: 'unfulfilled',
       shopify_status: null,
       cancelled_at: null,
       tags: [],

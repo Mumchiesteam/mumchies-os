@@ -47,9 +47,12 @@ def derive_operational_status(order: Any, operations: dict[str, Any] | None, shi
         return "Cancelled"
     if "delivered" in tags or fulfillment_status == "delivered" or "delivered" in shipment_status:
         return "Delivered"
+    is_fulfilled = (
+        fulfillment_status in {"fulfilled", "shipped", "partial", "partially_fulfilled"}
+        and fulfillment_status != "unfulfilled"
+    )
     if (
-        "fulfilled" in fulfillment_status
-        or "partial" in fulfillment_status
+        is_fulfilled
         or any(keyword in tags for keyword in _SHIPPED_KEYWORDS)
         or any(keyword in shipment_status for keyword in _SHIPPED_KEYWORDS)
     ):

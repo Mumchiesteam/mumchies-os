@@ -60,7 +60,7 @@ import { orderContactSectionTitle } from './utils/operations'
 import { EngageCircle, EngageProgress } from './components/EngageStatus'
 import { OrderStatusBadge } from './components/OrderStatusBadge'
 import { engageCategory } from './utils/engage'
-import { hasShipmentEvidence, isCancelled, listStatus, type OperationalStatus } from './utils/orderStatus'
+import { hasShipmentEvidence, isBooked, isCancelled, listStatus, type OperationalStatus } from './utils/orderStatus'
 
 type IconName = 'grid' | 'bag' | 'alert' | 'users' | 'chart' | 'settings' | 'search' | 'bell' | 'filter' | 'chevron' | 'more' | 'eye' | 'truck' | 'calendar' | 'close' | 'copy' | 'phone' | 'external' | 'repeat' | 'tag' | 'edit' | 'call'
 type TabKey = 'fresh' | 'previous' | 'all' | 'labels_to_print' | 'awaiting_confirmation' | 'printed_today' | 'shiprocket_cleanup'
@@ -295,13 +295,18 @@ function App() {
   const reconciliationOrders = useMemo(() => reconciliationRows.map(reconciliationRecordToOrder), [reconciliationRows])
   const selectedOrder = useMemo(() => [...orders, ...reconciliationOrders].find(order => order.internalId === selectedOrderId) || null, [orders, reconciliationOrders, selectedOrderId])
   useEffect(() => {
+    setBookingEligibility(null)
+    setOperations(null)
+    setCourierOptions([])
+    setCourierWarnings([])
+    setSelectedCourierId(null)
+    setCourierError('')
+    setCancellationPreflight(null)
     if (!selectedOrder) return
     let active = true
     void (async () => {
       const ops = await getOrderOperations(selectedOrder.internalId)
       if (!active) return
-      setCourierOptions([])
-      setCourierError('')
       setOperations(ops)
       setCallResult('No Answer')
       setCallComment('')
@@ -329,8 +334,12 @@ function App() {
 
   const openOrder = (orderId: string) => {
     setBookingEligibility(null)
+    setOperations(null)
     setCourierOptions([])
+    setCourierWarnings([])
+    setSelectedCourierId(null)
     setCourierError('')
+    setCancellationPreflight(null)
     setSelectedOrderId(orderId)
   }
 
@@ -1024,7 +1033,7 @@ const OrderDrawer = memo(function OrderDrawer({
     ...(!packageDraft.height_cm || !Number.isFinite(packageDimensions[2]) || packageDimensions[2] <= 0 ? ['Package height missing'] : []),
   ]
   const bookingBlockerMessage = useMemo(() => {
-    if (bookingEligibility?.shipment_exists || hasShipmentEvidence(order)) return 'Shipment already booked'
+    if (bookingEligibility?.shipment_exists || isBooked(order)) return 'Shipment already booked'
     if (!order.addressVerified && order.payment === 'Prepaid') return 'Verify address before booking'
     if (!packageValid) return 'Missing package dimensions'
     if (!selectedCourierId) return 'Select a courier service'
