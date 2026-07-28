@@ -117,11 +117,13 @@ def _merged_operational_state(order: ShopifyOrder, operations: dict[str, object]
     # locally-derived operational states, so call logs/address edits can never downgrade them.
     operational_status = derive_operational_status(order, operations, operations.get("shipment"))
     latest_call = call_logs[0]["result"] if call_logs else None
+    is_address_verified = bool(operations.get("address_verified")) or operations.get("address_verification_status") in {"verified", "completed", "complete", "approved"}
 
     return order.model_copy(update={
         "latest_call_result": latest_call,
         "operational_status": operational_status,
-        "address_verified": bool(operations.get("address_verified")),
+        "address_verified": is_address_verified,
+        "address_verification_status": "verified" if is_address_verified else "pending",
         "address_verified_at": operations.get("address_verified_at"),
         "address_verified_by": operations.get("address_verified_by"),
         "verified_address_snapshot": operations.get("verified_address_snapshot"),
@@ -613,7 +615,20 @@ async def save_and_verify_address(order_id: str, payload: SaveVerifyAddressPaylo
         snapshot = {key: getattr(payload, key) for key in ("customer_name", "phone", "address_line1", "address_line2", "landmark", "city", "state", "pincode")}
         saved = OrderOperationsStore.verify_address(order_id, current_actor(request), snapshot, datetime.now(timezone.utc).isoformat())
         verified = True
-    return {"operations": saved, "validation": validation, "verified": verified}
+    
+    address_status = "verified" if verified else "pending"
+    # Fetch latest operational_status derived from merged state
+    orders = await _load_orders(db)
+    target_order = next((o for o in orders if o.order_id == order_id), None)
+    operational_status = target_order.operational_status if target_order else ("Ready for Booking" if verified else "Address Verification Pending")
+    
+    return {
+        "operations": saved,
+        "validation": validation,
+        "verified": verified,
+        "address_verification_status": address_status,
+        "operational_status": operational_status,
+    }
 
 
 @router.post("/{order_id}/call-logs")

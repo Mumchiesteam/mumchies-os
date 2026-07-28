@@ -358,7 +358,8 @@ class ShiprocketService:
             if status != "Ready for Booking":
                 missing.append("operational status must be Ready for Booking")
         else:
-            if not operations.get("address_verified"):
+            is_address_verified = bool(operations.get("address_verified")) or operations.get("address_verification_status") in {"verified", "completed", "complete", "approved"}
+            if not is_address_verified:
                 missing.append("address must be verified")
             if status != "Ready for Booking":
                 missing.append("operational status must be Ready for Booking")

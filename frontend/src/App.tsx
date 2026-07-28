@@ -443,8 +443,23 @@ function App() {
     try {
       const result = await saveAndVerifyOrderAddress(selectedOrder.internalId, addressDraft)
       setOperations(result.operations)
-      setOrders(previous => previous.map(order => order.internalId === selectedOrder.internalId ? { ...order, correctedAddress: result.operations.corrected_address, addressVerified: result.operations.address_verified, addressVerifiedAt: result.operations.address_verified_at, addressVerifiedBy: result.operations.address_verified_by, verifiedAddressSnapshot: result.operations.verified_address_snapshot, addressSyncResults: result.operations.address_sync_results } : order))
-      await refreshEligibility(selectedOrder.internalId)
+      setOrders(previous => previous.map(order => order.internalId === selectedOrder.internalId ? {
+        ...order,
+        correctedAddress: result.operations.corrected_address,
+        addressVerified: result.operations.address_verified,
+        addressVerificationStatus: result.verified ? 'verified' : 'pending',
+        addressVerifiedAt: result.operations.address_verified_at,
+        addressVerifiedBy: result.operations.address_verified_by,
+        verifiedAddressSnapshot: result.operations.verified_address_snapshot,
+        addressSyncResults: result.operations.address_sync_results,
+        operationalStatus: (order.payment === 'Prepaid' && result.verified) ? 'Ready for Booking' : order.operationalStatus,
+      } : order))
+      try {
+        await refreshEligibility(selectedOrder.internalId)
+      } catch (refetchErr) {
+        setNotice(`Address saved, but eligibility refresh failed: ${(refetchErr as Error).message}`)
+        return result
+      }
       setNotice(result.verified ? (result.validation.warnings.length ? `Address verified with advisories: ${result.validation.warnings.join('; ')}` : 'Address saved and verified') : `Address saved but not verified: ${result.validation.blockers.join('; ')}`)
       return result
     } catch (err) { setNotice((err as Error).message) }
@@ -1008,6 +1023,15 @@ const OrderDrawer = memo(function OrderDrawer({
     ...(!packageDraft.breadth_cm || !Number.isFinite(packageDimensions[1]) || packageDimensions[1] <= 0 ? ['Package breadth missing'] : []),
     ...(!packageDraft.height_cm || !Number.isFinite(packageDimensions[2]) || packageDimensions[2] <= 0 ? ['Package height missing'] : []),
   ]
+  const bookingBlockerMessage = useMemo(() => {
+    if (bookingEligibility?.shipment_exists || hasShipmentEvidence(order)) return 'Shipment already booked'
+    if (!order.addressVerified && order.payment === 'Prepaid') return 'Verify address before booking'
+    if (!packageValid) return 'Missing package dimensions'
+    if (!selectedCourierId) return 'Select a courier service'
+    if (selectedCourier && !selectedCourier.booking_supported) return 'Selected courier does not support booking'
+    if (visibleMissing.length > 0) return visibleMissing[0]
+    return null
+  }, [bookingEligibility?.shipment_exists, order, packageValid, selectedCourierId, selectedCourier, visibleMissing])
 
   return (
     <div className="fixed inset-0 z-40">
@@ -1155,6 +1179,9 @@ const OrderDrawer = memo(function OrderDrawer({
               <div className="flex flex-wrap gap-2">
                 <button disabled={!canCheckCouriers || courierLoading} onClick={() => void onCheckCouriers(packageNumbers)} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Check Couriers</button>
                 <button disabled={!canBookShipment} onClick={() => void onBookShipment(packageNumbers)} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400">{bookingLoading ? `Booking with ${selectedCourier?.courier_name || 'courier'}…` : 'Book Shipment'}</button>
+                {!canBookShipment && bookingBlockerMessage && (
+                  <span className="self-center text-xs font-medium text-amber-700">{bookingBlockerMessage}</span>
+                )}
               </div>
               <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-sm text-slate-600">
                 <p className="font-medium text-slate-700">Eligibility</p>
@@ -1289,14 +1316,19 @@ const OrderDrawer = memo(function OrderDrawer({
               <button disabled={shipmentRefreshLoading || ['picked_up', 'in_transit', 'out_for_delivery', 'delivered', 'rto'].includes(shipment.normalized_status || '')} onClick={onCancelShipment} className="rounded-lg border border-rose-200 px-3 py-2.5 text-sm font-semibold text-rose-700 disabled:opacity-40">Cancel Shipment</button>
             </>
           ) : (
-            <button
-              disabled={!canBookShipment}
-              onClick={() => void onBookShipment(packageNumbers)}
-              className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
-            >
-              <Icon name="truck" size={16} />
-              {bookingLoading ? `Booking with ${selectedCourier?.courier_name || 'courier'}…` : selectedCourierId ? 'Book Shipment' : 'Select a courier above'}
-            </button>
+            <div className="flex flex-1 flex-col gap-1">
+              <button
+                disabled={!canBookShipment}
+                onClick={() => void onBookShipment(packageNumbers)}
+                className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
+              >
+                <Icon name="truck" size={16} />
+                {bookingLoading ? `Booking with ${selectedCourier?.courier_name || 'courier'}…` : selectedCourierId ? 'Book Shipment' : 'Select a courier above'}
+              </button>
+              {!canBookShipment && bookingBlockerMessage && (
+                <span className="text-[11px] font-medium text-amber-700">{bookingBlockerMessage}</span>
+              )}
+            </div>
           )}
           <button onClick={onClose} className="rounded-lg px-2 py-2.5 text-sm font-semibold text-slate-500 hover:bg-slate-50">Close</button>
         </footer>

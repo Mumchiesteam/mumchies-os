@@ -14,16 +14,20 @@ const isBooked = (order: Order) => Boolean(order.shipment?.awb || order.shipment
 export const hasShipmentEvidence = (order: Order) => isBooked(order) || isShipped(order) || isDelivered(order) || isNdr(order)
 
 export const listStatus = (order: Order): OperationalStatus => {
-  if (order.operationalStatus) return order.operationalStatus as OperationalStatus
   if (isCancelled(order)) return 'Cancelled'
   if (isDelivered(order)) return 'Delivered'
   if (isShipped(order)) return 'Shipped'
   if (isBooked(order)) return 'Booked'
   if (isNdr(order)) return 'NDR'
-  return order.payment === 'Prepaid'
-    ? order.addressVerified ? 'Ready for Booking' : 'Address Verification Pending'
-    : order.latestCallResult === 'Callback Requested' ? 'Callback Required'
-      : order.latestCallResult === 'Confirmed' ? 'Ready for Booking'
-        : order.latestCallResult === 'Wrong Number' ? 'Needs Review'
-          : 'Call Pending'
+  const isVerified = order.addressVerified || ['verified', 'completed', 'complete', 'approved'].includes(order.addressVerificationStatus?.toLowerCase() || '')
+  if (order.payment === 'Prepaid') {
+    return isVerified ? 'Ready for Booking' : 'Address Verification Pending'
+  }
+  if (order.operationalStatus && !(isVerified && order.operationalStatus === 'Address Verification Pending')) {
+    return order.operationalStatus as OperationalStatus
+  }
+  return order.latestCallResult === 'Callback Requested' ? 'Callback Required'
+    : order.latestCallResult === 'Confirmed' ? 'Ready for Booking'
+      : order.latestCallResult === 'Wrong Number' ? 'Needs Review'
+        : 'Call Pending'
 }

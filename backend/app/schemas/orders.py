@@ -61,6 +61,7 @@ class ShopifyOrder(BaseModel):
     latest_call_result: str | None = None
     operational_status: str | None = None
     address_verified: bool = False
+    address_verification_status: str = "pending"
     address_verified_at: str | None = None
     address_verified_by: str | None = None
     verified_address_snapshot: dict[str, str | None] | None = None
