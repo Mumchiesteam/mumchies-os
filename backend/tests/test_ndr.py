@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from app.api.routes.ndr import NDRAction, NDRImportPayload, case_action, import_cases
+from app.api.routes.ndr import NDRAction, NDRImportPayload, case_action, import_cases, list_cases, summary
 from app.core.config import settings
 from app.db.base import Base
 from app.models.ndr import NDRCase, NDREvent, NDRImportRun
@@ -117,3 +117,34 @@ def test_import_requires_constant_time_bearer_authentication(db, monkeypatch):
     result = import_cases(payload("authorized"), request, db)
     assert result["run_id"] == "authorized"
     assert result["created"] == 1
+
+
+def test_summary_health_comes_from_latest_successful_run(db):
+    successful_payload = payload("successful")
+    successful_payload.source_health["shopify"] = {"status": "success", "source": "api", "phones_matched": 1, "phones_total": 1}
+    import_ndr(db, successful_payload)
+    failed_payload = payload("failed", rows=[], shadowfax_status="failed")
+    failed_payload.source_health["shiprocket"] = {"status": "failed"}
+    failed_payload.source_health["warnings"] = ["GDrive Shopify CSV is old"]
+    import_ndr(db, failed_payload)
+    result = summary(db)
+    assert result["last_import_run_id"] == "successful"
+    assert result["source_health"]["shopify"]["source"] == "api"
+    assert result["source_health"].get("warnings") is None
+
+
+def test_kpi_filters_apply_server_side_and_combine_with_search(db):
+    now = datetime.now(timezone.utc)
+    rows = [
+        NDRCase(id="active", source_identity="awb:A", awb="A", provider="shiprocket", order_number="323500", source_lifecycle="active", current_status="new", priority="high", delivery_attempts=1, first_ndr_at=now, last_synced_at=now, products=[], cod_amount=0),
+        NDRCase(id="awaiting", source_identity="awb:B", awb="B", provider="shadowfax", order_number="323501", source_lifecycle="active", current_status="awaiting_customer", priority="medium", delivery_attempts=1, first_ndr_at=now, last_synced_at=now, products=[], cod_amount=0),
+        NDRCase(id="resolved", source_identity="awb:C", awb="C", provider="delhivery", order_number="323502", source_lifecycle="resolved", current_status="resolved", resolved_at=now, priority="low", delivery_attempts=1, first_ndr_at=now, last_synced_at=now, products=[], cod_amount=0),
+        NDRCase(id="courier", source_identity="awb:D", awb="D", provider="delhivery", order_number="323503", source_lifecycle="active", current_status="courier_pending", priority="medium", delivery_attempts=1, first_ndr_at=now-timedelta(hours=80), last_synced_at=now, products=[], cod_amount=0),
+    ]
+    db.add_all(rows); db.commit()
+    assert {item["id"] for item in list_cases(kpi="active", page=1, page_size=50, db=db)["items"]} == {"active", "awaiting", "courier"}
+    assert {item["id"] for item in list_cases(kpi="new_today", page=1, page_size=50, db=db)["items"]} == {"active", "awaiting", "resolved"}
+    assert [item["id"] for item in list_cases(kpi="awaiting_customer", search="323501", page=1, page_size=50, db=db)["items"]] == ["awaiting"]
+    assert [item["id"] for item in list_cases(kpi="courier_pending", page=1, page_size=50, db=db)["items"]] == ["courier"]
+    assert [item["id"] for item in list_cases(kpi="resolved_today", page=1, page_size=50, db=db)["items"]] == ["resolved"]
+    assert [item["id"] for item in list_cases(kpi="over_sla", page=1, page_size=50, db=db)["items"]] == ["courier"]

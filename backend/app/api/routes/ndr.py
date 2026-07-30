@@ -85,12 +85,19 @@ def summary(db: Session = Depends(get_db)) -> dict:
     active = [c for c in cases if c.current_status != "resolved" and c.source_lifecycle == "active"]
     last = db.scalar(select(NDRImportRun).order_by(NDRImportRun.received_at.desc()).limit(1))
     successful = db.scalar(select(NDRImportRun).where(NDRImportRun.status.in_(["completed", "partial_success"])).order_by(NDRImportRun.received_at.desc()).limit(1))
-    return {"active_ndr": len(active), "new_today": sum(1 for c in cases if aware(c.first_ndr_at).date() == today), "awaiting_customer": sum(c.current_status == "awaiting_customer" for c in active), "courier_pending": sum(c.current_status == "courier_pending" for c in active), "resolved_today": sum(bool(c.resolved_at and aware(c.resolved_at).date() == today) for c in cases), "over_sla": sum((now - aware(c.first_ndr_at)).total_seconds() > 172800 for c in active), "last_sync_at": last.received_at.isoformat() if last else None, "last_successful_import_at": successful.received_at.isoformat() if successful else None, "last_sync_status": last.status if last else None, "last_sync_error": "; ".join(last.safe_errors or []) if last else None, "source_health": last.source_health if last else None, "source_counts": last.source_counts if last else None, "last_import_run_id": last.run_id if last else None}
+    return {"active_ndr": len(active), "new_today": sum(1 for c in cases if aware(c.first_ndr_at).date() == today), "awaiting_customer": sum(c.current_status == "awaiting_customer" for c in active), "courier_pending": sum(c.current_status == "courier_pending" for c in active), "resolved_today": sum(bool(c.resolved_at and aware(c.resolved_at).date() == today) for c in cases), "over_sla": sum((now - aware(c.first_ndr_at)).total_seconds() > 172800 for c in active), "last_sync_at": last.received_at.isoformat() if last else None, "last_successful_import_at": successful.received_at.isoformat() if successful else None, "last_sync_status": last.status if last else None, "last_sync_error": "; ".join(last.safe_errors or []) if last else None, "source_health": successful.source_health if successful else None, "source_counts": successful.source_counts if successful else None, "last_import_run_id": successful.run_id if successful else None}
 
 
 @router.get("/cases")
-def list_cases(search: str = "", courier: str = "", failure_reason: str = "", ageing: str = "", assigned_to: int | None = None, status: str = "", priority: str = "", page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)) -> dict:
+def list_cases(search: str = "", courier: str = "", failure_reason: str = "", ageing: str = "", assigned_to: int | None = None, status: str = "", priority: str = "", kpi: Literal["active", "new_today", "awaiting_customer", "courier_pending", "resolved_today", "over_sla"] | None = None, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)) -> dict:
     query = select(NDRCase)
+    now = datetime.now(timezone.utc)
+    if kpi == "active": query = query.where(NDRCase.source_lifecycle == "active", NDRCase.current_status != "resolved")
+    elif kpi == "new_today": query = query.where(NDRCase.first_ndr_at >= datetime.combine(now.date(), datetime.min.time(), tzinfo=timezone.utc))
+    elif kpi == "awaiting_customer": query = query.where(NDRCase.source_lifecycle == "active", NDRCase.current_status == "awaiting_customer")
+    elif kpi == "courier_pending": query = query.where(NDRCase.source_lifecycle == "active", NDRCase.current_status == "courier_pending")
+    elif kpi == "resolved_today": query = query.where(NDRCase.current_status == "resolved", NDRCase.resolved_at >= datetime.combine(now.date(), datetime.min.time(), tzinfo=timezone.utc))
+    elif kpi == "over_sla": query = query.where(NDRCase.source_lifecycle == "active", NDRCase.current_status != "resolved", NDRCase.first_ndr_at < now - timedelta(hours=72))
     if search: query = query.where(or_(NDRCase.order_number.ilike(f"%{search}%"), NDRCase.awb.ilike(f"%{search}%"), NDRCase.customer_name.ilike(f"%{search}%"), NDRCase.customer_phone.ilike(f"%{search}%")))
     if courier: query = query.where(NDRCase.provider == courier)
     if failure_reason: query = query.where(NDRCase.failure_reason.ilike(f"%{failure_reason}%"))
@@ -98,7 +105,6 @@ def list_cases(search: str = "", courier: str = "", failure_reason: str = "", ag
     if status: query = query.where(NDRCase.current_status == status)
     if priority: query = query.where(NDRCase.priority == priority)
     if ageing in {"0-24", "24-48", "48+"}:
-        now = datetime.now(timezone.utc)
         if ageing == "0-24": query = query.where(NDRCase.first_ndr_at >= now - timedelta(hours=24))
         elif ageing == "24-48": query = query.where(NDRCase.first_ndr_at < now - timedelta(hours=24), NDRCase.first_ndr_at >= now - timedelta(hours=48))
         else: query = query.where(NDRCase.first_ndr_at < now - timedelta(hours=48))
