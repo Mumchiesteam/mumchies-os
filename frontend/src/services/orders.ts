@@ -65,7 +65,6 @@ export interface Order {
   latestCallResult: string | null
   operationalStatus: string | null
   addressVerified: boolean
-  addressVerificationStatus?: string | null
   addressVerifiedAt: string | null
   addressVerifiedBy: string | null
   verifiedAddressSnapshot: {
@@ -221,7 +220,6 @@ interface ApiOrder {
   latest_call_result: string | null
   operational_status: string | null
   address_verified: boolean
-  address_verification_status?: string | null
   address_verified_at: string | null
   address_verified_by: string | null
   verified_address_snapshot: {
@@ -403,7 +401,6 @@ export const mapApiOrder = (item: ApiOrder): Order => {
     products: item.products.map(product => ({ productName: product.product_name, sku: product.sku, quantity: product.quantity, weightGrams: product.weight_grams, price: Number(product.price) })),
     tags: item.tags, firstActionAt: item.first_action_at, humanActionCount: item.human_action_count, callAttemptCount: item.call_attempt_count,
     latestCallResult: item.latest_call_result, operationalStatus: item.operational_status, addressVerified: item.address_verified,
-    addressVerificationStatus: item.address_verification_status || (item.address_verified ? 'verified' : 'pending'),
     addressVerifiedAt: item.address_verified_at, addressVerifiedBy: item.address_verified_by, verifiedAddressSnapshot: item.verified_address_snapshot,
     correctedAddress: item.corrected_address, courierSyncStatus: item.courier_sync_status, courierSyncError: item.courier_sync_error,
     addressSyncResults: item.address_sync_results, packageDetails: item.package_details, selectedCourier: item.selected_courier, shipment: item.shipment,

@@ -66,9 +66,8 @@ def derive_operational_status(order: Any, operations: dict[str, Any] | None, shi
     if latest_call == "Wrong Number":
         return "Needs Review"
     payment_status = _text(getattr(order, "payment_status", None))
-    is_verified = bool(operations.get("address_verified")) or operations.get("address_verification_status") in {"verified", "completed", "complete", "approved"}
     if payment_status and payment_status not in {"pending", "cod", "partially paid"}:
-        return "Ready for Booking" if is_verified else "Address Verification Pending"
+        return "Ready for Booking" if operations.get("address_verified") else "Address Verification Pending"
     if latest_call == "Confirmed":
         return "Ready for Booking"
     if latest_call == "Callback Requested":
