@@ -59,3 +59,28 @@ async def test_shopify_service_follows_link_header_pagination(monkeypatch: pytes
     assert fake_client.requests[0][1]["limit"] == "250"
     assert fake_client.requests[1][1] is None
     assert fake_client.requests[0][2]["X-Shopify-Access-Token"] == "token"
+
+
+@pytest.mark.anyio
+async def test_unfulfilled_reconciliation_query_has_no_date_cutoff_and_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(services.shopify.settings, "shopify_store", "store.myshopify.com")
+    monkeypatch.setattr(services.shopify.settings, "shopify_client_id", "client-id")
+    monkeypatch.setattr(services.shopify.settings, "shopify_client_secret", "client-secret")
+    monkeypatch.setattr(services.shopify.settings, "shopify_api_version", "2025-07")
+    monkeypatch.setattr(ShopifyService, "_get_access_token", lambda self: __import__("asyncio").sleep(0, result="token"))
+    first = _FakeResponse(
+        [{"id": 1, "name": "316999", "created_at": "2026-07-31T10:00:00Z", "line_items": []}],
+        '<https://store.myshopify.com/admin/api/2025-07/orders.json?page_info=older>; rel="next"',
+    )
+    second = _FakeResponse(
+        [{"id": 2, "name": "316167", "created_at": "2026-05-14T10:00:00Z", "line_items": []}],
+    )
+    fake_client = _FakeClient([first, second])
+    monkeypatch.setattr("app.services.shopify.httpx.AsyncClient", lambda timeout: fake_client)
+
+    orders = await ShopifyService().get_active_unfulfilled_orders()
+
+    assert [order.order_number for order in orders] == ["316999", "316167"]
+    assert fake_client.requests[0][1]["fulfillment_status"] == "unfulfilled"
+    assert "created_at_min" not in fake_client.requests[0][1]
+    assert fake_client.requests[1][1] is None
