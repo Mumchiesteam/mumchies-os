@@ -203,9 +203,7 @@ def _is_fresh_order(order: ShopifyOrder) -> bool:
     if order.payment_type == "prepaid":
         return order.human_action_count == 0
     if order.payment_type in {"cod", "partial_cod"}:
-        if order.call_attempt_count == 0:
-            return True
-        return order.call_attempt_count == 1 and str(order.latest_call_result or "").casefold() not in {"confirmed", "cancelled"}
+        return order.call_attempt_count == 0
     return order.human_action_count == 0
 
 
@@ -302,6 +300,7 @@ async def list_orders(
     order_confirmation: str = "all",
     address_verification: str = "all",
     cod_to_prepaid: str = "all",
+    attempt: str = "all",
     db: Session = Depends(get_db),
 ) -> OrdersPage:
     """Return one filtered page of orders. The client never receives the unpaged collection."""
@@ -311,6 +310,8 @@ async def list_orders(
         raise HTTPException(status_code=422, detail="page_size must be one of 20, 50, or 100.")
     if queue not in {"fresh", "previous", "all", "labels_to_print", "awaiting_confirmation", "printed_today"}:
         raise HTTPException(status_code=422, detail="Unknown orders queue.")
+    if attempt not in {"all", "1", "2", "3", "4_plus"}:
+        raise HTTPException(status_code=422, detail="Unknown attempt filter.")
     orders = await _load_orders(db)
     now = datetime.now(timezone.utc)
     allowed_engage_filters = {"all", "pending", "successful", "cancelled", "disabled", "unknown"}
@@ -318,7 +319,10 @@ async def list_orders(
         raise HTTPException(status_code=422, detail="Unknown Engage filter.")
     base_filtered = _base_filtered_orders(orders, search, payment, risk, order_confirmation, address_verification, cod_to_prepaid)
     counts = _full_counts(base_filtered, now, db)
-    filtered = [order for order in base_filtered if _matches_queue(order, queue, now)]
+    effective_queue = "all" if search.strip() else queue
+    filtered = [order for order in base_filtered if _matches_queue(order, effective_queue, now)]
+    if attempt != "all":
+        filtered = [order for order in filtered if (order.call_attempt_count >= 4 if attempt == "4_plus" else order.call_attempt_count == int(attempt))]
     reverse = sort not in {"oldest", "value_asc"}
     if sort in {"value_asc", "value_desc"}:
         filtered.sort(key=lambda value: float(value.total_amount), reverse=reverse)

@@ -145,6 +145,22 @@ const Icon = ({ name, size = 18 }: { name: IconName; size?: number }) => {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>
 }
 
+function CopyButton({ value, label, stopPropagation = false }: { value: string; label: 'order number' | 'phone number'; stopPropagation?: boolean }) {
+  const [feedback, setFeedback] = useState('')
+  const title = `Copy ${label}`
+  const copy = async (event: React.MouseEvent<HTMLButtonElement>) => {
+    if (stopPropagation) event.stopPropagation()
+    try {
+      await navigator.clipboard.writeText(value)
+      setFeedback('Copied')
+    } catch {
+      setFeedback('Copy failed')
+    }
+    window.setTimeout(() => setFeedback(''), 1500)
+  }
+  return <span className="inline-flex items-center gap-1"><button type="button" aria-label={title} title={title} onClick={copy} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"><Icon name="copy" size={14} /></button>{feedback && <span role="status" className="text-[10px] font-medium text-slate-500">{feedback}</span>}</span>
+}
+
 const formatDate = (value: string) => new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(value))
 const formatOrderDateTime = (value: string) => {
   const date = new Date(value)
@@ -162,7 +178,9 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [queue, setQueue] = useState<TabKey>('fresh')
+  const [searchDraft, setSearchDraft] = useState('')
   const [search, setSearch] = useState('')
+  const [attemptFilter, setAttemptFilter] = useState<'1' | '2' | '3' | '4_plus' | null>(null)
   const [payment, setPayment] = useState('All')
   const [risk, setRisk] = useState('All')
   const [sort, setSort] = useState('Newest first')
@@ -242,6 +260,7 @@ function App() {
         payment: payment === 'All' ? 'all' : payment.toLowerCase(),
         risk: risk === 'All' ? 'all' : risk.toLowerCase(),
         sort: { 'Newest first': 'newest', 'Oldest first': 'oldest', 'COD first': 'cod_first', 'Prepaid first': 'prepaid_first', 'Value high to low': 'value_desc', 'Value low to high': 'value_asc' }[sort] || 'newest',
+        attempt: queue === 'previous' ? attemptFilter ?? 'all' : 'all',
       }, signal)
       setOrders(data.items)
       setTotal(data.total)
@@ -264,7 +283,12 @@ function App() {
     } finally {
       if (!signal?.aborted) setLoading(false)
     }
-  }, [page, pageSize, payment, queue, risk, search, sort])
+  }, [attemptFilter, page, pageSize, payment, queue, risk, search, sort])
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => { setSearch(searchDraft.trim()); setPage(1) }, 350)
+    return () => window.clearTimeout(timeout)
+  }, [searchDraft])
 
   const refreshReconciliation = useCallback(() => void getOrdersReconciliation().then(setReconciliation).catch(() => undefined), [])
 
@@ -385,8 +409,8 @@ function App() {
     return [
       { key: 'new', label: 'New Orders', value: counts.new_orders, detail: 'Untouched orders' },
       { key: 'pending', label: 'Pending Booking', value: counts.pending_booking, detail: 'Ready to dispatch' },
-      { key: 'cod', label: 'COD', value: counts.cod, detail: `${formatMoney(counts.cod_collectable)} to collect` },
-      { key: 'prepaid', label: 'Prepaid', value: counts.prepaid, detail: formatMoney(counts.prepaid_value) },
+      { key: 'cod', label: 'COD', value: counts.cod, detail: '' },
+      { key: 'prepaid', label: 'Prepaid', value: counts.prepaid, detail: '' },
       { key: 'risk', label: 'High Risk', value: counts.high_risk, detail: 'Active orders' },
       { key: 'repeat', label: 'Repeat Customers', value: counts.repeat_customers, detail: 'Known customers' },
     ]
@@ -400,7 +424,7 @@ function App() {
   const courierSyncMessage = operations?.courier_sync_error || ''
   const status = selectedOrder ? statusFromOrder(selectedOrder) : 'Call Pending'
   const isRepeat = selectedOrder ? repeatIds.has(selectedOrder.internalId) : false
-  const visibleCount = counts.operations
+  const visibleCount = search ? total : counts.operations
   const addressVerifiedLabel = operations?.address_verified
     ? `Address Verified by ${operations.address_verified_by || 'operator'} on ${operations.address_verified_at ? formatDateTime(operations.address_verified_at) : 'unknown time'}`
     : 'Address Verification Pending'
@@ -431,6 +455,7 @@ function App() {
       setOrders(prev => prev.map(order => order.internalId === selectedOrder.internalId ? { ...order, latestCallResult: updated.call_logs?.[0]?.result || null, operationalStatus: (hasShipmentEvidence(order) ? order.operationalStatus : (updated.call_logs?.[0]?.result === 'Callback Requested' ? 'Callback Required' : updated.call_logs?.[0]?.result === 'Confirmed' ? (order.payment === 'Prepaid' && !updated.address_verified ? 'Address Verification Pending' : 'Ready for Booking') : updated.call_logs?.[0]?.result === 'Wrong Number' ? 'Needs Review' : updated.call_logs?.[0]?.result === 'Cancelled' ? 'Cancelled' : 'Call Pending')) as OperationalStatus | null, addressVerified: updated.address_verified, addressVerifiedAt: updated.address_verified_at, addressVerifiedBy: updated.address_verified_by, verifiedAddressSnapshot: updated.verified_address_snapshot, correctedAddress: updated.corrected_address, courierSyncStatus: updated.courier_sync_status, courierSyncError: updated.courier_sync_error } : order))
       setCallComment('')
       await refreshEligibility(selectedOrder.internalId)
+      await loadOrders()
       setNotice('Call attempt saved')
     } catch (err) {
       setNotice((err as Error).message)
@@ -494,6 +519,7 @@ function App() {
       const result = await selectShiprocketCourier(selectedOrder.internalId, { ...courier, courier_id: courier.courier_id })
       setSelectedCourierId(result.selected_courier?.courier_id ?? courier.courier_id)
       setOperations(prev => prev ? { ...prev, selected_courier: result.selected_courier } : prev)
+      await refreshEligibility(selectedOrder.internalId)
     } catch (err) {
       setCourierError((err as Error).message)
     }
@@ -640,7 +666,12 @@ function App() {
         <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="text-sm font-medium text-[#ff6b35]">Orders</p>
-            <h2 className="mt-1 text-2xl font-bold tracking-tight">Operations queue <span className="font-medium text-slate-400">({visibleCount})</span></h2>
+            <h2 className="mt-1 text-2xl font-bold tracking-tight">{search ? 'Search results' : 'Operations queue'} <span className="font-medium text-slate-400">({visibleCount})</span></h2>
+            <div className="relative mt-3 w-full max-w-md">
+              <span className="absolute left-3 top-3 text-slate-400"><Icon name="search" size={17} /></span>
+              <input ref={searchRef} value={searchDraft} onChange={e => setSearchDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { setSearch(searchDraft.trim()); setPage(1) } }} className="w-full rounded-lg border border-slate-200 py-2.5 pl-9 pr-9 text-sm outline-none placeholder:text-slate-400 focus:border-orange-300 focus:ring-2 focus:ring-orange-100" placeholder="Search order number, customer or phone..." />
+              {searchDraft && <button aria-label="Clear search" onClick={() => { setSearchDraft(''); setSearch(''); setPage(1); searchRef.current?.focus() }} className="absolute right-3 top-2.5 text-lg text-slate-400 hover:text-slate-700">×</button>}
+            </div>
           </div>
           <div className="flex flex-wrap gap-2">
             <button onClick={() => void exportOrders('current', filtered.map(order => order.internalId)).catch(error => setNotice(error.message))} className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-600">Export Current View</button>
@@ -660,6 +691,9 @@ function App() {
             ))}</div>
           </div>)}
         </section>
+        {queue === 'previous' && <div className="mb-5 flex flex-wrap gap-2" aria-label="Attempt filters">
+          {([['1', 'Attempt 1'], ['2', 'Attempt 2'], ['3', 'Attempt 3'], ['4_plus', 'Attempt 4+']] as const).map(([value, label]) => <button key={value} onClick={() => { setAttemptFilter(current => current === value ? null : value); setPage(1) }} className={`rounded-full px-3 py-1.5 text-xs font-semibold ${attemptFilter === value ? 'bg-orange-600 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200'}`}>{label}</button>)}
+        </div>}
 
         <section className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           {cards.map(card => {
@@ -667,18 +701,13 @@ function App() {
             return <button key={card.key} onClick={() => { setPage(1); if (card.key === 'new') { setQueue('fresh'); setCardFilter(null) } else { setQueue('all'); setCardFilter(card.key as typeof cardFilter) } }} className={`rounded-xl border bg-white p-3 text-left shadow-sm transition ${active ? 'border-orange-300 ring-2 ring-orange-100' : 'border-slate-200 hover:border-slate-300'}`}>
               <p className="text-xs font-semibold text-slate-500">{card.label}</p>
               <p className="mt-1 text-xl font-bold text-slate-900">{card.value}</p>
-              <p className="mt-1 truncate text-[11px] text-slate-400">{card.detail}</p>
+              {card.detail && <p className="mt-1 truncate text-[11px] text-slate-400">{card.detail}</p>}
             </button>
           })}
         </section>
 
         <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="flex flex-col gap-4 border-b border-slate-200 p-4 xl:flex-row xl:items-center xl:justify-between">
-            <div className="relative min-w-0 flex-1 xl:max-w-sm">
-              <span className="absolute left-3 top-3 text-slate-400"><Icon name="search" size={17} /></span>
-              <input ref={searchRef} value={search} onChange={e => { setSearch(e.target.value); setPage(1) }} className="w-full rounded-lg border border-slate-200 py-2.5 pl-9 pr-9 text-sm outline-none placeholder:text-slate-400 focus:border-orange-300 focus:ring-2 focus:ring-orange-100" placeholder="Search by order or customer..." />
-              {search && <button aria-label="Clear search" onClick={() => { setSearch(''); setPage(1); searchRef.current?.focus() }} className="absolute right-3 top-2.5 text-lg text-slate-400 hover:text-slate-700">×</button>}
-            </div>
             <div className="flex flex-wrap items-center gap-2">
               <Filter value={payment} onChange={value => { setPayment(value); setPage(1) }} options={['All', 'COD', 'Partial COD', 'Prepaid']} label="Payment Type" />
               <Filter value={risk} onChange={value => { setRisk(value); setPage(1) }} options={['All', 'High', 'Medium', 'Low']} label="Risk" />
@@ -823,7 +852,7 @@ const OrderRow = memo(function OrderRow({ order, repeat, onClick, drawerEnabled 
   const attempt = order.callAttemptCount > 0 ? `Attempt ${order.callAttemptCount > 5 ? '5+' : order.callAttemptCount}` : null
   return (
     <tr onClick={() => { if (drawerEnabled) onClick() }} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 56px' }} className={`${drawerEnabled ? 'cursor-pointer' : ''} text-sm text-slate-600 hover:bg-orange-50/50`}>
-      <td className="px-4 py-3.5 font-semibold text-slate-800">{order.orderNumber}</td>
+      <td className="px-4 py-3.5 font-semibold text-slate-800"><span className="inline-flex items-center gap-1">#{order.orderNumber}<CopyButton value={`#${order.orderNumber}`} label="order number" stopPropagation /></span></td>
       <td className="whitespace-nowrap px-4 py-3.5"><p className="font-medium text-slate-700">{placed.date}</p><p className="text-xs text-slate-400">{placed.time}</p></td>
       <td className="px-4 py-3.5">
         <div className="flex items-center gap-2">
@@ -1017,6 +1046,13 @@ const OrderDrawer = memo(function OrderDrawer({
     ...(!packageDraft.breadth_cm || !Number.isFinite(packageDimensions[1]) || packageDimensions[1] <= 0 ? ['Package breadth missing'] : []),
     ...(!packageDraft.height_cm || !Number.isFinite(packageDimensions[2]) || packageDimensions[2] <= 0 ? ['Package height missing'] : []),
   ]
+  const bookingBlocker = bookingEligibility?.shipment_exists
+    ? 'Shipment already booked'
+    : visibleMissing[0]
+      || (!selectedCourierId ? 'Select a courier service'
+        : !selectedCourier ? 'Selected courier response is incomplete'
+          : !selectedCourier.booking_supported ? (selectedCourier.provider === 'delhivery' ? 'Direct booking is unavailable for this rate' : 'Selected courier does not support booking')
+            : null)
   return (
     <div className="fixed inset-0 z-40">
       <button aria-label="Close order drawer" onClick={onClose} className="absolute inset-0 bg-slate-950/35 backdrop-blur-[1px]" />
@@ -1025,7 +1061,7 @@ const OrderDrawer = memo(function OrderDrawer({
           <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-xs font-medium text-slate-400">Order details</p>
-            <h2 className="mt-0.5 text-lg font-bold">Order #{order.orderNumber}</h2>
+            <h2 className="mt-0.5 flex items-center gap-1 text-lg font-bold">Order #{order.orderNumber}<CopyButton value={`#${order.orderNumber}`} label="order number" /></h2>
             <div className="mt-2 flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-600">
                 <span className="rounded-full bg-amber-50 px-2.5 py-1 text-amber-700">{order.payment}</span>
                 <span className={`rounded-full px-2.5 py-1 ${status === 'Booked' ? 'bg-emerald-50 text-emerald-700' : status === 'Cancelled' ? 'bg-rose-50 text-rose-700' : 'bg-slate-100 text-slate-700'}`}>{status}</span>
@@ -1049,7 +1085,7 @@ const OrderDrawer = memo(function OrderDrawer({
           <Section title="Customer">
             <div className="grid grid-cols-2 gap-3 text-sm">
               <KeyValue label="Customer Name" value={order.customerName} />
-              <KeyValue label="Mobile" value={order.phone || 'No phone'} />
+              <div><KeyValue label="Mobile" value={order.phone || 'No phone'} />{order.phone && <CopyButton value={order.phone} label="phone number" />}</div>
               <KeyValue label="Email" value={order.email || 'No email'} />
               {order.customerId ? <KeyValue label="Customer Type" value={repeat ? '[RPT]' : '[NEW]'} /> : <KeyValue label="Customer Type" value="—" />}
             </div>
@@ -1164,6 +1200,7 @@ const OrderDrawer = memo(function OrderDrawer({
                 <button disabled={!canCheckCouriers || courierLoading} onClick={() => void onCheckCouriers(packageNumbers)} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Check Couriers</button>
                 <button disabled={!canBookShipment} onClick={() => void onBookShipment(packageNumbers)} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400">{bookingLoading ? `Booking with ${selectedCourier?.courier_name || 'courier'}…` : 'Book Shipment'}</button>
               </div>
+              {!canBookShipment && bookingBlocker && <p className="text-xs font-medium text-amber-700" role="status">{bookingBlocker}</p>}
               <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-sm text-slate-600">
                 <p className="font-medium text-slate-700">Eligibility</p>
                 {bookingEligibility === null
@@ -1297,14 +1334,14 @@ const OrderDrawer = memo(function OrderDrawer({
               <button disabled={shipmentRefreshLoading || ['picked_up', 'in_transit', 'out_for_delivery', 'delivered', 'rto'].includes(shipment.normalized_status || '')} onClick={onCancelShipment} className="rounded-lg border border-rose-200 px-3 py-2.5 text-sm font-semibold text-rose-700 disabled:opacity-40">Cancel Shipment</button>
             </>
           ) : (
-            <button
+            <div className="flex flex-1 flex-col gap-1"><button
               disabled={!canBookShipment}
               onClick={() => void onBookShipment(packageNumbers)}
               className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
             >
               <Icon name="truck" size={16} />
               {bookingLoading ? `Booking with ${selectedCourier?.courier_name || 'courier'}…` : selectedCourierId ? 'Book Shipment' : 'Select a courier above'}
-            </button>
+            </button>{!canBookShipment && bookingBlocker && <p className="text-center text-[11px] font-medium text-amber-700">{bookingBlocker}</p>}</div>
           )}
           <button onClick={onClose} className="rounded-lg px-2 py-2.5 text-sm font-semibold text-slate-500 hover:bg-slate-50">Close</button>
         </footer>

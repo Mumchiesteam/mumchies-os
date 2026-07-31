@@ -385,6 +385,7 @@ export interface OrdersQuery {
   orderConfirmation?: string
   addressVerification?: string
   codToPrepaid?: string
+  attempt?: 'all' | '1' | '2' | '3' | '4_plus'
 }
 
 export const mapApiOrder = (item: ApiOrder): Order => {
@@ -423,6 +424,7 @@ export async function getOrders(query: OrdersQuery = {}, signal?: AbortSignal): 
     order_confirmation: query.orderConfirmation ?? 'all',
     address_verification: query.addressVerification ?? 'all',
     cod_to_prepaid: query.codToPrepaid ?? 'all',
+    attempt: query.attempt ?? 'all',
   })
   const response = await apiFetch(`${apiBase}/api/v1/orders?${params}`, { signal })
   if (!response.ok) {
@@ -547,7 +549,14 @@ export async function getOrderOperations(orderId: string): Promise<OrderOperatio
   if (!response.ok) {
     throw new Error('Could not load order operations.')
   }
-  return response.json()
+  const result = await response.json()
+  return {
+    ...result,
+    couriers: result.couriers.map((quote: { courier_id: unknown }) => ({
+      ...quote,
+      courier_id: quote.courier_id == null ? null : String(quote.courier_id),
+    })),
+  }
 }
 
 export async function saveOrderAddress(orderId: string, payload: {

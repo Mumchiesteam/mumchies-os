@@ -86,17 +86,49 @@ def test_untouched_prepaid_is_fresh_regardless_of_age():
     assert routes._is_fresh_order(order) is True
 
 
-def test_cod_no_call_and_attempt_one_unresolved_are_fresh():
+def test_fresh_contains_only_zero_completed_attempts():
     no_call = queue_order("102", payment_type="cod", call_attempt_count=0, latest_call_result=None)
     attempt_one = queue_order("103", payment_type="cod", call_attempt_count=1, latest_call_result="No Answer", human_action_count=1)
     assert routes._is_fresh_order(no_call) is True
-    assert routes._is_fresh_order(attempt_one) is True
+    assert routes._is_fresh_order(attempt_one) is False
 
 
-def test_cod_attempt_two_is_previous_pending():
-    order = queue_order("104", payment_type="partial_cod", call_attempt_count=2, latest_call_result="No Answer", human_action_count=2)
+def test_cod_attempt_one_is_previous_pending():
+    order = queue_order("104", payment_type="partial_cod", call_attempt_count=1, latest_call_result="No Answer", human_action_count=1)
     assert routes._is_fresh_order(order) is False
     assert routes._matches_queue(order, "previous", datetime.now(timezone.utc)) is True
+
+
+@pytest.mark.anyio
+async def test_search_is_global_and_null_safe_across_queues(monkeypatch):
+    values = [
+        queue_order("301", payment_type="cod", call_attempt_count=0, customer_name="Fresh Person", phone=None),
+        queue_order("302", payment_type="cod", call_attempt_count=1, latest_call_result="Busy", customer_name="Pending Person", phone="9990001111"),
+        queue_order("303", payment_type="prepaid", human_action_count=1, customer_name="Printed Person", shipment={"booking_status": "booked", "awb": "A3", "label_last_printed_at": datetime.now(timezone.utc).isoformat()}),
+    ]
+    async def load(_db): return values
+    monkeypatch.setattr(routes, "_load_orders", load)
+    by_number = await routes.list_orders(queue="fresh", search="302", db=None)
+    by_name = await routes.list_orders(queue="fresh", search="Pending Person", db=None)
+    by_phone = await routes.list_orders(queue="fresh", search="9990001111", db=None)
+    printed = await routes.list_orders(queue="fresh", search="Printed Person", db=None)
+    assert [value.order_number for value in by_number.items] == ["302"]
+    assert [value.order_number for value in by_name.items] == ["302"]
+    assert [value.order_number for value in by_phone.items] == ["302"]
+    assert [value.order_number for value in printed.items] == ["303"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("attempt", "expected"), [("1", "311"), ("2", "312"), ("3", "313"), ("4_plus", "314")])
+async def test_previous_pending_attempt_filters_use_completed_attempt_count(monkeypatch, attempt, expected):
+    values = [queue_order(str(310 + count), payment_type="cod", call_attempt_count=count, latest_call_result="Busy", human_action_count=count) for count in range(1, 6)]
+    async def load(_db): return values
+    monkeypatch.setattr(routes, "_load_orders", load)
+    result = await routes.list_orders(queue="previous", attempt=attempt, db=None)
+    if attempt == "4_plus":
+        assert {value.order_number for value in result.items} == {"314", "315"}
+    else:
+        assert [value.order_number for value in result.items] == [expected]
 
 
 @pytest.mark.parametrize("updates", [
