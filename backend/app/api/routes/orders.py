@@ -19,7 +19,7 @@ from app.schemas.orders import ShopifyOrder
 from app.repositories.shiprocket import get_shipment, get_shipments_by_order_id, snapshot as shipment_snapshot, sync_engage_orders
 from app.services.order_operations import OrderOperationsStore
 from app.services.delhivery import DelhiveryError, DelhiveryService
-from app.services.shipment_status import derive_operational_status
+from app.services.shipment_status import derive_operational_status, has_existing_shipment_evidence
 from app.services.shiprocket import ShiprocketAPIError, ShiprocketConfigurationError, ShiprocketService
 from app.services.shopify import ShopifyConfigurationError, ShopifyService, ShopifySyncError
 from app.services.shopify_fulfillment import ShopifyFulfillmentSynchronizer, ShopifyFulfillmentSyncError
@@ -207,6 +207,17 @@ def _is_fresh_order(order: ShopifyOrder) -> bool:
     return order.human_action_count == 0
 
 
+def _call_outcome_requires_follow_up(order: ShopifyOrder) -> bool:
+    """Queue routing uses only persisted call outcomes supported by the Orders UI."""
+    return (
+        order.payment_type in {"cod", "partial_cod"}
+        and order.call_attempt_count >= 1
+        and str(order.latest_call_result or "").strip() in {
+            "No Answer", "Busy", "Switched Off", "Callback Requested",
+        }
+    )
+
+
 def _engage_category(value: object) -> str:
     raw = str(value) if value is not None else ""
     return {
@@ -245,7 +256,7 @@ def _base_filtered_orders(orders: list[ShopifyOrder], search: str, payment: str,
 def _full_counts(orders: list[ShopifyOrder], now: datetime, db: Session) -> dict[str, int | float]:
     fresh = [order for order in orders if _matches_queue(order, "fresh", now)]
     previous = [order for order in orders if _matches_queue(order, "previous", now)]
-    pending = [order for order in orders if order.operational_status == "Ready for Booking" and not (order.shipment or {}).get("awb")]
+    pending = [order for order in orders if order.operational_status == "Ready for Booking" and not has_existing_shipment_evidence(order, {}, order.shipment)]
     cod = [order for order in orders if order.payment_type in {"cod", "partial_cod"}]
     prepaid = [order for order in orders if order.payment_type == "prepaid"]
     high_risk = [order for order in orders if "high" in " ".join(order.tags).casefold() and not _is_inactive(order)]
@@ -277,7 +288,7 @@ def _matches_queue(order: ShopifyOrder, queue: str, now: datetime) -> bool:
     if queue == "fresh":
         return _is_fresh_order(order)
     if queue == "previous":
-        return _requires_operational_action(order) and not _is_fresh_order(order)
+        return _requires_operational_action(order) and _call_outcome_requires_follow_up(order)
     if queue == "labels_to_print":
         return shipment.get("booking_status") == "booked" and bool(shipment.get("awb")) and shipment.get("label_print_status") == "not_printed"
     if queue == "awaiting_confirmation":

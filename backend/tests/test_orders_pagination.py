@@ -99,6 +99,30 @@ def test_cod_attempt_one_is_previous_pending():
     assert routes._matches_queue(order, "previous", datetime.now(timezone.utc)) is True
 
 
+@pytest.mark.parametrize("outcome", ["No Answer", "Busy", "Switched Off", "Callback Requested"])
+def test_attempt_one_follow_up_outcomes_are_previous_pending(outcome):
+    order = queue_order("109", payment_type="cod", call_attempt_count=1, latest_call_result=outcome, human_action_count=1)
+    assert routes._matches_queue(order, "previous", datetime.now(timezone.utc)) is True
+
+
+@pytest.mark.parametrize("outcome", ["Confirmed", "Cancelled", "Wrong Number"])
+def test_non_follow_up_outcomes_are_not_previous_pending(outcome):
+    order = queue_order("110", payment_type="cod", call_attempt_count=1, latest_call_result=outcome, human_action_count=1, operational_status="Ready for Booking" if outcome == "Confirmed" else None)
+    assert routes._matches_queue(order, "previous", datetime.now(timezone.utc)) is False
+    assert order.call_attempt_count == 1
+
+
+@pytest.mark.anyio
+async def test_confirmed_unbooked_order_is_counted_as_pending_booking_not_previous(monkeypatch):
+    confirmed = queue_order("111", payment_type="cod", call_attempt_count=1, latest_call_result="Confirmed", human_action_count=1, operational_status="Ready for Booking")
+    async def load(_db): return [confirmed]
+    monkeypatch.setattr(routes, "_load_orders", load)
+    result = await routes.list_orders(queue="previous", db=None)
+    assert result.items == []
+    assert result.counts["previous"] == 0
+    assert result.counts["pending_booking"] == 1
+
+
 @pytest.mark.anyio
 async def test_search_is_global_and_null_safe_across_queues(monkeypatch):
     values = [
@@ -129,6 +153,18 @@ async def test_previous_pending_attempt_filters_use_completed_attempt_count(monk
         assert {value.order_number for value in result.items} == {"314", "315"}
     else:
         assert [value.order_number for value in result.items] == [expected]
+
+
+@pytest.mark.anyio
+async def test_attempt_filter_excludes_confirmed_orders(monkeypatch):
+    values = [
+        queue_order("316", payment_type="cod", call_attempt_count=1, latest_call_result="No Answer", human_action_count=1),
+        queue_order("317", payment_type="cod", call_attempt_count=1, latest_call_result="Confirmed", human_action_count=1, operational_status="Ready for Booking"),
+    ]
+    async def load(_db): return values
+    monkeypatch.setattr(routes, "_load_orders", load)
+    result = await routes.list_orders(queue="previous", attempt="1", db=None)
+    assert [value.order_number for value in result.items] == ["316"]
 
 
 @pytest.mark.parametrize("updates", [

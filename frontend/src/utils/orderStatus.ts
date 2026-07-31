@@ -19,7 +19,12 @@ const isShipped = (order: Order) => {
 }
 const isDelivered = (order: Order) => `${order.fulfillmentStatus || ''} ${order.shopifyStatus || ''} ${order.tags.join(' ')} ${order.externalTracking?.status || ''}`.toLowerCase().includes('delivered')
 const isNdr = (order: Order) => `${order.tags.join(' ')} ${order.shopifyStatus || ''}`.toLowerCase().includes('ndr')
-export const isBooked = (order: Order) => Boolean(order.shipment?.awb || order.shipment?.shipment_id)
+export const isBooked = (order: Order) => {
+  const shipment = order.shipment
+  if (!shipment) return false
+  if (shipment.awb || shipment.shopify_tracking_number || shipment.shipment_id) return true
+  return Boolean(shipment.provider_order_id && ['booked', 'complete', 'completed', 'awb_assigned'].includes(String(shipment.booking_status || '').toLowerCase()))
+}
 
 export const hasShipmentEvidence = (order: Order) => isBooked(order) || Boolean(order.externalTracking?.awb)
 

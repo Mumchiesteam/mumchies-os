@@ -19,6 +19,7 @@ from typing import Any
 SHIPMENT_BACKED_STATUSES = {"Booked", "Shipped", "In Transit", "Out for Delivery", "Delivered", "NDR"}
 
 _SHIPPED_KEYWORDS = ("shipped", "dispatched", "picked up", "in transit", "in_transit", "out for delivery")
+_CONFIRMED_BOOKING_STATUSES = {"booked", "complete", "completed", "awb_assigned"}
 
 
 def _text(value: Any) -> str:
@@ -27,6 +28,17 @@ def _text(value: Any) -> str:
 
 def _tags_text(order: Any) -> str:
     return " ".join(str(tag) for tag in (getattr(order, "tags", None) or [])).casefold()
+
+
+def has_persisted_provider_booking_evidence(shipment: dict[str, Any] | None) -> bool:
+    """A placeholder row or upstream order created before courier assignment is not booked."""
+    shipment = shipment or {}
+    if any(str(shipment.get(key) or "").strip() for key in ("awb", "tracking_number", "shopify_tracking_number", "shipment_id")):
+        return True
+    return bool(
+        str(shipment.get("provider_order_id") or "").strip()
+        and _text(shipment.get("booking_status")) in _CONFIRMED_BOOKING_STATUSES
+    )
 
 
 def derive_operational_status(order: Any, operations: dict[str, Any] | None, shipment: dict[str, Any] | None) -> str:
@@ -59,7 +71,7 @@ def derive_operational_status(order: Any, operations: dict[str, Any] | None, shi
         return "Shipped"
     # A Shiprocket order ID only proves that an order exists upstream. Engage sync stores that
     # ID before courier assignment, so booking evidence requires an actual shipment/AWB.
-    if shipment and any(shipment.get(key) for key in ("awb", "shipment_id")):
+    if has_persisted_provider_booking_evidence(shipment):
         return "Booked"
     if "ndr" in tags:
         return "NDR"

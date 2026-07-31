@@ -17,7 +17,7 @@ from app.services.order_operations import OrderOperationsStore
 from app.services.delhivery import DelhiveryError, DelhiveryService
 from app.services.courier_platform import ProviderError, courier_registry
 from app.services.courier_platform.service import CourierPlatformService
-from app.services.shipment_status import has_existing_shipment_evidence
+from app.services.shipment_status import has_existing_shipment_evidence, has_persisted_provider_booking_evidence
 from app.services.shiprocket import (
     BookingEligibilityResult,
     CourierQuote,
@@ -459,7 +459,7 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
         order, operations, shipment = await _load_context(order_id, db)
         package = PackageDetailsPayload.model_validate(payload.model_dump())
         existing = get_shipment(db, order_id)
-        if existing and (existing.awb or existing.shipment_id or existing.shiprocket_order_id):
+        if existing and has_persisted_provider_booking_evidence(shipment_snapshot(existing)):
             return {"provider": existing.provider or "shiprocket", "existing": True, "shipment": shipment_snapshot(existing)}
 
         # Backend duplicate-booking guard: reject outright (not just via eligibility) if any

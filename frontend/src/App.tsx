@@ -443,6 +443,11 @@ function App() {
       return
     }
     try {
+      setCourierOptions([])
+      setCourierWarnings([])
+      setSelectedCourierId(null)
+      setCourierError('')
+      setBookingEligibility(null)
       const updated = await addOrderCallLog(selectedOrder.internalId, {
         result: callResult,
         comment: callComment,
@@ -454,7 +459,12 @@ function App() {
       // 2026-07-21 shipment-state regression fix.
       setOrders(prev => prev.map(order => order.internalId === selectedOrder.internalId ? { ...order, latestCallResult: updated.call_logs?.[0]?.result || null, operationalStatus: (hasShipmentEvidence(order) ? order.operationalStatus : (updated.call_logs?.[0]?.result === 'Callback Requested' ? 'Callback Required' : updated.call_logs?.[0]?.result === 'Confirmed' ? (order.payment === 'Prepaid' && !updated.address_verified ? 'Address Verification Pending' : 'Ready for Booking') : updated.call_logs?.[0]?.result === 'Wrong Number' ? 'Needs Review' : updated.call_logs?.[0]?.result === 'Cancelled' ? 'Cancelled' : 'Call Pending')) as OperationalStatus | null, addressVerified: updated.address_verified, addressVerifiedAt: updated.address_verified_at, addressVerifiedBy: updated.address_verified_by, verifiedAddressSnapshot: updated.verified_address_snapshot, correctedAddress: updated.corrected_address, courierSyncStatus: updated.courier_sync_status, courierSyncError: updated.courier_sync_error } : order))
       setCallComment('')
-      await refreshEligibility(selectedOrder.internalId)
+      const [freshOperations, freshEligibility] = await Promise.all([
+        getOrderOperations(selectedOrder.internalId),
+        getBookingEligibility(selectedOrder.internalId),
+      ])
+      setOperations(freshOperations)
+      setBookingEligibility(freshEligibility)
       await loadOrders()
       setNotice('Call attempt saved')
     } catch (err) {

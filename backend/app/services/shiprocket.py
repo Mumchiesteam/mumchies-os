@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.repositories.shiprocket import get_shipment, snapshot, upsert_shipment
-from app.services.shipment_status import derive_operational_status, has_existing_shipment_evidence
+from app.services.shipment_status import derive_operational_status, has_existing_shipment_evidence, has_persisted_provider_booking_evidence
 
 
 class ShiprocketConfigurationError(RuntimeError):
@@ -325,7 +325,7 @@ class ShiprocketService:
         # eligible, regardless of call logs or address-verification state.
         status = derive_operational_status(order, operations, shipment)
         payment = "COD" if str(getattr(order, "payment_status", "")).lower() in {"pending", "cod", "partially paid"} else "Prepaid"
-        shipment_exists = bool(shipment and (shipment.get("awb") or shipment.get("shipment_id") or shipment.get("shiprocket_order_id")))
+        shipment_exists = has_persisted_provider_booking_evidence(shipment)
         shipment_status = shipment.get("booking_status") if shipment else None
 
         missing: list[str] = []
@@ -648,7 +648,7 @@ class ShiprocketService:
         courier_name: str | None = None,
     ) -> dict[str, Any]:
         existing = get_shipment(db, order_id)
-        if existing and (existing.awb or existing.shipment_id or existing.shiprocket_order_id):
+        if existing and has_persisted_provider_booking_evidence(snapshot(existing)):
             if existing.awb:
                 return {"shipment": snapshot(existing), "existing": True}
             if existing.shipment_id and courier_id:

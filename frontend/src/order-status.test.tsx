@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 import { OrderStatusBadge } from './components/OrderStatusBadge'
 import type { Order } from './services/orders'
+import { isBooked } from './utils/orderStatus'
 
 const order = (operationalStatus: string, shipment: Order['shipment'] = null) => ({
   operationalStatus,
@@ -29,5 +30,12 @@ describe('order status rendering', () => {
     expect(html).toContain('Booked')
     expect(html).toContain('Cancelled')
     expect(html).toContain('Delivered')
+  })
+
+  it('does not treat placeholder or failed provider rows as booked', () => {
+    expect(isBooked(order('Ready for Booking', { shiprocket_order_id: '1478516896', booking_status: 'new' } as Order['shipment']))).toBe(false)
+    expect(isBooked(order('Ready for Booking', { provider_order_id: '323693', booking_status: 'failed' } as Order['shipment']))).toBe(false)
+    expect(isBooked(order('Booked', { awb: 'AWB1' } as Order['shipment']))).toBe(true)
+    expect(isBooked(order('Booked', { provider_order_id: 'P1', booking_status: 'booked' } as Order['shipment']))).toBe(true)
   })
 })

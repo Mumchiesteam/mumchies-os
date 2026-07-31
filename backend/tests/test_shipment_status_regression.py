@@ -22,7 +22,7 @@ from app.repositories.shiprocket import upsert_shipment
 from app.schemas.orders import OrderProduct, ShippingAddress, ShopifyOrder
 from app.services.shiprocket import ShiprocketService
 from app.services.shopify import ShopifyService
-from app.services.shipment_status import derive_operational_status, has_existing_shipment_evidence
+from app.services.shipment_status import derive_operational_status, has_existing_shipment_evidence, has_persisted_provider_booking_evidence
 
 
 @pytest.fixture()
@@ -227,6 +227,34 @@ def test_shiprocket_order_id_without_shipment_does_not_mark_order_booked():
     shipment = {"shiprocket_order_id": "1478516896", "awb": None, "shipment_id": None}
     assert derive_operational_status(unbooked_order, {}, shipment) == "Call Pending"
     assert has_existing_shipment_evidence(unbooked_order, {}, shipment) is False
+
+
+@pytest.mark.parametrize("shipment", [
+    {},
+    {"provider": "shiprocket", "booking_status": "failed"},
+    {"provider": "shiprocket", "shiprocket_order_id": "1478516896", "booking_status": "new"},
+    {"provider": "delhivery", "provider_order_id": "323693", "booking_status": "failed"},
+])
+def test_placeholder_or_failed_shipment_record_is_not_booking_evidence(shipment):
+    assert has_persisted_provider_booking_evidence(shipment) is False
+
+
+@pytest.mark.parametrize("shipment", [
+    {"awb": "AWB1"},
+    {"shopify_tracking_number": "TRACK1"},
+    {"shipment_id": "SHIP1"},
+    {"provider_order_id": "PROVIDER1", "booking_status": "booked"},
+])
+def test_confirmed_provider_identifiers_are_booking_evidence(shipment):
+    assert has_persisted_provider_booking_evidence(shipment) is True
+
+
+def test_placeholder_shiprocket_order_does_not_block_eligible_confirmed_cod():
+    service = ShiprocketService(email="a@b.com", password="x", pickup_location="Mumchies Factory")
+    placeholder = {"shiprocket_order_id": "1478516896", "provider": "shiprocket", "booking_status": "new"}
+    result = service.evaluate_booking_eligibility(order(payment_status="pending"), confirmed_call_ops(), placeholder)
+    assert result.shipment_exists is False
+    assert result.eligible is True
 
 
 # 11. Locally booked Shiprocket/Delhivery orders remain unaffected (status shows "Booked" and
