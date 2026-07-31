@@ -60,7 +60,8 @@ import { orderContactSectionTitle } from './utils/operations'
 import { EngageCircle, EngageProgress } from './components/EngageStatus'
 import { OrderStatusBadge } from './components/OrderStatusBadge'
 import { engageCategory } from './utils/engage'
-import { hasShipmentEvidence, isCancelled, listStatus, type OperationalStatus } from './utils/orderStatus'
+import { hasShipmentEvidence, listStatus, type OperationalStatus } from './utils/orderStatus'
+import { displayedOrderNumber, orderNumberClipboardValue, stopCopyPropagation } from './utils/orderNumber'
 
 type IconName = 'grid' | 'bag' | 'alert' | 'users' | 'chart' | 'settings' | 'search' | 'bell' | 'filter' | 'chevron' | 'more' | 'eye' | 'truck' | 'calendar' | 'close' | 'copy' | 'phone' | 'external' | 'repeat' | 'tag' | 'edit' | 'call'
 type TabKey = 'fresh' | 'previous' | 'all' | 'labels_to_print' | 'awaiting_confirmation' | 'printed_today' | 'shiprocket_cleanup'
@@ -149,7 +150,7 @@ function CopyButton({ value, label, stopPropagation = false }: { value: string; 
   const [feedback, setFeedback] = useState('')
   const title = `Copy ${label}`
   const copy = async (event: React.MouseEvent<HTMLButtonElement>) => {
-    if (stopPropagation) event.stopPropagation()
+    stopCopyPropagation(event, stopPropagation)
     try {
       await navigator.clipboard.writeText(value)
       setFeedback('Copied')
@@ -194,7 +195,6 @@ function App() {
   const [cleanupResults, setCleanupResults] = useState<Record<string, ShiprocketCancellationResult>>({})
   const [reconciliation, setReconciliation] = useState<OrdersReconciliationSummary | null>(null)
   const [reconciliationFilter, setReconciliationFilter] = useState<ReconciliationFilter | null>(null)
-  const [cardFilter, setCardFilter] = useState<'cod' | 'prepaid' | 'risk' | 'repeat' | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const [notice, setNotice] = useState('')
   const [repeatIds, setRepeatIds] = useState<Set<string>>(new Set())
@@ -394,14 +394,6 @@ function App() {
     void verifyShiprocketOnlyCancellation(record).then(result => handleCleanupResult(record, result)).catch(error => setNotice(error.message))
   }
 
-  const filtered = useMemo(() => {
-    let list = orders
-    if (cardFilter === 'cod') list = list.filter(order => order.paymentType === 'cod' || order.paymentType === 'partial_cod')
-    if (cardFilter === 'prepaid') list = list.filter(order => order.paymentType === 'prepaid')
-    if (cardFilter === 'risk') list = list.filter(order => order.risk === 'High' && !isCancelled(order))
-    if (cardFilter === 'repeat') list = list.filter(order => repeatIds.has(order.internalId))
-    return list
-  }, [orders, cardFilter, repeatIds])
   const displayedOrders = orders
 
   const summaryCounts = useMemo(() => ({
@@ -413,16 +405,6 @@ function App() {
     printed_today: counts.printed_today,
     shiprocket_cleanup: cleanupRecords.length,
   }), [cleanupRecords.length, counts])
-
-  const cards = useMemo(() => {
-    return [
-      { key: 'new', label: 'New Orders', value: counts.new_orders, detail: 'Untouched orders' },
-      { key: 'cod', label: 'COD', value: counts.cod, detail: '' },
-      { key: 'prepaid', label: 'Prepaid', value: counts.prepaid, detail: '' },
-      { key: 'risk', label: 'High Risk', value: counts.high_risk, detail: 'Active orders' },
-      { key: 'repeat', label: 'Repeat Customers', value: counts.repeat_customers, detail: 'Known customers' },
-    ]
-  }, [counts])
 
   const statusFromOrder = (order: Order): OperationalStatus => {
     return listStatus(order)
@@ -706,7 +688,7 @@ function App() {
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button onClick={() => void exportOrders('current', filtered.map(order => order.internalId)).catch(error => setNotice(error.message))} className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-600">Export Current View</button>
+            <button onClick={() => void exportOrders('current', orders.map(order => order.internalId)).catch(error => setNotice(error.message))} className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-600">Export Current View</button>
             <button onClick={() => void exportOrders('full', []).catch(error => setNotice(error.message))} className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-600">Export Full Workbook</button>
             <button onClick={() => void loadOrders()} className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 shadow-sm hover:bg-slate-50">Refresh</button>
           </div>
@@ -716,7 +698,7 @@ function App() {
           {[{ label: 'ORDERS', items: tabItems }, { label: 'DISPATCH', items: dispatchItems }].map(group => <div key={group.label}>
             <p className="mb-2 text-[10px] font-bold tracking-[.14em] text-slate-400">{group.label}</p>
             <div className="flex flex-wrap gap-2">{group.items.map(tab => (
-              <button key={tab.key} onClick={() => { if (tab.key === 'shiprocket_cleanup') { setReconciliationFilter('cleanup_pending'); return } setReconciliationFilter(clearReconciliationFilter()); setQueue(tab.key); setPage(1); setCardFilter(null); if (tab.key === 'labels_to_print') { refreshLabels(); void getActiveLabelBatches().then(batches => { if (batches[0]) { setActiveBatch(batches[0]); setPrintedLabels(new Set(batches[0].order_ids)) } }); setShowLabels(true) } }} className={`rounded-full px-4 py-2 text-sm font-medium ${(queue === tab.key && !reconciliationFilter) || (tab.key === 'shiprocket_cleanup' && reconciliationFilter === 'cleanup_pending') ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'}`}>
+              <button key={tab.key} onClick={() => { if (tab.key === 'shiprocket_cleanup') { setReconciliationFilter('cleanup_pending'); return } setReconciliationFilter(clearReconciliationFilter()); setQueue(tab.key); setPage(1); if (tab.key === 'labels_to_print') { refreshLabels(); void getActiveLabelBatches().then(batches => { if (batches[0]) { setActiveBatch(batches[0]); setPrintedLabels(new Set(batches[0].order_ids)) } }); setShowLabels(true) } }} className={`rounded-full px-4 py-2 text-sm font-medium ${(queue === tab.key && !reconciliationFilter) || (tab.key === 'shiprocket_cleanup' && reconciliationFilter === 'cleanup_pending') ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'}`}>
                 {tab.label}
                 <span className={`ml-2 rounded-full px-2 py-0.5 text-[11px] font-bold ${queue === tab.key ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-500'}`}>{summaryCounts[tab.key]}</span>
               </button>
@@ -726,17 +708,6 @@ function App() {
         {queue === 'previous' && <div className="mb-5 flex flex-wrap gap-2" aria-label="Attempt filters">
           {([['1', 'Attempt 1'], ['2', 'Attempt 2'], ['3', 'Attempt 3'], ['4_plus', 'Attempt 4+']] as const).map(([value, label]) => <button key={value} onClick={() => { setAttemptFilter(current => current === value ? null : value); setPage(1) }} className={`rounded-full px-3 py-1.5 text-xs font-semibold ${attemptFilter === value ? 'bg-orange-600 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200'}`}>{label}</button>)}
         </div>}
-
-        <section className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-          {cards.map(card => {
-            const active = card.key === 'new' ? queue === 'fresh' && !cardFilter : cardFilter === card.key
-            return <button key={card.key} onClick={() => { setPage(1); if (card.key === 'new') { setQueue('fresh'); setCardFilter(null) } else { setQueue('all'); setCardFilter(card.key as typeof cardFilter) } }} className={`rounded-xl border bg-white p-3 text-left shadow-sm transition ${active ? 'border-orange-300 ring-2 ring-orange-100' : 'border-slate-200 hover:border-slate-300'}`}>
-              <p className="text-xs font-semibold text-slate-500">{card.label}</p>
-              <p className="mt-1 text-xl font-bold text-slate-900">{card.value}</p>
-              {card.detail && <p className="mt-1 truncate text-[11px] text-slate-400">{card.detail}</p>}
-            </button>
-          })}
-        </section>
 
         <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="flex flex-col gap-4 border-b border-slate-200 p-4 xl:flex-row xl:items-center xl:justify-between">
@@ -860,7 +831,7 @@ const reconciliationReason = (reason: string | null) => ({
   other: 'Other',
 }[reason || 'other'] || reason || 'Other')
 
-function OrdersTable({ orders: tableOrders, repeatIds: repeats, onOpen, loading: tableLoading = false, emptyMessage, reconciliationRows: metadata = [], reconciliationFilter: filter = null, cleanupRecords: cleanup = [], cleanupResults: results = {}, onCleanup, onVerify }: {
+export function OrdersTable({ orders: tableOrders, repeatIds: repeats, onOpen, loading: tableLoading = false, emptyMessage, reconciliationRows: metadata = [], reconciliationFilter: filter = null, cleanupRecords: cleanup = [], cleanupResults: results = {}, onCleanup, onVerify }: {
   orders: Order[]
   repeatIds: Set<string>
   onOpen: (orderId: string) => void
@@ -884,7 +855,7 @@ const OrderRow = memo(function OrderRow({ order, repeat, onClick, drawerEnabled 
   const attempt = order.callAttemptCount > 0 ? `Attempt ${order.callAttemptCount > 5 ? '5+' : order.callAttemptCount}` : null
   return (
     <tr onClick={() => { if (drawerEnabled) onClick() }} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 56px' }} className={`${drawerEnabled ? 'cursor-pointer' : ''} text-sm text-slate-600 hover:bg-orange-50/50`}>
-      <td className="px-4 py-3.5 font-semibold text-slate-800"><span className="inline-flex items-center gap-1">#{order.orderNumber}<CopyButton value={`#${order.orderNumber}`} label="order number" stopPropagation /></span></td>
+      <td className="px-4 py-3.5 font-semibold text-slate-800"><span className="inline-flex items-center gap-1">{displayedOrderNumber(order.orderNumber)}<CopyButton value={orderNumberClipboardValue(order.orderNumber)} label="order number" stopPropagation /></span></td>
       <td className="whitespace-nowrap px-4 py-3.5"><p className="font-medium text-slate-700">{placed.date}</p><p className="text-xs text-slate-400">{placed.time}</p></td>
       <td className="px-4 py-3.5">
         <div className="flex items-center gap-2">
@@ -1101,7 +1072,7 @@ const OrderDrawer = memo(function OrderDrawer({
           <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-xs font-medium text-slate-400">Order details</p>
-            <h2 className="mt-0.5 flex items-center gap-1 text-lg font-bold">Order #{order.orderNumber}<CopyButton value={`#${order.orderNumber}`} label="order number" /></h2>
+            <h2 className="mt-0.5 flex items-center gap-1 text-lg font-bold">Order {displayedOrderNumber(order.orderNumber)}<CopyButton value={orderNumberClipboardValue(order.orderNumber)} label="order number" /></h2>
             <div className="mt-2 flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-600">
                 <span className="rounded-full bg-amber-50 px-2.5 py-1 text-amber-700">{order.payment}</span>
                 <span className={`rounded-full px-2.5 py-1 ${status === 'Booked' ? 'bg-emerald-50 text-emerald-700' : status === 'Cancelled' ? 'bg-rose-50 text-rose-700' : 'bg-slate-100 text-slate-700'}`}>{status}</span>
