@@ -197,7 +197,7 @@ async def test_full_export_has_required_tabs_and_payment_columns(db, monkeypatch
         return [order]
     monkeypatch.setattr(orders_routes, "_load_orders", fake_orders)
     workbook = load_workbook(BytesIO(await response_bytes(await export_orders(ExportPayload(mode="full"), db))))
-    required = {"Summary", "All Orders", "Fresh Orders", "Previous Pending", "Pending Booking", "COD", "Partial COD", "Prepaid", "High Risk", "Repeat Customers"}
+    required = {"Summary", "All Orders", "Fresh Orders", "Previous Pending", "COD", "Partial COD", "Prepaid", "High Risk", "Repeat Customers"}
     assert required.issubset(workbook.sheetnames)
     headings = [cell.value for cell in workbook["All Orders"][1]]
     assert {"Total Value", "Amount Paid", "COD / Outstanding", "Payment Type"}.issubset(headings)

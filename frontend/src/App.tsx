@@ -174,6 +174,7 @@ function App() {
   const [activePage, setActivePage] = useState<'Orders' | 'NDR' | 'Reconciliation' | 'Settings'>('Orders')
   const [orders, setOrders] = useState<Order[]>([])
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null)
+  const [selectedOrderSnapshot, setSelectedOrderSnapshot] = useState<Order | null>(null)
   const [operations, setOperations] = useState<OrderOperations | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -188,12 +189,12 @@ function App() {
   const [pageSize, setPageSize] = useState<20 | 50 | 100>(20)
   const [total, setTotal] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
-  const [counts, setCounts] = useState<OrderCounts>({ operations: 0, fresh: 0, previous: 0, all: 0, labels_to_print: 0, awaiting_confirmation: 0, printed_today: 0, new_orders: 0, pending_booking: 0, cod: 0, prepaid: 0, high_risk: 0, repeat_customers: 0, cod_collectable: 0, prepaid_value: 0, awaiting_order_confirmation: 0, awaiting_address_verification: 0, cod_conversion_pending: 0 })
+  const [counts, setCounts] = useState<OrderCounts>({ operations: 0, fresh: 0, previous: 0, all: 0, labels_to_print: 0, awaiting_confirmation: 0, printed_today: 0, new_orders: 0, cod: 0, prepaid: 0, high_risk: 0, repeat_customers: 0, cod_collectable: 0, prepaid_value: 0, awaiting_order_confirmation: 0, awaiting_address_verification: 0, cod_conversion_pending: 0 })
   const [cleanupRecords, setCleanupRecords] = useState<ShiprocketCleanupRecord[]>([])
   const [cleanupResults, setCleanupResults] = useState<Record<string, ShiprocketCancellationResult>>({})
   const [reconciliation, setReconciliation] = useState<OrdersReconciliationSummary | null>(null)
   const [reconciliationFilter, setReconciliationFilter] = useState<ReconciliationFilter | null>(null)
-  const [cardFilter, setCardFilter] = useState<'pending' | 'cod' | 'prepaid' | 'risk' | 'repeat' | null>(null)
+  const [cardFilter, setCardFilter] = useState<'cod' | 'prepaid' | 'risk' | 'repeat' | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const [notice, setNotice] = useState('')
   const [repeatIds, setRepeatIds] = useState<Set<string>>(new Set())
@@ -218,6 +219,8 @@ function App() {
   const [selectedCourierId, setSelectedCourierId] = useState<string | null>(null)
   const [bookingLoading, setBookingLoading] = useState(false)
   const bookingRequestInFlight = useRef(false)
+  const courierRequestOrderRef = useRef<string | null>(null)
+  const drawerGenerationRef = useRef(0)
   const [shipmentRefreshLoading, setShipmentRefreshLoading] = useState(false)
   const [shopifySyncLoading, setShopifySyncLoading] = useState(false)
   const [labelLoading, setLabelLoading] = useState(false)
@@ -277,13 +280,16 @@ function App() {
         }
       }
       setRepeatIds(repeat)
-      setSelectedOrderId(current => current && data.items.some(order => order.internalId === current) ? current : null)
+      setSelectedOrderSnapshot(current => {
+        if (!selectedOrderId) return null
+        return data.items.find(order => order.internalId === selectedOrderId) || current
+      })
     } catch (err) {
       if ((err as Error).name !== 'AbortError') setError((err as Error).message)
     } finally {
       if (!signal?.aborted) setLoading(false)
     }
-  }, [attemptFilter, page, pageSize, payment, queue, risk, search, sort])
+  }, [attemptFilter, page, pageSize, payment, queue, risk, search, selectedOrderId, sort])
 
   useEffect(() => {
     const timeout = window.setTimeout(() => { setSearch(searchDraft.trim()); setPage(1) }, 350)
@@ -317,7 +323,7 @@ function App() {
 
   const reconciliationRows = useMemo(() => reconciliationDataset(reconciliation, reconciliationFilter), [reconciliation, reconciliationFilter])
   const reconciliationOrders = useMemo(() => reconciliationRows.map(reconciliationRecordToOrder), [reconciliationRows])
-  const selectedOrder = useMemo(() => [...orders, ...reconciliationOrders].find(order => order.internalId === selectedOrderId) || null, [orders, reconciliationOrders, selectedOrderId])
+  const selectedOrder = useMemo(() => [...orders, ...reconciliationOrders].find(order => order.internalId === selectedOrderId) || (selectedOrderSnapshot?.internalId === selectedOrderId ? selectedOrderSnapshot : null), [orders, reconciliationOrders, selectedOrderId, selectedOrderSnapshot])
   useEffect(() => {
     if (!selectedOrder) return
     let active = true
@@ -357,13 +363,17 @@ function App() {
   }, [selectedOrder])
 
   const openOrder = (orderId: string) => {
+    drawerGenerationRef.current += 1
+    courierRequestOrderRef.current = null
     setBookingEligibility(null)
     setOperations(null)
     setCourierOptions([])
     setCourierWarnings([])
     setSelectedCourierId(null)
     setCourierError('')
+    setCourierLoading(false)
     setCancellationPreflight(null)
+    setSelectedOrderSnapshot([...orders, ...reconciliationOrders].find(order => order.internalId === orderId) || null)
     setSelectedOrderId(orderId)
   }
 
@@ -386,7 +396,6 @@ function App() {
 
   const filtered = useMemo(() => {
     let list = orders
-    if (cardFilter === 'pending') list = list.filter(order => listStatus(order) === 'Ready for Booking' && !order.shipment?.awb)
     if (cardFilter === 'cod') list = list.filter(order => order.paymentType === 'cod' || order.paymentType === 'partial_cod')
     if (cardFilter === 'prepaid') list = list.filter(order => order.paymentType === 'prepaid')
     if (cardFilter === 'risk') list = list.filter(order => order.risk === 'High' && !isCancelled(order))
@@ -408,7 +417,6 @@ function App() {
   const cards = useMemo(() => {
     return [
       { key: 'new', label: 'New Orders', value: counts.new_orders, detail: 'Untouched orders' },
-      { key: 'pending', label: 'Pending Booking', value: counts.pending_booking, detail: 'Ready to dispatch' },
       { key: 'cod', label: 'COD', value: counts.cod, detail: '' },
       { key: 'prepaid', label: 'Prepaid', value: counts.prepaid, detail: '' },
       { key: 'risk', label: 'High Risk', value: counts.high_risk, detail: 'Active orders' },
@@ -488,7 +496,13 @@ function App() {
       const result = await saveAndVerifyOrderAddress(selectedOrder.internalId, addressDraft)
       setOperations(result.operations)
       setOrders(previous => previous.map(order => order.internalId === selectedOrder.internalId ? { ...order, correctedAddress: result.operations.corrected_address, addressVerified: result.operations.address_verified, addressVerifiedAt: result.operations.address_verified_at, addressVerifiedBy: result.operations.address_verified_by, verifiedAddressSnapshot: result.operations.verified_address_snapshot, addressSyncResults: result.operations.address_sync_results } : order))
-      await refreshEligibility(selectedOrder.internalId)
+      const [freshOperations, freshEligibility] = await Promise.all([
+        getOrderOperations(selectedOrder.internalId),
+        getBookingEligibility(selectedOrder.internalId),
+      ])
+      setOperations(freshOperations)
+      setBookingEligibility(freshEligibility)
+      await loadOrders()
       setNotice(result.verified ? (result.validation.warnings.length ? `Address verified with advisories: ${result.validation.warnings.join('; ')}` : 'Address saved and verified') : `Address saved but not verified: ${result.validation.blockers.join('; ')}`)
       return result
     } catch (err) { setNotice((err as Error).message) }
@@ -497,16 +511,21 @@ function App() {
 
   const checkCouriers = async (packageNumbers: { weight_kg: number; length_cm: number | null; breadth_cm: number | null; height_cm: number | null }) => {
     if (!selectedOrder || !Number.isFinite(packageNumbers.weight_kg) || packageNumbers.weight_kg <= 0) return
+    const orderId = selectedOrder.internalId
+    const generation = drawerGenerationRef.current
+    if (courierRequestOrderRef.current === orderId) return
+    courierRequestOrderRef.current = orderId
     setCourierLoading(true)
     setCourierError('')
     setCourierWarnings([])
     setCourierOptions([])
     try {
-      await saveOrderPackage(selectedOrder.internalId, packageNumbers)
-      const result = await checkShiprocketCouriers(selectedOrder.internalId, {
+      await saveOrderPackage(orderId, packageNumbers)
+      const result = await checkShiprocketCouriers(orderId, {
         ...packageNumbers,
         courier_payment_mode: selectedOrder.payment,
       })
+      if (generation !== drawerGenerationRef.current) return
       const sorted = [...(result.couriers ?? [])].sort((a, b) => a.total_estimated_shipping_cost - b.total_estimated_shipping_cost)
       setCourierOptions(sorted)
       setCourierWarnings(result.provider_warnings ?? [])
@@ -514,12 +533,14 @@ function App() {
       if (selectedCourierId && !sorted.some(courier => courier.courier_id === selectedCourierId)) {
         setSelectedCourierId(null)
       }
-      await refreshEligibility(selectedOrder.internalId)
+      await refreshEligibility(orderId)
       setNotice('Courier options loaded')
     } catch (err) {
+      if (generation !== drawerGenerationRef.current) return
       setCourierError((err as Error).message)
     } finally {
-      setCourierLoading(false)
+      if (courierRequestOrderRef.current === orderId) courierRequestOrderRef.current = null
+      if (generation === drawerGenerationRef.current) setCourierLoading(false)
     }
   }
 
@@ -706,7 +727,7 @@ function App() {
           {([['1', 'Attempt 1'], ['2', 'Attempt 2'], ['3', 'Attempt 3'], ['4_plus', 'Attempt 4+']] as const).map(([value, label]) => <button key={value} onClick={() => { setAttemptFilter(current => current === value ? null : value); setPage(1) }} className={`rounded-full px-3 py-1.5 text-xs font-semibold ${attemptFilter === value ? 'bg-orange-600 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200'}`}>{label}</button>)}
         </div>}
 
-        <section className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        <section className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           {cards.map(card => {
             const active = card.key === 'new' ? queue === 'fresh' && !cardFilter : cardFilter === card.key
             return <button key={card.key} onClick={() => { setPage(1); if (card.key === 'new') { setQueue('fresh'); setCardFilter(null) } else { setQueue('all'); setCardFilter(card.key as typeof cardFilter) } }} className={`rounded-xl border bg-white p-3 text-left shadow-sm transition ${active ? 'border-orange-300 ring-2 ring-orange-100' : 'border-slate-200 hover:border-slate-300'}`}>
@@ -786,7 +807,7 @@ function App() {
           setAddressDraft={setAddressDraft}
           courierSyncMessage={courierSyncMessage}
           addressVerificationLine={addressVerifiedLabel}
-          onClose={() => setSelectedOrderId(null)}
+          onClose={() => { setSelectedOrderId(null); setSelectedOrderSnapshot(null) }}
           onSaveCallLog={() => void saveCallLog()}
           onSaveAddress={saveAndVerifyAddress}
           onSaveAddressConfirmation={() => void saveAddressConfirmation()}
@@ -1011,6 +1032,7 @@ const OrderDrawer = memo(function OrderDrawer({
   }))
   const [addressReview, setAddressReview] = useState<{ status: string; blockers: string[]; warnings: string[]; shiprocket_message: string } | null>(null)
   const [addressReviewLoading, setAddressReviewLoading] = useState(false)
+  const autoLookupKeyRef = useRef('')
 
   const shipping = order.shippingAmount == null ? 'Courier rates not connected' : formatMoney(order.shippingAmount)
   const verificationLine = addressVerificationLine
@@ -1042,6 +1064,7 @@ const OrderDrawer = memo(function OrderDrawer({
     'latest call must be Confirmed': 'COD confirmation required',
     'address must be verified': 'Address verification required',
     'delivery postcode': 'Delivery postcode missing',
+    'customer phone': 'Add a valid customer phone',
     'latest operational address': 'Operational address missing',
     'pickup location': 'Pickup location unavailable',
     'package weight': 'Package weight missing',
@@ -1064,6 +1087,12 @@ const OrderDrawer = memo(function OrderDrawer({
         : !selectedCourier ? 'Selected courier response is incomplete'
           : !selectedCourier.booking_supported ? (selectedCourier.provider === 'delhivery' ? 'Direct booking is unavailable for this rate' : 'Selected courier does not support booking')
             : null)
+  const autoLookupKey = `${order.internalId}:${packageNumbers.weight_kg}:${packageNumbers.length_cm}:${packageNumbers.breadth_cm}:${packageNumbers.height_cm}:${bookingEligibility?.eligible}:${addressDraft.pincode}:${addressDraft.phone}`
+  useEffect(() => {
+    if (!canCheckCouriers || courierLoading || courierError || autoLookupKeyRef.current === autoLookupKey) return
+    autoLookupKeyRef.current = autoLookupKey
+    onCheckCouriers(packageNumbers)
+  }, [autoLookupKey, canCheckCouriers, courierError, courierLoading, onCheckCouriers, packageNumbers])
   return (
     <div className="fixed inset-0 z-40">
       <button aria-label="Close order drawer" onClick={onClose} className="absolute inset-0 bg-slate-950/35 backdrop-blur-[1px]" />
@@ -1207,11 +1236,6 @@ const OrderDrawer = memo(function OrderDrawer({
                 <Field testId="package-breadth" label="Breadth (cm)" value={packageDraft.breadth_cm} onChange={value => setPackageDraft({ ...packageDraft, breadth_cm: value })} />
                 <Field testId="package-height" label="Height (cm)" value={packageDraft.height_cm} onChange={value => setPackageDraft({ ...packageDraft, height_cm: value })} />
               </div>
-              <div className="flex flex-wrap gap-2">
-                <button disabled={!canCheckCouriers || courierLoading} onClick={() => void onCheckCouriers(packageNumbers)} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Check Couriers</button>
-                <button disabled={!canBookShipment} onClick={() => void onBookShipment(packageNumbers)} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400">{bookingLoading ? `Booking with ${selectedCourier?.courier_name || 'courier'}…` : 'Book Shipment'}</button>
-              </div>
-              {!canBookShipment && bookingBlocker && <p className="text-xs font-medium text-amber-700" role="status">{bookingBlocker}</p>}
               <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-sm text-slate-600">
                 <p className="font-medium text-slate-700">Eligibility</p>
                 {bookingEligibility === null
@@ -1220,7 +1244,7 @@ const OrderDrawer = memo(function OrderDrawer({
                     ? <p className="mt-1">Eligible for courier lookup</p>
                     : <ul className="mt-1 list-disc space-y-0.5 pl-5">{visibleMissing.map(requirement => <li key={requirement}>{requirement}</li>)}</ul>}
               </div>
-              {courierError && <div className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{courierError}{courierError.startsWith('Shiprocket cleanup') && <button onClick={onRetryShiprocketCleanup} className="ml-3 rounded-md border border-rose-200 bg-white px-2 py-1 font-semibold">Retry cleanup</button>}</div>}
+              {courierError && <div className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{courierError}{courierError.startsWith('Shiprocket cleanup') ? <button onClick={onRetryShiprocketCleanup} className="ml-3 rounded-md border border-rose-200 bg-white px-2 py-1 font-semibold">Retry cleanup</button> : <button onClick={() => { autoLookupKeyRef.current = ''; onCheckCouriers(packageNumbers) }} className="ml-3 rounded-md border border-rose-200 bg-white px-2 py-1 font-semibold">Retry courier lookup</button>}</div>}
               {courierWarnings.map(warning => <div key={warning} className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-700">{warning}</div>)}
               {selectedCourier?.provider === 'delhivery' && !selectedCourier.booking_supported && <p className="text-xs text-amber-700">Direct Delhivery booking is unavailable because the provider is not configured or this destination is not serviceable.</p>}
               {courierLoading && <p className="text-sm text-slate-500">Loading courier options…</p>}
@@ -1270,7 +1294,7 @@ const OrderDrawer = memo(function OrderDrawer({
                   {shipment.reconciliation_error && <p className="mt-2 text-xs text-rose-700">{shipment.reconciliation_error}</p>}
                 </div>
               )}
-              {courierOptions.length === 0 && <p className="text-xs text-slate-500">{courierSyncMessage}</p>}
+              {courierOptions.length === 0 && !courierLoading && !courierError && <p className="text-xs text-slate-500">{courierSyncMessage || (canCheckCouriers ? 'No courier options are available.' : 'Complete the requirements above to load courier options automatically.')}</p>}
               </>
               )}
             </div>

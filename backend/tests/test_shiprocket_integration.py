@@ -87,7 +87,7 @@ def test_provider_neutral_booking_route_is_registered() -> None:
 
 def test_confirmed_cod_order_maps_to_ready_for_booking() -> None:
     service = ShiprocketService(email="operator@example.com", password="secret", pickup_location="Mumchies Factory")
-    order = SimpleNamespace(payment_status="pending", shipping_address={"pincode": "249407"}, operational_status=None)
+    order = SimpleNamespace(payment_status="pending", phone="9999999999", shipping_address={"pincode": "249407"}, operational_status=None)
     operations = {
         "call_logs": [{"result": "Confirmed"}],
         "package_details": {"weight_kg": 0.95, "length_cm": 5, "breadth_cm": 5, "height_cm": 5},

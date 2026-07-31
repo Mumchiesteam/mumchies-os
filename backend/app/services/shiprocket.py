@@ -6,6 +6,7 @@ import asyncio
 from datetime import date
 from decimal import Decimal, InvalidOperation
 import time
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -287,14 +288,28 @@ class ShiprocketService:
 
     @staticmethod
     def _address_postcode(address: Any) -> str | None:
+        if hasattr(address, "model_dump"):
+            address = address.model_dump()
         if not isinstance(address, dict):
             return None
-        for key in ("pincode", "postcode", "zip", "postal_code"):
+        for key in ("pincode", "pin_code", "postal_code", "postcode", "zip"):
             value = address.get(key)
-            if value:
-                text = str(value).strip()
-                if text:
-                    return text
+            text = str(value).strip() if value is not None else ""
+            if re.fullmatch(r"[1-9]\d{5}", text):
+                return text
+        return None
+
+    @classmethod
+    def delivery_postcode(cls, order: Any, operations: dict[str, Any] | None) -> str | None:
+        operations = operations or {}
+        for address in (
+            operations.get("corrected_address"),
+            operations.get("verified_address_snapshot"),
+            getattr(order, "shipping_address", None),
+        ):
+            postcode = cls._address_postcode(address)
+            if postcode:
+                return postcode
         return None
 
     @staticmethod
@@ -331,12 +346,22 @@ class ShiprocketService:
         missing: list[str] = []
         if has_existing_shipment_evidence(order, operations, shipment):
             missing.append("an active shipment or fulfilment already exists for this order")
-        delivery_postcode = self._address_postcode(corrected_address or verified_snapshot or shipping_address)
+        delivery_postcode = self.delivery_postcode(order, operations)
         if not delivery_postcode:
             missing.append("delivery postcode")
         latest_operational_address = corrected_address or verified_snapshot or shipping_address
         if not latest_operational_address:
             missing.append("latest operational address")
+        address_phone = None
+        for address in (corrected_address, verified_snapshot, shipping_address):
+            if hasattr(address, "model_dump"):
+                address = address.model_dump()
+            if isinstance(address, dict) and str(address.get("phone") or "").strip():
+                address_phone = str(address.get("phone")).strip()
+                break
+        phone = address_phone or str(getattr(order, "phone", None) or "").strip()
+        if len(re.sub(r"\D", "", phone)) < 10:
+            missing.append("customer phone")
         pickup_locations = None
         if self.pickup_location:
             pickup_locations = [self.pickup_location]

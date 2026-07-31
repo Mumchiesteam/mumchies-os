@@ -368,7 +368,6 @@ export interface OrderCounts {
   awaiting_confirmation: number
   printed_today: number
   new_orders: number
-  pending_booking: number
   cod: number
   prepaid: number
   high_risk: number

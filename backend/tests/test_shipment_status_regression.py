@@ -257,6 +257,29 @@ def test_placeholder_shiprocket_order_does_not_block_eligible_confirmed_cod():
     assert result.eligible is True
 
 
+@pytest.mark.parametrize(("value", "expected"), [
+    ("250001", "250001"), (250001, "250001"), (" 250001 ", "250001"),
+    (None, None), ("", None), (0, None), ("25001", None), ("ABC001", None),
+])
+def test_delivery_postcode_normalization(value, expected):
+    assert ShiprocketService._address_postcode({"pincode": value}) == expected
+
+
+def test_verified_or_corrected_pin_precedes_and_falls_back_to_shopify():
+    sample = order(shipping_address={"pincode": "110001"})
+    assert ShiprocketService.delivery_postcode(sample, {"verified_address_snapshot": {"pincode": "250001"}}) == "250001"
+    assert ShiprocketService.delivery_postcode(sample, {"corrected_address": {"pincode": " "}}) == "110001"
+    assert ShiprocketService.delivery_postcode(sample, {"corrected_address": {"pin_code": 250001}}) == "250001"
+
+
+def test_valid_verified_pin_has_no_false_delivery_postcode_blocker():
+    service = ShiprocketService(email="a@b.com", password="x", pickup_location="Mumchies Factory")
+    operations = confirmed_call_ops(verified_address_snapshot={"pincode": "250001"})
+    operations["corrected_address"] = {**operations["corrected_address"], "pincode": ""}
+    result = service.evaluate_booking_eligibility(order(payment_status="pending", shipping_address={"pincode": "110001"}), operations)
+    assert "delivery postcode" not in result.missing_requirements
+
+
 # 11. Locally booked Shiprocket/Delhivery orders remain unaffected (status shows "Booked" and
 # stays "Booked" through subsequent call logs; eligibility blocks re-booking either way).
 @pytest.mark.parametrize("provider", ["shiprocket", "delhivery"])

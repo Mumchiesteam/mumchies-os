@@ -113,14 +113,15 @@ def test_non_follow_up_outcomes_are_not_previous_pending(outcome):
 
 
 @pytest.mark.anyio
-async def test_confirmed_unbooked_order_is_counted_as_pending_booking_not_previous(monkeypatch):
+async def test_confirmed_unbooked_order_is_not_previous_and_retains_history(monkeypatch):
     confirmed = queue_order("111", payment_type="cod", call_attempt_count=1, latest_call_result="Confirmed", human_action_count=1, operational_status="Ready for Booking")
     async def load(_db): return [confirmed]
     monkeypatch.setattr(routes, "_load_orders", load)
     result = await routes.list_orders(queue="previous", db=None)
     assert result.items == []
     assert result.counts["previous"] == 0
-    assert result.counts["pending_booking"] == 1
+    assert confirmed.call_attempt_count == 1
+    assert "pending_booking" not in result.counts
 
 
 @pytest.mark.anyio

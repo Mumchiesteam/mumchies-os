@@ -7,7 +7,7 @@ const response = (pageSize: number, total = 0) => new Response(JSON.stringify({
   page_size: pageSize,
   total,
   total_pages: Math.max(1, Math.ceil(total / pageSize)),
-  counts: { operations: 64, fresh: 64, previous: 12, all: 100, labels_to_print: 4, awaiting_confirmation: 2, printed_today: 7, new_orders: 64, pending_booking: 8, cod: 30, prepaid: 70, high_risk: 5, repeat_customers: 9, cod_collectable: 1000, prepaid_value: 2000, awaiting_order_confirmation: 3, awaiting_address_verification: 4, cod_conversion_pending: 5 },
+  counts: { operations: 64, fresh: 64, previous: 12, all: 100, labels_to_print: 4, awaiting_confirmation: 2, printed_today: 7, new_orders: 64, cod: 30, prepaid: 70, high_risk: 5, repeat_customers: 9, cod_collectable: 1000, prepaid_value: 2000, awaiting_order_confirmation: 3, awaiting_address_verification: 4, cod_conversion_pending: 5 },
 }), { status: 200, headers: { 'Content-Type': 'application/json' } })
 
 afterEach(() => vi.restoreAllMocks())
@@ -52,7 +52,6 @@ describe('orders pagination client', () => {
     const result = await getOrders(query)
     expect(result.counts.fresh).toBe(64)
     expect(result.counts.new_orders).toBe(64)
-    expect(result.counts.pending_booking).toBe(8)
   })
 })
 

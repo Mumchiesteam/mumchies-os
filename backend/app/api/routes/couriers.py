@@ -102,10 +102,7 @@ async def _serviceability_query(order: ShopifyOrder, operations: dict[str, objec
         or (pickup_details or {}).get("pin_code")
         or ""
     ).strip()
-    address = operations.get("corrected_address") or operations.get("verified_address_snapshot") or (order.shipping_address.model_dump() if order.shipping_address else None)
-    delivery_postcode = None
-    if isinstance(address, dict):
-        delivery_postcode = str(address.get("pincode") or "").strip() or None
+    delivery_postcode = service.delivery_postcode(order, operations)
     if not pickup_postcode:
         raise HTTPException(status_code=400, detail="Pickup postcode could not be resolved from Shiprocket pickup configuration.")
     if not delivery_postcode:
@@ -131,7 +128,7 @@ def _build_shiprocket_order_payload(order: ShopifyOrder, operations: dict[str, o
     first_name = name_parts[0] if name_parts else "Customer"
     last_name = name_parts[1] if len(name_parts) > 1 else ""
     phone = str(address.get("phone") or order.phone or "").strip()
-    postcode = str(address.get("pincode") or "").strip()
+    postcode = ShiprocketService.delivery_postcode(order, operations) or ""
     if not phone:
         raise HTTPException(status_code=400, detail="Customer phone number is missing.")
     if not postcode:
@@ -206,7 +203,7 @@ def _build_delhivery_payload(order: ShopifyOrder, operations: dict[str, object],
     if not isinstance(address, dict):
         raise HTTPException(status_code=400, detail="Latest operational address is missing.")
     phone = str(address.get("phone") or order.phone or "").strip()
-    postcode = str(address.get("pincode") or "").strip()
+    postcode = ShiprocketService.delivery_postcode(order, operations) or ""
     if not phone or not postcode:
         raise HTTPException(status_code=400, detail="Customer phone and delivery postcode are required.")
     if not postcode.isdigit() or len(postcode) != 6:
@@ -398,6 +395,7 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
         order, operations, shipment = await _load_context(order_id, db)
         package = PackageDetailsPayload.model_validate(payload.model_dump())
         OrderOperationsStore.save_package_details(order_id, package.model_dump())
+        operations = {**operations, "package_details": package.model_dump()}
         eligibility = ShiprocketService().evaluate_booking_eligibility(order, operations, shipment)
         if not eligibility.eligible:
             raise HTTPException(status_code=400, detail={"message": "Order is not eligible for courier lookup.", "missing_requirements": eligibility.missing_requirements})

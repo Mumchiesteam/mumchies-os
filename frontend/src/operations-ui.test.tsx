@@ -12,6 +12,7 @@ describe('operations-first Orders layout', () => {
     for (const removed of ['Customers', 'Reports', 'Settings', 'All Orders', 'Awaiting Confirmation', 'Shiprocket Cleanup Pending']) {
       expect(html).not.toContain(`>${removed}<`)
     }
+    expect(html).not.toContain('Pending Booking')
   })
 
   it('keeps only the operational filters and Engage table column', () => {

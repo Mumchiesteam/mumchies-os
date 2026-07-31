@@ -19,7 +19,7 @@ from app.schemas.orders import ShopifyOrder
 from app.repositories.shiprocket import get_shipment, get_shipments_by_order_id, snapshot as shipment_snapshot, sync_engage_orders
 from app.services.order_operations import OrderOperationsStore
 from app.services.delhivery import DelhiveryError, DelhiveryService
-from app.services.shipment_status import derive_operational_status, has_existing_shipment_evidence
+from app.services.shipment_status import derive_operational_status
 from app.services.shiprocket import ShiprocketAPIError, ShiprocketConfigurationError, ShiprocketService
 from app.services.shopify import ShopifyConfigurationError, ShopifyService, ShopifySyncError
 from app.services.shopify_fulfillment import ShopifyFulfillmentSynchronizer, ShopifyFulfillmentSyncError
@@ -256,7 +256,6 @@ def _base_filtered_orders(orders: list[ShopifyOrder], search: str, payment: str,
 def _full_counts(orders: list[ShopifyOrder], now: datetime, db: Session) -> dict[str, int | float]:
     fresh = [order for order in orders if _matches_queue(order, "fresh", now)]
     previous = [order for order in orders if _matches_queue(order, "previous", now)]
-    pending = [order for order in orders if order.operational_status == "Ready for Booking" and not has_existing_shipment_evidence(order, {}, order.shipment)]
     cod = [order for order in orders if order.payment_type in {"cod", "partial_cod"}]
     prepaid = [order for order in orders if order.payment_type == "prepaid"]
     high_risk = [order for order in orders if "high" in " ".join(order.tags).casefold() and not _is_inactive(order)]
@@ -273,7 +272,7 @@ def _full_counts(orders: list[ShopifyOrder], now: datetime, db: Session) -> dict
         "operations": len(fresh) + len(previous), "fresh": len(fresh), "previous": len(previous), "all": len(orders),
         "labels_to_print": sum(1 for value in shipments if value.label_print_status == "not_printed" and value.booking_status == "booked" and value.awb),
         "awaiting_confirmation": sum(1 for value in shipments if value.label_print_status == "awaiting_confirmation"),
-        "printed_today": len(printed_today), "new_orders": len(fresh), "pending_booking": len(pending),
+        "printed_today": len(printed_today), "new_orders": len(fresh),
         "cod": len(cod), "prepaid": len(prepaid), "high_risk": len(high_risk), "repeat_customers": len(repeat),
         "cod_collectable": sum(float(order.cod_collectable_amount) for order in cod),
         "prepaid_value": sum(float(order.order_total) for order in prepaid),
@@ -458,14 +457,12 @@ async def export_orders(payload: ExportPayload, db: Session = Depends(get_db)):
     if payload.mode == "full":
         summary = workbook.create_sheet("Summary")
         fresh = [value for value in orders if not value.first_action_at and not value.cancelled_at]
-        pending_booking = [value for value in orders if value.operational_status == "Ready for Booking" and not (value.shipment or {}).get("awb")]
         summary.append(["Metric", "Count"])
-        for metric, count in (("All Orders", len(orders)), ("Fresh Orders", len(fresh)), ("Pending Booking", len(pending_booking))):
+        for metric, count in (("All Orders", len(orders)), ("Fresh Orders", len(fresh))):
             summary.append([metric, count])
         previous = [value for value in orders if value.first_action_at and value.operational_status not in {"Ready for Booking", "Booked", "Shipped", "Delivered", "Cancelled"}]
         tabs = {
             "All Orders": orders, "Fresh Orders": fresh, "Previous Pending": previous,
-            "Pending Booking": pending_booking,
             "COD": [value for value in orders if value.payment_type in {"cod", "partial_cod"}],
             "Partial COD": [value for value in orders if value.payment_type == "partial_cod"],
             "Prepaid": [value for value in orders if value.payment_type == "prepaid"],
