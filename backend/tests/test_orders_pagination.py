@@ -129,14 +129,14 @@ async def test_reconciliation_sets_and_mismatch_classification(monkeypatch):
     os_only = queue_order("201", payment_type="cod", call_attempt_count=0)
     both = queue_order("202", payment_type="prepaid", human_action_count=0)
     stale = queue_order("203", fulfillment_status="fulfilled", operational_status="Shipped")
-    async def load(_db, force_refresh=False): return [os_only, both, stale]
+    async def load(_db): return [os_only, both, stale]
     async def new(_self, force_refresh=False):
         return [
             {"id": 2, "channel_order_id": "202", "status": "NEW"},
             {"id": 3, "channel_order_id": "203", "status": "NEW", "products": [{"status": "CANCELED"}]},
         ]
     async def find(_self, number): return None if number == "201" else {"channel_order_id": number, "status": "NEW"}
-    monkeypatch.setattr(routes, "_load_orders", load)
+    monkeypatch.setattr(routes, "_load_reconciliation_orders", load)
     monkeypatch.setattr(routes.ShiprocketService, "list_new_orders", new)
     monkeypatch.setattr(routes.ShiprocketService, "find_existing_order", find)
     result = await routes.reconciliation_summary(db=None)
@@ -149,3 +149,38 @@ async def test_reconciliation_sets_and_mismatch_classification(monkeypatch):
     assert [item["order_number"] for item in result["datasets"]["operations"]] == ["201", "202"]
     assert result["datasets"]["cleanup_pending"][0]["reason"] == "stale Shiprocket state"
     assert result["datasets"]["missing_in_shiprocket"][0]["reason"] == "not yet synced to Shiprocket"
+
+
+@pytest.mark.parametrize("order,expected", [
+    (queue_order("316167", created_date="2026-05-14T00:00:00+00:00", fulfillment_status="unfulfilled", cancelled_at=None, shipment=None), True),
+    (queue_order("316999", created_date="2026-07-31T00:00:00+00:00", fulfillment_status="unfulfilled", cancelled_at=None, shipment=None), True),
+    (queue_order("316998", fulfillment_status="fulfilled", shipment=None), False),
+    (queue_order("316997", fulfillment_status="unfulfilled", cancelled_at="2026-05-15T00:00:00+00:00", shipment=None), False),
+    (queue_order("316996", fulfillment_status="unfulfilled", shipment={"awb": "AWB1"}), False),
+    (queue_order("316995", fulfillment_status="unfulfilled", shipment={"shipment_id": "SHIP1"}), False),
+    (queue_order("316994", fulfillment_status="unfulfilled", shipment={"provider_order_id": "QUOTE1", "booking_status": "failed", "selected_courier_id": "3"}), True),
+])
+def test_reconciliation_requires_active_unfulfilled_without_genuine_booking_evidence(order, expected):
+    assert routes._requires_reconciliation_action(order) is expected
+
+
+@pytest.mark.anyio
+async def test_reconciliation_summary_counts_only_actionable_unfulfilled_orders(monkeypatch):
+    old = queue_order("316167", created_date="2026-05-14T00:00:00+00:00", fulfillment_status="unfulfilled", shipment=None)
+    recent = queue_order("316999", fulfillment_status="unfulfilled", shipment=None)
+    fulfilled = queue_order("316998", fulfillment_status="fulfilled", shipment=None)
+    cancelled = queue_order("316997", fulfillment_status="unfulfilled", cancelled_at="2026-07-31T00:00:00+00:00", shipment=None)
+    booked = queue_order("316996", fulfillment_status="unfulfilled", shipment={"awb": "AWB1"})
+    placeholder = queue_order("316995", fulfillment_status="unfulfilled", shipment={"provider_order_id": "FAILED1", "booking_status": "failed"})
+    async def load(_db): return [old, recent, fulfilled, cancelled, booked, placeholder]
+    async def new(_self, force_refresh=False): return []
+    async def find(_self, number): return None
+    monkeypatch.setattr(routes, "_load_reconciliation_orders", load)
+    monkeypatch.setattr(routes.ShiprocketService, "list_new_orders", new)
+    monkeypatch.setattr(routes.ShiprocketService, "find_existing_order", find)
+
+    result = await routes.reconciliation_summary(db=None)
+
+    assert result["operations_queue"] == 3
+    assert result["missing_in_shiprocket"] == 3
+    assert {item["order_number"] for item in result["datasets"]["operations"]} == {"316167", "316999", "316995"}

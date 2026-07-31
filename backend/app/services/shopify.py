@@ -381,6 +381,35 @@ class ShopifyService:
         """Read recent orders without per-order transaction calls; NDR needs identity and fulfilment data only."""
         return await self._fetch_orders_for_enrichment(None, include_transactions=False)
 
+    async def get_active_unfulfilled_orders(self) -> list[ShopifyOrder]:
+        """Read every accessible unfulfilled order for reconciliation, without the Orders lookback."""
+        access_token = await self._get_access_token()
+        fields = "id,name,status,order_number,created_at,customer,email,phone,shipping_address,line_items,shipping_lines,total_price,current_total_price,total_outstanding,financial_status,fulfillment_status,cancelled_at,tags,payment_gateway_names,fulfillments"
+        url = f"https://{self.store}/admin/api/{self.api_version}/orders.json"
+        headers = {"X-Shopify-Access-Token": access_token}
+        orders: list[ShopifyOrder] = []
+        next_url: str | None = url
+        params: dict[str, str] | None = {
+            "status": "any",
+            "fulfillment_status": "unfulfilled",
+            "limit": "250",
+            "order": "created_at desc",
+            "fields": fields,
+        }
+        seen_urls: set[str] = set()
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            while next_url:
+                if next_url in seen_urls:
+                    raise ShopifyConfigurationError("Shopify pagination repeated a page URL.")
+                seen_urls.add(next_url)
+                response = await client.get(next_url, params=params, headers=headers)
+                response.raise_for_status()
+                payload = response.json().get("orders", [])
+                orders.extend(self._to_order(order) for order in payload)
+                next_url = self._next_page_url(response.headers.get("link"))
+                params = None
+        return orders
+
     async def _fetch_orders_for_enrichment(self, limit: int | None = None, *, include_transactions: bool) -> list[ShopifyOrder]:
         access_token = await self._get_access_token()
         fields = "id,name,status,order_number,created_at,customer,email,phone,shipping_address,line_items,shipping_lines,total_price,current_total_price,total_outstanding,financial_status,fulfillment_status,cancelled_at,tags,payment_gateway_names,fulfillments"
