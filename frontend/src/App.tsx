@@ -336,9 +336,9 @@ function App() {
       setCallComment('')
       setAddressDraft({
         customer_name: ops.corrected_address?.customer_name ?? selectedOrder.shippingAddress?.name ?? selectedOrder.customerName ?? '',
-        phone: ops.corrected_address?.phone ?? selectedOrder.phone ?? '',
-        address_line1: ops.corrected_address?.address_line1 ?? selectedOrder.shippingAddress?.address ?? '',
-        address_line2: ops.corrected_address?.address_line2 ?? '',
+        phone: ops.corrected_address?.phone ?? selectedOrder.shippingAddress?.phone ?? selectedOrder.phone ?? '',
+        address_line1: ops.corrected_address?.address_line1 ?? selectedOrder.shippingAddress?.addressLine1 ?? selectedOrder.shippingAddress?.address ?? '',
+        address_line2: ops.corrected_address?.address_line2 ?? selectedOrder.shippingAddress?.addressLine2 ?? '',
         landmark: ops.corrected_address?.landmark ?? selectedOrder.shippingAddress?.landmark ?? '',
         city: ops.corrected_address?.city ?? selectedOrder.shippingAddress?.city ?? '',
         state: ops.corrected_address?.state ?? selectedOrder.shippingAddress?.state ?? '',
@@ -497,9 +497,10 @@ function App() {
         ...packageNumbers,
         courier_payment_mode: selectedOrder.payment,
       })
-      const sorted = [...result.couriers].sort((a, b) => a.total_estimated_shipping_cost - b.total_estimated_shipping_cost)
+      const sorted = [...(result.couriers ?? [])].sort((a, b) => a.total_estimated_shipping_cost - b.total_estimated_shipping_cost)
       setCourierOptions(sorted)
       setCourierWarnings(result.provider_warnings ?? [])
+      if (sorted.length === 0) setCourierError('No courier services are currently available. Check the package and address, then retry.')
       if (selectedCourierId && !sorted.some(courier => courier.courier_id === selectedCourierId)) {
         setSelectedCourierId(null)
       }

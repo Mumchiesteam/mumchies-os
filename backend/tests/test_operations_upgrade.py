@@ -60,6 +60,22 @@ def test_partial_payment_normalization_uses_outstanding_balance():
     assert (order.order_total, order.paid_amount, order.cod_collectable_amount, order.payment_type) == (1577, 199, 1378, "partial_cod")
 
 
+def test_shopify_shipping_address_preserves_all_drawer_fields():
+    value = raw_order()
+    value["shipping_address"] = {
+        "name": "Test Customer", "phone": "+919999999999",
+        "address1": "12 Main Road", "address2": "Second Floor",
+        "city": "Delhi", "province": "Delhi", "zip": "110001",
+    }
+    address = ShopifyService._to_order(value).shipping_address
+    assert address.model_dump() == {
+        "name": "Test Customer", "phone": "+919999999999",
+        "address": "12 Main Road Second Floor",
+        "address_line1": "12 Main Road", "address_line2": "Second Floor",
+        "landmark": None, "city": "Delhi", "state": "Delhi", "pincode": "110001",
+    }
+
+
 @pytest.mark.parametrize(("status", "outstanding", "payment_type"), [("pending", "1577", "cod"), ("paid", "0", "prepaid")])
 def test_full_cod_and_prepaid_regression(status, outstanding, payment_type):
     assert ShopifyService._to_order(raw_order(status, outstanding)).payment_type == payment_type

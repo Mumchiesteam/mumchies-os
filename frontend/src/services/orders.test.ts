@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { bookShiprocketShipment, cancelCourierShipment, clearReconciliationFilter, getOrders, reconciliationDataset, reconciliationFilterLabel, reconcileCourierBooking, refreshShiprocketShipment, selectReconciliationFilter, shiprocketCancellationMessage, shouldRemoveCleanupRecord, verifyShiprocketOnlyCancellation, type OrdersReconciliationSummary, type ReconciliationRecord, type ShiprocketCancellationResult, type ShiprocketCleanupRecord } from './orders'
+import { bookShiprocketShipment, cancelCourierShipment, checkShiprocketCouriers, clearReconciliationFilter, getOrderOperations, getOrders, reconciliationDataset, reconciliationFilterLabel, reconcileCourierBooking, refreshShiprocketShipment, selectReconciliationFilter, shiprocketCancellationMessage, shouldRemoveCleanupRecord, verifyShiprocketOnlyCancellation, type OrdersReconciliationSummary, type ReconciliationRecord, type ShiprocketCancellationResult, type ShiprocketCleanupRecord } from './orders'
 
 const response = (pageSize: number, total = 0) => new Response(JSON.stringify({
   items: [],
@@ -57,6 +57,24 @@ describe('orders pagination client', () => {
 })
 
 describe('provider-neutral courier client', () => {
+  it('loads operations without expecting a couriers array', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ corrected_address: null, call_logs: [], package_details: null }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    await expect(getOrderOperations('1')).resolves.toMatchObject({ corrected_address: null, call_logs: [] })
+  })
+
+  it('uses safe empty defaults when courier arrays are omitted', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ provider: 'multi', weight_kg: 0.5 }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    const result = await checkShiprocketCouriers('1', { weight_kg: 0.5, courier_payment_mode: 'Prepaid' })
+    expect(result.couriers).toEqual([])
+    expect(result.provider_warnings).toEqual([])
+  })
+
+  it('normalizes numeric IDs on the courier response only', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ provider: 'multi', provider_warnings: [], couriers: [{ courier_id: 43, courier_name: 'Delhivery Surface' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    const result = await checkShiprocketCouriers('1', { weight_kg: 0.5, courier_payment_mode: 'Prepaid' })
+    expect(result.couriers[0].courier_id).toBe('43')
+  })
+
   it('omits operator when current-user identity is unavailable', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ provider: 'shadowfax' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
     await bookShiprocketShipment('1', { provider: 'shadowfax', courier_name: 'Shadowfax Direct', courier_id: 'Regular', weight_kg: 0.5 })

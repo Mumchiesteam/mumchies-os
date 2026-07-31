@@ -5,7 +5,10 @@ from pydantic import BaseModel
 
 class ShippingAddress(BaseModel):
     name: str | None = None
+    phone: str | None = None
     address: str | None = None
+    address_line1: str | None = None
+    address_line2: str | None = None
     landmark: str | None = None
     city: str | None = None
     state: str | None = None

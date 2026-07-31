@@ -51,7 +51,10 @@ export interface Order {
   email: string | null
   shippingAddress: {
     name: string | null
+    phone: string | null
     address: string | null
+    addressLine1: string | null
+    addressLine2: string | null
     landmark: string | null
     city: string | null
     state: string | null
@@ -189,7 +192,10 @@ interface ApiOrder {
   email: string | null
   shipping_address: {
     name: string | null
+    phone: string | null
     address: string | null
+    address_line1: string | null
+    address_line2: string | null
     landmark: string | null
     city: string | null
     state: string | null
@@ -398,7 +404,17 @@ export const mapApiOrder = (item: ApiOrder): Order => {
     paidAmount: Number(item.paid_amount ?? 0), outstandingAmount: Number(item.outstanding_amount ?? 0), codCollectableAmount: Number(item.cod_collectable_amount ?? 0),
     paymentType: item.payment_type, financialStatus: item.payment_status, risk: inferRisk(item.tags), fulfillmentStatus: item.fulfillment_status,
     shopifyStatus: item.shopify_status, cancelledAt: item.cancelled_at, customerId: item.customer_id, customerOrdersCount: item.customer_orders_count,
-    phone: item.phone, email: item.email, shippingAddress: item.shipping_address,
+    phone: item.phone, email: item.email, shippingAddress: item.shipping_address ? {
+      name: item.shipping_address.name,
+      phone: item.shipping_address.phone,
+      address: item.shipping_address.address,
+      addressLine1: item.shipping_address.address_line1,
+      addressLine2: item.shipping_address.address_line2,
+      landmark: item.shipping_address.landmark,
+      city: item.shipping_address.city,
+      state: item.shipping_address.state,
+      pincode: item.shipping_address.pincode,
+    } : null,
     products: item.products.map(product => ({ productName: product.product_name, sku: product.sku, quantity: product.quantity, weightGrams: product.weight_grams, price: Number(product.price) })),
     tags: item.tags, firstActionAt: item.first_action_at, humanActionCount: item.human_action_count, callAttemptCount: item.call_attempt_count,
     latestCallResult: item.latest_call_result, operationalStatus: item.operational_status, addressVerified: item.address_verified,
@@ -549,14 +565,7 @@ export async function getOrderOperations(orderId: string): Promise<OrderOperatio
   if (!response.ok) {
     throw new Error('Could not load order operations.')
   }
-  const result = await response.json()
-  return {
-    ...result,
-    couriers: result.couriers.map((quote: { courier_id: unknown }) => ({
-      ...quote,
-      courier_id: quote.courier_id == null ? null : String(quote.courier_id),
-    })),
-  }
+  return response.json()
 }
 
 export async function saveOrderAddress(orderId: string, payload: {
@@ -715,7 +724,16 @@ export async function checkShiprocketCouriers(orderId: string, payload: {
     const body = await response.json().catch(() => null)
     throw new Error(body?.detail?.message || body?.detail || 'Could not check couriers.')
   }
-  return response.json()
+  const result = await response.json()
+  const couriers = Array.isArray(result?.couriers) ? result.couriers : []
+  return {
+    ...result,
+    provider_warnings: Array.isArray(result?.provider_warnings) ? result.provider_warnings : [],
+    couriers: couriers.map((quote: { courier_id: unknown }) => ({
+      ...quote,
+      courier_id: quote.courier_id == null ? null : String(quote.courier_id),
+    })),
+  }
 }
 
 export async function selectShiprocketCourier(orderId: string, payload: {
