@@ -17,7 +17,7 @@ from app.services.order_operations import OrderOperationsStore
 from app.services.delhivery import DelhiveryError, DelhiveryService
 from app.services.courier_platform import ProviderError, courier_registry
 from app.services.courier_platform.service import CourierPlatformService
-from app.services.shipment_status import has_existing_shipment_evidence, has_persisted_provider_booking_evidence
+from app.services.shipment_status import has_existing_shipment_evidence, has_persisted_provider_booking_evidence, has_uncertain_provider_booking
 from app.services.shiprocket import (
     BookingEligibilityResult,
     CourierQuote,
@@ -203,7 +203,7 @@ def _build_delhivery_payload(order: ShopifyOrder, operations: dict[str, object],
     if not isinstance(address, dict):
         raise HTTPException(status_code=400, detail="Latest operational address is missing.")
     phone = str(address.get("phone") or order.phone or "").strip()
-    postcode = ShiprocketService.delivery_postcode(order, operations) or ""
+    postcode = str(address.get("pincode") or "").strip()
     if not phone or not postcode:
         raise HTTPException(status_code=400, detail="Customer phone and delivery postcode are required.")
     if not postcode.isdigit() or len(postcode) != 6:
@@ -394,8 +394,9 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
     try:
         order, operations, shipment = await _load_context(order_id, db)
         package = PackageDetailsPayload.model_validate(payload.model_dump())
+        OrderOperationsStore.save_selected_courier(order_id, None)
         OrderOperationsStore.save_package_details(order_id, package.model_dump())
-        operations = {**operations, "package_details": package.model_dump()}
+        operations = {**operations, "selected_courier": None, "package_details": package.model_dump()}
         eligibility = ShiprocketService().evaluate_booking_eligibility(order, operations, shipment)
         if not eligibility.eligible:
             raise HTTPException(status_code=400, detail={"message": "Order is not eligible for courier lookup.", "missing_requirements": eligibility.missing_requirements})
@@ -459,6 +460,8 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
         existing = get_shipment(db, order_id)
         if existing and has_persisted_provider_booking_evidence(shipment_snapshot(existing)):
             return {"provider": existing.provider or "shiprocket", "existing": True, "shipment": shipment_snapshot(existing)}
+        if existing and has_uncertain_provider_booking(shipment_snapshot(existing)):
+            raise HTTPException(status_code=409, detail="A submitted booking request has an uncertain outcome. Reconcile it before retrying.")
 
         # Backend duplicate-booking guard: reject outright (not just via eligibility) if any
         # reliable source - local shipment, Shopify fulfilment status/tags - already shows an

@@ -120,11 +120,12 @@ class ShiprocketService:
         return {"Authorization": f"Bearer {await self.get_token()}"}
 
     async def get_token(self) -> str:
-        self._validate_configuration()
         cached = self._token_cache
         now = time.time()
         if cached and cached["expires_at"] > now:
             return cached["token"]
+
+        self._validate_configuration()
 
         async with self._token_lock:
             cached = self._token_cache
@@ -697,14 +698,15 @@ class ShiprocketService:
                     "The existing Shiprocket order is canceled and cannot be assigned. Restore or recreate it in Shiprocket before booking.",
                     safe_details={"operation": "reuse_order", "shiprocket_status": upstream_status},
                 )
+            if shipment_id and awb:
+                reconciled = await self.reconcile_existing_shipment(db, order_id, channel_order_id, shipment_id)
+                return {"shipment": reconciled, "existing": True, "reconciled": True}
             persisted = upsert_shipment(
                 db, order_id, provider="shiprocket", provider_order_id=channel_order_id,
                 shiprocket_order_id=str(upstream.get("id") or "") or None,
-                shipment_id=shipment_id, awb=awb, booking_status="booked" if awb else "pending_awb",
+                shipment_id=shipment_id, booking_status="pending_awb",
                 latest_status=upstream_status or "order_found", last_synced_at=datetime.now(timezone.utc),
             )
-            if awb:
-                return {"shipment": snapshot(persisted), "existing": True}
             if not shipment_id or not courier_id:
                 raise ShiprocketAPIError("The existing Shiprocket order has no assignable shipment.", safe_details={"operation": "reuse_order"})
             assignment = await self.assign_courier_and_generate_awb(shipment_id, courier_id)

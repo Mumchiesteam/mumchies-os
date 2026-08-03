@@ -10,6 +10,7 @@ from app.repositories.shiprocket import get_shipment, snapshot, upsert_shipment
 from app.services.courier_platform.base import CourierAdapter, ProviderConfigurationError, ProviderError
 from app.services.courier_platform.models import BookingConfidence, BookingResult, NormalizedShipmentStatus, ReconciliationStatus
 from app.services.order_operations import OrderOperationsStore
+from app.services.shipment_status import has_persisted_provider_booking_evidence, has_uncertain_provider_booking
 
 
 def _json(value: Any) -> str | None:
@@ -21,12 +22,12 @@ class CourierPlatformService:
     async def book(self, db: Session, *, order_id: str, merchant_order_id: str, adapter: CourierAdapter,
                    request: dict[str, Any], operator: str) -> dict[str, Any]:
         existing = get_shipment(db, order_id)
-        if existing and (existing.awb or existing.shipment_id or existing.provider_order_id):
+        if existing and has_persisted_provider_booking_evidence(snapshot(existing)):
             if existing.provider != adapter.provider:
                 raise ProviderError(f"Order is already associated with {existing.provider}.", provider=adapter.provider, operation="booking")
-            if existing.booking_confidence == BookingConfidence.UNCERTAIN or existing.reconciliation_status in {ReconciliationStatus.PENDING, ReconciliationStatus.MANUAL_REVIEW}:
-                raise ProviderError("A previous booking has an uncertain outcome. Reconcile it before retrying.", provider=adapter.provider, operation="booking", uncertain=True)
             return {"shipment": snapshot(existing), "existing": True}
+        if existing and has_uncertain_provider_booking(snapshot(existing)):
+            raise ProviderError("A submitted booking has an uncertain outcome. Reconcile it before retrying.", provider=adapter.provider, operation="booking", uncertain=True)
 
         try:
             upstream = await adapter.reconcile_booking(merchant_order_id)
@@ -46,8 +47,8 @@ class CourierPlatformService:
 
         upsert_shipment(
             db, order_id, provider=adapter.provider, provider_order_id=merchant_order_id,
-            booking_status="booking_requested", booking_confidence=BookingConfidence.UNCERTAIN,
-            reconciliation_status=ReconciliationStatus.PENDING, latest_status="Booking request in progress",
+            booking_status="booking_initiated", booking_confidence=None,
+            reconciliation_status=None, latest_status="Booking request initiated",
             last_synced_at=datetime.now(timezone.utc),
         )
         OrderOperationsStore.record_timeline_event(order_id, "courier_booking_requested", operator=operator, details={"provider": adapter.provider, "merchant_order_id": merchant_order_id})
@@ -70,11 +71,12 @@ class CourierPlatformService:
 
     def persist_booking(self, db: Session, order_id: str, result: BookingResult):
         booked = result.status not in {NormalizedShipmentStatus.UNKNOWN, NormalizedShipmentStatus.CREATED} or bool(result.awb)
+        persisted_booked_at = result.booked_at or (datetime.now(timezone.utc) if booked else None)
         return upsert_shipment(
             db, order_id, provider=result.provider, provider_order_id=result.provider_order_id,
             shipment_id=result.shipment_id, awb=result.awb, tracking_url=result.tracking_url,
             courier_name=result.service or result.provider.title(), courier_service=result.service,
-            booking_status="booked" if booked else "pending_awb", booked_at=result.booked_at,
+            booking_status="booked" if booked else "pending_awb", booked_at=persisted_booked_at,
             latest_status=result.status.value, normalized_status=result.status.value,
             label_url=result.label_url, label_format=result.label_format.value if result.label_format else None,
             raw_provider_response=_json(result.raw_response), booking_confidence=result.confidence.value,

@@ -20,6 +20,7 @@ SHIPMENT_BACKED_STATUSES = {"Booked", "Shipped", "In Transit", "Out for Delivery
 
 _SHIPPED_KEYWORDS = ("shipped", "dispatched", "picked up", "in transit", "in_transit", "out for delivery")
 _CONFIRMED_BOOKING_STATUSES = {"booked", "complete", "completed", "awb_assigned"}
+_UNCERTAIN_BOOKING_STATUSES = {"booking_uncertain", "manifest_unknown", "manifest_partial"}
 
 
 def _text(value: Any) -> str:
@@ -39,6 +40,29 @@ def has_persisted_provider_booking_evidence(shipment: dict[str, Any] | None) -> 
         str(shipment.get("provider_order_id") or "").strip()
         and _text(shipment.get("booking_status")) in _CONFIRMED_BOOKING_STATUSES
     )
+
+
+def has_uncertain_provider_booking(shipment: dict[str, Any] | None) -> bool:
+    """Only a submitted provider request with an unresolved outcome is uncertain."""
+    return _text((shipment or {}).get("booking_status")) in _UNCERTAIN_BOOKING_STATUSES
+
+
+def merge_shopify_fulfillment_evidence(shipment: dict[str, Any] | None, external_tracking: Any | None) -> dict[str, Any] | None:
+    """Complete the canonical read model from genuine Shopify tracking; never invent IDs."""
+    local = dict(shipment) if shipment else {}
+    awb = getattr(external_tracking, "awb", None)
+    if not awb:
+        return local or None
+    provider = getattr(external_tracking, "provider", None)
+    local["provider"] = local.get("provider") or provider
+    local["courier_name"] = local.get("courier_name") or provider
+    local["awb"] = local.get("awb") or awb
+    local["shopify_tracking_number"] = local.get("shopify_tracking_number") or awb
+    local["tracking_url"] = local.get("tracking_url") or getattr(external_tracking, "tracking_url", None)
+    local["latest_status"] = local.get("latest_status") or getattr(external_tracking, "status", None)
+    local["booking_status"] = local.get("booking_status") or "confirmed_external"
+    local["evidence_source"] = "internal_and_shopify" if shipment and has_persisted_provider_booking_evidence(shipment) else "shopify_fulfillment"
+    return local
 
 
 def derive_operational_status(order: Any, operations: dict[str, Any] | None, shipment: dict[str, Any] | None) -> str:

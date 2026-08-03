@@ -19,7 +19,7 @@ from app.schemas.orders import ShopifyOrder
 from app.repositories.shiprocket import get_shipment, get_shipments_by_order_id, snapshot as shipment_snapshot, sync_engage_orders
 from app.services.order_operations import OrderOperationsStore
 from app.services.delhivery import DelhiveryError, DelhiveryService
-from app.services.shipment_status import derive_operational_status, has_existing_shipment_evidence
+from app.services.shipment_status import derive_operational_status, has_existing_shipment_evidence, merge_shopify_fulfillment_evidence
 from app.services.shiprocket import ShiprocketAPIError, ShiprocketConfigurationError, ShiprocketService
 from app.services.shopify import ShopifyConfigurationError, ShopifyService, ShopifySyncError
 from app.services.shopify_fulfillment import ShopifyFulfillmentSynchronizer, ShopifyFulfillmentSyncError
@@ -154,7 +154,8 @@ async def _load_orders(db: Session, *, force_refresh: bool = False) -> list[Shop
         merged_orders: list[ShopifyOrder] = []
         for order in orders:
             shipment = shipments.get(order.order_id)
-            operations = {**operations_map.get(order.order_id, {}), "shipment": shipment_snapshot(shipment) if shipment else None}
+            local_snapshot = shipment_snapshot(shipment) if shipment else None
+            operations = {**operations_map.get(order.order_id, {}), "shipment": merge_shopify_fulfillment_evidence(local_snapshot, order.external_tracking)}
             merged_orders.append(_merged_operational_state(order, operations))
         return merged_orders
     except ShopifyConfigurationError as error:
@@ -174,7 +175,8 @@ async def _load_reconciliation_orders(db: Session) -> list[ShopifyOrder]:
         merged_orders: list[ShopifyOrder] = []
         for order in orders:
             shipment = shipments.get(order.order_id)
-            operations = {**operations_map.get(order.order_id, {}), "shipment": shipment_snapshot(shipment) if shipment else None}
+            local_snapshot = shipment_snapshot(shipment) if shipment else None
+            operations = {**operations_map.get(order.order_id, {}), "shipment": merge_shopify_fulfillment_evidence(local_snapshot, order.external_tracking)}
             merged_orders.append(_merged_operational_state(order, operations))
         return merged_orders
     except ShopifyConfigurationError as error:

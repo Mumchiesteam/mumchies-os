@@ -10,6 +10,7 @@ import httpx
 
 from app.core.config import settings
 from app.repositories.shiprocket import get_shipment, snapshot, upsert_shipment
+from app.services.shipment_status import has_persisted_provider_booking_evidence, has_uncertain_provider_booking
 
 
 class DelhiveryError(RuntimeError):
@@ -346,11 +347,12 @@ class DelhiveryService:
         package_details: dict[str, Any], courier_id: str, courier_name: str,
     ) -> dict[str, Any]:
         existing = get_shipment(db, order_id)
-        if existing and (existing.awb or existing.shipment_id or existing.provider_order_id):
+        if existing and has_persisted_provider_booking_evidence(snapshot(existing)):
             if existing.provider and existing.provider != "delhivery":
                 raise DelhiveryError(f"Order is already booked with {existing.provider}.")
             if existing.awb:
                 return {"shipment": snapshot(existing), "existing": True}
+        if existing and has_uncertain_provider_booking(snapshot(existing)):
             try:
                 reconciled = await self.reconcile(db, order_id, order_number=existing.provider_order_id or order_number, waybill=existing.shipment_id)
                 return {"shipment": reconciled, "existing": True}
