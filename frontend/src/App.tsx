@@ -2,6 +2,8 @@ import type { ReactNode } from 'react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   addOrderCallLog,
+  recordCodWhatsAppOpened,
+  saveManualShadowfaxShipment,
   addAddressConfirmationComment,
   cancelOrder,
   apiBase,
@@ -65,7 +67,7 @@ import { displayedOrderNumber, orderNumberClipboardValue, stopCopyPropagation } 
 
 type IconName = 'grid' | 'bag' | 'alert' | 'users' | 'chart' | 'settings' | 'search' | 'bell' | 'filter' | 'chevron' | 'more' | 'eye' | 'truck' | 'calendar' | 'close' | 'copy' | 'phone' | 'external' | 'repeat' | 'tag' | 'edit' | 'call'
 type TabKey = 'fresh' | 'previous' | 'all' | 'labels_to_print' | 'awaiting_confirmation' | 'printed_today' | 'shiprocket_cleanup'
-type CallResult = 'No Answer' | 'Busy' | 'Switched Off' | 'Callback Requested' | 'Confirmed' | 'Cancelled' | 'Wrong Number'
+export type CallResult = 'No Answer' | 'Busy' | 'Switched Off' | 'On Hold' | 'Confirmed' | 'Cancelled'
 type CourierQuote = {
   courier_id: string | null
   courier_name: string
@@ -92,7 +94,15 @@ const dispatchItems: { key: TabKey; label: string }[] = [
   { key: 'labels_to_print', label: 'Labels to Print' },
   { key: 'printed_today', label: 'Printed Today' },
 ]
-const callResults: CallResult[] = ['No Answer', 'Busy', 'Switched Off', 'Callback Requested', 'Confirmed', 'Cancelled', 'Wrong Number']
+export const callResults: CallResult[] = ['Confirmed', 'No Answer', 'Busy', 'Switched Off', 'On Hold', 'Cancelled']
+export const COD_WHATSAPP_MESSAGE = `Hello! We tried calling you to confirm your Mumchies COD order but couldnt connect.\n\nPlease reply CONFIRM if you would like to confirm your order and will be available to receive and pay for the order at the time of delivery.\n\nWe will dispatch the order after receiving your confirmation.\n\n Team Mumchies`
+export function indianWhatsAppNumber(value: string | null | undefined): string | null {
+  let digits = String(value || '').replace(/\D/g, '')
+  if (digits.length === 11 && digits.startsWith('0')) digits = digits.slice(1)
+  if (digits.length === 10 && /^[6-9]/.test(digits)) return `91${digits}`
+  if (digits.length === 12 && digits.startsWith('91') && /^[6-9]/.test(digits.slice(2))) return digits
+  return null
+}
 const reconciliationDate = (value: string | null) => {
   if (!value) return '—'
   const parsed = new Date(value)
@@ -183,6 +193,7 @@ function App() {
   const [searchDraft, setSearchDraft] = useState('')
   const [search, setSearch] = useState('')
   const [attemptFilter, setAttemptFilter] = useState<'1' | '2' | '3' | '4_plus' | null>(null)
+  const [pendingView, setPendingView] = useState<'follow_up' | 'on_hold'>('follow_up')
   const [payment, setPayment] = useState('All')
   const [risk, setRisk] = useState('All')
   const [sort, setSort] = useState('Newest first')
@@ -190,7 +201,7 @@ function App() {
   const [pageSize, setPageSize] = useState<20 | 50 | 100>(20)
   const [total, setTotal] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
-  const [counts, setCounts] = useState<OrderCounts>({ operations: 0, fresh: 0, previous: 0, all: 0, labels_to_print: 0, awaiting_confirmation: 0, printed_today: 0, new_orders: 0, cod: 0, prepaid: 0, high_risk: 0, repeat_customers: 0, cod_collectable: 0, prepaid_value: 0, awaiting_order_confirmation: 0, awaiting_address_verification: 0, cod_conversion_pending: 0 })
+  const [counts, setCounts] = useState<OrderCounts>({ operations: 0, fresh: 0, previous: 0, follow_up: 0, on_hold: 0, all: 0, labels_to_print: 0, awaiting_confirmation: 0, printed_today: 0, new_orders: 0, cod: 0, prepaid: 0, high_risk: 0, repeat_customers: 0, cod_collectable: 0, prepaid_value: 0, awaiting_order_confirmation: 0, awaiting_address_verification: 0, cod_conversion_pending: 0 })
   const [cleanupRecords, setCleanupRecords] = useState<ShiprocketCleanupRecord[]>([])
   const [cleanupResults, setCleanupResults] = useState<Record<string, ShiprocketCancellationResult>>({})
   const [reconciliation, setReconciliation] = useState<OrdersReconciliationSummary | null>(null)
@@ -264,6 +275,7 @@ function App() {
         risk: risk === 'All' ? 'all' : risk.toLowerCase(),
         sort: { 'Newest first': 'newest', 'Oldest first': 'oldest', 'COD first': 'cod_first', 'Prepaid first': 'prepaid_first', 'Value high to low': 'value_desc', 'Value low to high': 'value_asc' }[sort] || 'newest',
         attempt: queue === 'previous' ? attemptFilter ?? 'all' : 'all',
+        pendingView: queue === 'previous' ? pendingView : 'follow_up',
       }, signal)
       setOrders(data.items)
       setTotal(data.total)
@@ -289,7 +301,7 @@ function App() {
     } finally {
       if (!signal?.aborted) setLoading(false)
     }
-  }, [attemptFilter, page, pageSize, payment, queue, risk, search, selectedOrderId, sort])
+  }, [attemptFilter, page, pageSize, payment, pendingView, queue, risk, search, selectedOrderId, sort])
 
   useEffect(() => {
     const timeout = window.setTimeout(() => { setSearch(searchDraft.trim()); setPage(1) }, 350)
@@ -435,6 +447,10 @@ function App() {
 
   const saveCallLog = async () => {
     if (!selectedOrder) return
+    if (callResult === 'On Hold' && !callComment.trim()) {
+      setNotice('A note is required when placing an order On Hold')
+      return
+    }
     if (callResult === 'Cancelled') {
       try {
         setCancellationPreflight(await getCancellationPreflight(selectedOrder.internalId))
@@ -579,6 +595,18 @@ function App() {
     }
   }
 
+  const saveManualShadowfax = async (payload: { awb?: string; provider_id?: string; service_name?: string; booked_at?: string; freight?: number; note?: string }) => {
+    if (!selectedOrder) return
+    setBookingLoading(true); setCourierError('')
+    try {
+      const result = await saveManualShadowfaxShipment(selectedOrder.internalId, payload)
+      const reopened = await getOrderOperations(selectedOrder.internalId)
+      setOperations(reopened)
+      applyCanonicalShipment(selectedOrder.internalId, reopened.shipment ?? result.shipment ?? null)
+      setNotice('Shadowfax manual shipment saved')
+    } catch (error) { setCourierError((error as Error).message); throw error } finally { setBookingLoading(false) }
+  }
+
   const refreshShipment = async () => {
     if (!selectedOrder) return
     setShipmentRefreshLoading(true)
@@ -716,7 +744,11 @@ function App() {
             ))}</div>
           </div>)}
         </section>
-        {queue === 'previous' && <div className="mb-5 flex flex-wrap gap-2" aria-label="Attempt filters">
+        {queue === 'previous' && <div className="mb-3 flex gap-2" aria-label="Previous pending views">
+          <button onClick={() => { setPendingView('follow_up'); setPage(1) }} className={`rounded-full px-3 py-1.5 text-xs font-semibold ${pendingView === 'follow_up' ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200'}`}>Follow-up ({counts.follow_up})</button>
+          <button onClick={() => { setPendingView('on_hold'); setAttemptFilter(null); setPage(1) }} className={`rounded-full px-3 py-1.5 text-xs font-semibold ${pendingView === 'on_hold' ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200'}`}>On Hold ({counts.on_hold})</button>
+        </div>}
+        {queue === 'previous' && pendingView === 'follow_up' && <div className="mb-5 flex flex-wrap gap-2" aria-label="Attempt filters">
           {([['1', 'Attempt 1'], ['2', 'Attempt 2'], ['3', 'Attempt 3'], ['4_plus', 'Attempt 4+']] as const).map(([value, label]) => <button key={value} onClick={() => { setAttemptFilter(current => current === value ? null : value); setPage(1) }} className={`rounded-full px-3 py-1.5 text-xs font-semibold ${attemptFilter === value ? 'bg-orange-600 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200'}`}>{label}</button>)}
         </div>}
 
@@ -806,6 +838,7 @@ function App() {
           onCheckCouriers={checkCouriers}
           onSelectCourier={courier => void selectCourier(courier)}
           onBookShipment={bookShipment}
+          onSaveManualShadowfax={saveManualShadowfax}
           onRefreshShipment={() => void refreshShipment()}
           onReconcileShipment={() => void reconcileShipment()}
           onCancelShipment={() => void cancelShipment()}
@@ -923,6 +956,7 @@ const OrderDrawer = memo(function OrderDrawer({
   onCheckCouriers,
   onSelectCourier,
   onBookShipment,
+  onSaveManualShadowfax,
   onRefreshShipment,
   onReconcileShipment,
   onCancelShipment,
@@ -998,6 +1032,7 @@ const OrderDrawer = memo(function OrderDrawer({
     breadth_cm: number | null
     height_cm: number | null
   }) => void
+  onSaveManualShadowfax: (payload: { awb?: string; provider_id?: string; service_name?: string; booked_at?: string; freight?: number; note?: string }) => Promise<void>
   onRefreshShipment: () => void
   onReconcileShipment: () => void
   onCancelShipment: () => void
@@ -1014,6 +1049,9 @@ const OrderDrawer = memo(function OrderDrawer({
   }))
   const [addressReview, setAddressReview] = useState<{ status: string; blockers: string[]; warnings: string[]; shiprocket_message: string } | null>(null)
   const [addressReviewLoading, setAddressReviewLoading] = useState(false)
+  const [workflowError, setWorkflowError] = useState('')
+  const [showShadowfaxForm, setShowShadowfaxForm] = useState(false)
+  const [manualShadowfax, setManualShadowfax] = useState({ awb: '', provider_id: '', service_name: '', booked_at: new Date().toISOString().slice(0, 16), freight: '', note: '' })
   const autoLookupKeyRef = useRef('')
 
   const shipping = order.shippingAmount == null ? 'Courier rates not connected' : formatMoney(order.shippingAmount)
@@ -1120,12 +1158,14 @@ const OrderDrawer = memo(function OrderDrawer({
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Customer Name" value={addressDraft.customer_name} onChange={value => setAddressDraft({ ...addressDraft, customer_name: value })} />
               <Field label="Phone" value={addressDraft.phone} onChange={value => setAddressDraft({ ...addressDraft, phone: value })} />
-              <Field label="Address Line 1" value={addressDraft.address_line1} onChange={value => setAddressDraft({ ...addressDraft, address_line1: value })} />
-              <Field label="Address Line 2" value={addressDraft.address_line2} onChange={value => setAddressDraft({ ...addressDraft, address_line2: value })} />
-              <Field label="Landmark" value={addressDraft.landmark} onChange={value => setAddressDraft({ ...addressDraft, landmark: value })} />
-              <Field label="City" value={addressDraft.city} onChange={value => setAddressDraft({ ...addressDraft, city: value })} />
-              <Field label="State" value={addressDraft.state} onChange={value => setAddressDraft({ ...addressDraft, state: value })} />
-              <Field label="PIN Code" value={addressDraft.pincode} onChange={value => setAddressDraft({ ...addressDraft, pincode: value })} />
+              <MultilineField label="Address Line 1" value={addressDraft.address_line1} onChange={value => setAddressDraft({ ...addressDraft, address_line1: value })} />
+              <MultilineField label="Address Line 2" value={addressDraft.address_line2} onChange={value => setAddressDraft({ ...addressDraft, address_line2: value })} />
+              <MultilineField label="Landmark" value={addressDraft.landmark} onChange={value => setAddressDraft({ ...addressDraft, landmark: value })} />
+              <div className="grid gap-3 sm:col-span-2 sm:grid-cols-3">
+                <Field label="City" value={addressDraft.city} onChange={value => setAddressDraft({ ...addressDraft, city: value })} />
+                <Field label="State" value={addressDraft.state} onChange={value => setAddressDraft({ ...addressDraft, state: value })} />
+                <Field label="PIN Code" value={addressDraft.pincode} onChange={value => setAddressDraft({ ...addressDraft, pincode: value })} />
+              </div>
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
               <button onClick={() => { setAddressReviewLoading(true); void onSaveAddress().then(result => { if (result) setAddressReview(result.validation) }).finally(() => setAddressReviewLoading(false)) }} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white">{addressReviewLoading ? 'Saving & Verifying…' : 'Save & Verify Address'}</button>
@@ -1189,6 +1229,14 @@ const OrderDrawer = memo(function OrderDrawer({
                 <button onClick={onSaveCallLog} className="rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white">Save</button>
               </div>}
               {!isPrepaid && <div className="space-y-2">
+                {['No Answer', 'Busy', 'Switched Off'].includes(callLog[0]?.result || '') && <button onClick={() => {
+                  const phone = indianWhatsAppNumber(addressDraft.phone || order.phone)
+                  if (!phone) { setWorkflowError('A valid Indian mobile number is required to open WhatsApp.'); return }
+                  setWorkflowError('')
+                  window.open(`https://wa.me/${phone}?text=${encodeURIComponent(COD_WHATSAPP_MESSAGE)}`, '_blank', 'noopener,noreferrer')
+                  void recordCodWhatsAppOpened(order.internalId).catch(error => setWorkflowError(error.message))
+                }} className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-800">Send WhatsApp</button>}
+                {workflowError && <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{workflowError}</p>}
                 {callLog.length === 0 ? <p className="text-sm text-slate-400">No call attempts logged yet.</p> : callLog.map(entry => (
                   <div key={`${entry.timestamp}-${entry.result}`} className="rounded-lg border border-slate-100 px-3 py-2 text-sm">
                     <div className="flex items-center justify-between">
@@ -1258,6 +1306,13 @@ const OrderDrawer = memo(function OrderDrawer({
                   })}
                 </div>
               )}
+              {selectedCourier?.provider === 'shadowfax' && <p className="rounded-lg bg-amber-50 px-3 py-2 font-semibold text-amber-800">Manual booking on Shadowfax required</p>}
+              {showShadowfaxForm && selectedCourier?.provider === 'shadowfax' && <div className="space-y-3 rounded-xl border border-slate-200 p-3">
+                <p className="font-semibold text-slate-800">Confirm manual Shadowfax booking</p>
+                <div className="grid gap-2 sm:grid-cols-2"><Field label="AWB" value={manualShadowfax.awb} onChange={awb => setManualShadowfax({ ...manualShadowfax, awb })} /><Field label="Shipment / Order ID" value={manualShadowfax.provider_id} onChange={provider_id => setManualShadowfax({ ...manualShadowfax, provider_id })} /><Field label="Service name" value={manualShadowfax.service_name} onChange={service_name => setManualShadowfax({ ...manualShadowfax, service_name })} /><Field label="Booking date/time" value={manualShadowfax.booked_at} onChange={booked_at => setManualShadowfax({ ...manualShadowfax, booked_at })} /><Field label="Freight (optional)" value={manualShadowfax.freight} onChange={freight => setManualShadowfax({ ...manualShadowfax, freight })} /><Field label="Operator note" value={manualShadowfax.note} onChange={note => setManualShadowfax({ ...manualShadowfax, note })} /></div>
+                <button disabled={bookingLoading || (!manualShadowfax.awb.trim() && !manualShadowfax.provider_id.trim())} onClick={() => void onSaveManualShadowfax({ ...manualShadowfax, booked_at: new Date(manualShadowfax.booked_at).toISOString(), freight: manualShadowfax.freight ? Number(manualShadowfax.freight) : undefined }).then(() => setShowShadowfaxForm(false)).catch(() => undefined)} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40">Save manual shipment</button>
+                {!manualShadowfax.awb.trim() && !manualShadowfax.provider_id.trim() && <p className="text-xs text-amber-700">Enter an AWB or Shadowfax shipment/order ID.</p>}
+              </div>}
               {shipment && (
                 <div className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
                   <p className="font-semibold">Provider: {shipment.provider || 'Shiprocket'}</p>
@@ -1267,6 +1322,11 @@ const OrderDrawer = memo(function OrderDrawer({
                   <p>Shipment ID: {shipment.shipment_id || '—'}</p>
                   <p>Booked at: {shipment.booked_at ? formatDateTime(shipment.booked_at) : '—'}</p>
                   <p>Latest status: {shipment.latest_status || '—'}</p>
+                  {shipment.booking_mode && <p>Booking mode: {shipment.booking_mode}</p>}
+                  {shipment.courier_service && <p>Service: {shipment.courier_service}</p>}
+                  {shipment.booking_freight != null && <p>Freight: {formatMoney(shipment.booking_freight)}</p>}
+                  {shipment.booking_operator && <p>Operator: {shipment.booking_operator}</p>}
+                  {shipment.booking_note && <p>Note: {shipment.booking_note}</p>}
                   {shipment.provider && shipment.shipment_id && (
                     <button onClick={onRefreshShipment} disabled={shipmentRefreshLoading} className="mt-2 rounded-md border border-emerald-200 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-800 disabled:opacity-60">
                       {shipmentRefreshLoading ? 'Refreshing…' : 'Refresh Shipment Status'}
@@ -1353,11 +1413,11 @@ const OrderDrawer = memo(function OrderDrawer({
           ) : (
             <div className="flex flex-1 flex-col gap-1"><button
               disabled={!canBookShipment}
-              onClick={() => void onBookShipment(packageNumbers)}
+              onClick={() => selectedCourier?.provider === 'shadowfax' ? setShowShadowfaxForm(true) : void onBookShipment(packageNumbers)}
               className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
             >
               <Icon name="truck" size={16} />
-              {bookingLoading ? `Booking with ${selectedCourier?.courier_name || 'courier'}…` : selectedCourierId ? 'Book Shipment' : 'Select a courier above'}
+              {bookingLoading ? `Saving ${selectedCourier?.courier_name || 'courier'}…` : selectedCourier?.provider === 'shadowfax' ? 'Mark as shipped through Shadowfax' : selectedCourierId ? 'Book Shipment' : 'Select a courier above'}
             </button>{!canBookShipment && bookingBlocker && <p className="text-center text-[11px] font-medium text-amber-700">{bookingBlocker}</p>}</div>
           )}
           <button onClick={onClose} className="rounded-lg px-2 py-2.5 text-sm font-semibold text-slate-500 hover:bg-slate-50">Close</button>
@@ -1374,6 +1434,10 @@ function Field({ label, value, onChange, testId }: { label: string; value: strin
       <input data-testid={testId} value={value} onChange={e => onChange(e.target.value)} className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-orange-300 focus:ring-2 focus:ring-orange-100" />
     </label>
   )
+}
+
+export function MultilineField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  return <label className="block sm:col-span-2"><span className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-slate-400">{label}</span><textarea rows={2} value={value} onChange={event => onChange(event.target.value)} className="w-full resize-y overflow-x-hidden whitespace-pre-wrap break-words rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-orange-300 focus:ring-2 focus:ring-orange-100" /></label>
 }
 
 function KeyValue({ label, value }: { label: string; value: string }) {

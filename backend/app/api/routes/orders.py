@@ -283,6 +283,10 @@ def _call_outcome_requires_follow_up(order: ShopifyOrder) -> bool:
     )
 
 
+def _call_outcome_is_on_hold(order: ShopifyOrder) -> bool:
+    return order.payment_type in {"cod", "partial_cod"} and str(order.latest_call_result or "").strip() == "On Hold"
+
+
 def _engage_category(value: object) -> str:
     raw = str(value) if value is not None else ""
     return {
@@ -334,7 +338,9 @@ def _full_counts(orders: list[ShopifyOrder], now: datetime, db: Session) -> dict
     shipments = db.scalars(select(ShiprocketShipment).where(ShiprocketShipment.label_print_status.in_(["not_printed", "awaiting_confirmation", "printed"]))).all() if hasattr(db, "scalars") else []
     printed_today = [value for value in shipments if value.label_print_status == "printed" and value.label_last_printed_at and (value.label_last_printed_at if value.label_last_printed_at.tzinfo else value.label_last_printed_at.replace(tzinfo=timezone.utc)).astimezone(ZoneInfo("Asia/Kolkata")).date() == local_today]
     return {
-        "operations": len(fresh) + len(previous), "fresh": len(fresh), "previous": len(previous), "all": len(orders),
+        "operations": len(fresh) + len(previous), "fresh": len(fresh), "previous": len(previous),
+        "follow_up": sum(1 for order in orders if _requires_operational_action(order) and _call_outcome_requires_follow_up(order)),
+        "on_hold": sum(1 for order in orders if _requires_operational_action(order) and _call_outcome_is_on_hold(order)), "all": len(orders),
         "labels_to_print": sum(1 for value in shipments if value.label_print_status == "not_printed" and value.booking_status == "booked" and value.awb),
         "awaiting_confirmation": sum(1 for value in shipments if value.label_print_status == "awaiting_confirmation"),
         "printed_today": len(printed_today), "new_orders": len(fresh),
@@ -347,12 +353,13 @@ def _full_counts(orders: list[ShopifyOrder], now: datetime, db: Session) -> dict
     }
 
 
-def _matches_queue(order: ShopifyOrder, queue: str, now: datetime) -> bool:
+def _matches_queue(order: ShopifyOrder, queue: str, now: datetime, pending_view: str = "follow_up") -> bool:
     shipment = order.shipment or {}
     if queue == "fresh":
         return _is_fresh_order(order)
     if queue == "previous":
-        return _requires_operational_action(order) and _call_outcome_requires_follow_up(order)
+        relevant = _call_outcome_is_on_hold(order) if pending_view == "on_hold" else _call_outcome_requires_follow_up(order)
+        return _requires_operational_action(order) and relevant
     if queue == "labels_to_print":
         return shipment.get("booking_status") == "booked" and bool(shipment.get("awb")) and shipment.get("label_print_status") == "not_printed"
     if queue == "awaiting_confirmation":
@@ -376,6 +383,7 @@ async def list_orders(
     address_verification: str = "all",
     cod_to_prepaid: str = "all",
     attempt: str = "all",
+    pending_view: str = "follow_up",
     db: Session = Depends(get_db),
 ) -> OrdersPage:
     """Return one filtered page of orders. The client never receives the unpaged collection."""
@@ -387,6 +395,8 @@ async def list_orders(
         raise HTTPException(status_code=422, detail="Unknown orders queue.")
     if attempt not in {"all", "1", "2", "3", "4_plus"}:
         raise HTTPException(status_code=422, detail="Unknown attempt filter.")
+    if pending_view not in {"follow_up", "on_hold"}:
+        raise HTTPException(status_code=422, detail="Unknown previous-pending view.")
     orders = await _load_orders(db)
     now = datetime.now(timezone.utc)
     allowed_engage_filters = {"all", "pending", "successful", "cancelled", "disabled", "unknown"}
@@ -395,8 +405,8 @@ async def list_orders(
     base_filtered = _base_filtered_orders(orders, search, payment, risk, order_confirmation, address_verification, cod_to_prepaid)
     counts = _full_counts(base_filtered, now, db)
     effective_queue = "all" if search.strip() else queue
-    filtered = [order for order in base_filtered if _matches_queue(order, effective_queue, now)]
-    if attempt != "all":
+    filtered = [order for order in base_filtered if _matches_queue(order, effective_queue, now, pending_view)]
+    if attempt != "all" and pending_view == "follow_up":
         filtered = [order for order in filtered if (order.call_attempt_count >= 4 if attempt == "4_plus" else order.call_attempt_count == int(attempt))]
     reverse = sort not in {"oldest", "value_asc"}
     if sort in {"value_asc", "value_desc"}:
@@ -704,6 +714,11 @@ async def save_and_verify_address(order_id: str, payload: SaveVerifyAddressPaylo
 
 @router.post("/{order_id}/call-logs")
 async def add_call_log(order_id: str, payload: CallLogPayload, request: Request) -> dict[str, object]:
+    allowed = {"Confirmed", "No Answer", "Busy", "Switched Off", "On Hold", "Cancelled"}
+    if payload.result not in allowed:
+        raise HTTPException(status_code=422, detail="Unsupported COD result.")
+    if payload.result == "On Hold" and not str(payload.comment or "").strip():
+        raise HTTPException(status_code=422, detail="A note is required when placing a COD order On Hold.")
     entry = {
         "result": payload.result,
         "timestamp": payload.timestamp or datetime.now().isoformat(timespec="seconds"),
@@ -711,6 +726,18 @@ async def add_call_log(order_id: str, payload: CallLogPayload, request: Request)
         "comment": payload.comment,
     }
     return OrderOperationsStore.append_call_log(order_id, entry)
+
+
+@router.post("/{order_id}/whatsapp/cod-confirmation-opened")
+async def record_cod_whatsapp_opened(order_id: str, request: Request) -> dict[str, object]:
+    operations = OrderOperationsStore.get(order_id)
+    logs = operations.get("call_logs") or []
+    latest = logs[0].get("result") if logs and isinstance(logs[0], dict) else None
+    if latest not in {"No Answer", "Busy", "Switched Off"}:
+        raise HTTPException(status_code=409, detail="WhatsApp is only available after a failed COD contact result.")
+    return OrderOperationsStore.record_timeline_event(
+        order_id, "WhatsApp opened for COD confirmation", operator=current_actor(request)
+    )
 
 
 @router.post("/{order_id}/address-confirmation-comments")

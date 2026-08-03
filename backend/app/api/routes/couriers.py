@@ -55,6 +55,15 @@ class ProviderActionPayload(BaseModel):
     operator: str = "Mumchies OS"
 
 
+class ManualShadowfaxPayload(BaseModel):
+    awb: str | None = None
+    provider_id: str | None = None
+    service_name: str | None = None
+    booked_at: datetime | None = None
+    freight: float | None = Field(default=None, ge=0)
+    note: str | None = None
+
+
 async def _sync_shopify_after_booking(db: Session, order: ShopifyOrder) -> dict[str, object] | None:
     """Best-effort secondary sync; courier persistence is never rolled back."""
     shipment = get_shipment(db, order.order_id)
@@ -414,25 +423,14 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
         except (DelhiveryError, httpx.HTTPError):
             # One provider failing must not hide otherwise valid courier options.
             provider_warnings.append("Direct Delhivery is temporarily unavailable.")
-        try:
-            adapter = courier_registry.get("shadowfax")
-            shadowfax = await adapter.serviceability({
-                "pickup_pincode": pickup_postcode, "delivery_pincode": delivery_postcode,
-                "weight_kg": package.weight_kg, "payment_mode": "COD" if cod else "Prepaid",
-                "cod_amount": float(order.cod_collectable_amount) if cod else 0,
-            })
-            normalized_quotes.extend({
-                "courier_id": quote.service_id, "courier_name": quote.courier_name,
-                "rate": quote.charges or 0, "cod_charge": quote.cod_charge,
-                "total_estimated_shipping_cost": quote.charges or 0,
-                "estimated_delivery_days": quote.estimated_delivery_days,
-                "expected_delivery_date": quote.expected_delivery_date, "rating": None,
-                "cod_supported": True, "prepaid_supported": True,
-                "mode": quote.service_type, "provider": quote.provider,
-                "booking_supported": quote.serviceable, "rate_note": quote.reason or "Shadowfax Direct",
-            } for quote in shadowfax.quotes)
-        except ProviderError as error:
-            provider_warnings.append(str(error))
+        normalized_quotes.append({
+            "courier_id": "shadowfax:manual", "courier_name": "Shadowfax", "rate": 0,
+            "cod_charge": None, "total_estimated_shipping_cost": 0,
+            "estimated_delivery_days": None, "expected_delivery_date": None, "rating": None,
+            "cod_supported": True, "prepaid_supported": True, "mode": "Manual",
+            "provider": "shadowfax", "booking_supported": True,
+            "rate_note": "Manual booking on Shadowfax required",
+        })
     except ShiprocketConfigurationError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     except ShiprocketAPIError as error:
@@ -451,6 +449,38 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
 @router.post("/orders/{order_id}/book")
 async def shiprocket_book_shipment_route(order_id: str, payload: BookingPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     return await shiprocket_book_shipment(order_id, payload, db, current_actor(request))
+
+
+@booking_router.post("/{order_id}/shadowfax/manual")
+async def save_manual_shadowfax_shipment(order_id: str, payload: ManualShadowfaxPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
+    awb = str(payload.awb or "").strip() or None
+    provider_id = str(payload.provider_id or "").strip() or None
+    if not awb and not provider_id:
+        raise HTTPException(status_code=422, detail="Enter an AWB or Shadowfax shipment/order ID.")
+    order, operations, shipment = await _load_context(order_id, db)
+    existing = get_shipment(db, order_id)
+    if existing and has_persisted_provider_booking_evidence(shipment_snapshot(existing)):
+        raise HTTPException(status_code=409, detail="An active shipment already exists for this order.")
+    if has_existing_shipment_evidence(order, operations, shipment):
+        raise HTTPException(status_code=409, detail="An active shipment or fulfilment already exists for this order.")
+    selected = operations.get("selected_courier")
+    if not isinstance(selected, dict) or str(selected.get("provider") or "").casefold() != "shadowfax":
+        raise HTTPException(status_code=400, detail="Select the manual Shadowfax courier option first.")
+    actor = current_actor(request)
+    booked_at = payload.booked_at or datetime.now(timezone.utc)
+    service = str(payload.service_name or "").strip() or None
+    saved = upsert_shipment(
+        db, order_id, provider="shadowfax", provider_order_id=provider_id,
+        shipment_id=provider_id, awb=awb, courier_name=service, courier_service=service,
+        booking_status="booked", booking_mode="manual", booked_at=booked_at,
+        latest_status="Booked manually", normalized_status="booked",
+        booking_confidence="confirmed", reconciliation_status="confirmed",
+        booking_freight=payload.freight, booking_operator=actor,
+        booking_note=str(payload.note or "").strip() or None,
+    )
+    OrderOperationsStore.record_timeline_event(order_id, "shadowfax_manual_shipment_recorded", operator=actor)
+    synchronized = await _sync_shopify_after_booking(db, order) if awb else shipment_snapshot(saved)
+    return {"provider": "shadowfax", "shipment": synchronized or shipment_snapshot(saved)}
 
 
 async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: Session, operator: str = "Mumchies OS") -> dict[str, object]:
@@ -484,17 +514,7 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
         if payload.provider and payload.provider.lower() != provider:
             raise HTTPException(status_code=400, detail="Requested provider does not match the stored courier selection.")
         if provider == "shadowfax":
-            adapter = courier_registry.get("shadowfax")
-            request = await _build_provider_booking_request(order, operations, package)
-            try:
-                result = await CourierPlatformService().book(
-                    db, order_id=order_id, merchant_order_id=order.order_number,
-                    adapter=adapter, request=request, operator=actor,
-                )
-            except ProviderError as error:
-                raise HTTPException(status_code=503 if error.operation in {"authenticate", "serviceability", "booking"} else 409, detail=str(error)) from error
-            synchronized = await _sync_shopify_after_booking(db, order)
-            return {"provider": "shadowfax", **result, "shipment": synchronized or result.get("shipment")}
+            raise HTTPException(status_code=409, detail="Shadowfax is manual-booking only. Use Mark as shipped through Shadowfax.")
         if provider == "delhivery":
             service = DelhiveryService()
             if not service.configured:
@@ -630,7 +650,7 @@ async def select_courier(order_id: str, payload: dict[str, object], request: Req
     provider = str(payload.get("provider") or "shiprocket").lower()
     selected = {
         "provider": provider,
-        "booking_supported": provider in {"shiprocket", "delhivery"} and bool(payload.get("booking_supported", True)),
+        "booking_supported": provider in {"shiprocket", "delhivery", "shadowfax"} and bool(payload.get("booking_supported", True)),
         "rate_note": str(payload.get("rate_note") or ""),
         "courier_id": str(payload.get("courier_id") or ""),
         "courier_name": str(payload.get("courier_name") or ""),

@@ -99,6 +99,8 @@ def derive_operational_status(order: Any, operations: dict[str, Any] | None, shi
         return "Booked"
     if "ndr" in tags:
         return "NDR"
+    if latest_call == "On Hold":
+        return "On Hold"
     if latest_call == "Wrong Number":
         return "Needs Review"
     payment_status = _text(getattr(order, "payment_status", None))

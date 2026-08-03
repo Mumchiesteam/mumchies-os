@@ -123,6 +123,10 @@ export interface Order {
     courier_name: string | null
     courier_id: string | null
     booking_status: string | null
+    booking_mode: string | null
+    booking_freight: number | null
+    booking_operator: string | null
+    booking_note: string | null
     booked_at: string | null
     latest_status: string | null
     normalized_status: string | null
@@ -366,6 +370,8 @@ export interface OrderCounts {
   operations: number
   fresh: number
   previous: number
+  follow_up: number
+  on_hold: number
   all: number
   labels_to_print: number
   awaiting_confirmation: number
@@ -394,6 +400,7 @@ export interface OrdersQuery {
   addressVerification?: string
   codToPrepaid?: string
   attempt?: 'all' | '1' | '2' | '3' | '4_plus'
+  pendingView?: 'follow_up' | 'on_hold'
 }
 
 export const mapApiOrder = (item: ApiOrder): Order => {
@@ -443,6 +450,7 @@ export async function getOrders(query: OrdersQuery = {}, signal?: AbortSignal): 
     address_verification: query.addressVerification ?? 'all',
     cod_to_prepaid: query.codToPrepaid ?? 'all',
     attempt: query.attempt ?? 'all',
+    pending_view: query.pendingView ?? 'follow_up',
   })
   const response = await apiFetch(`${apiBase}/api/v1/orders?${params}`, { signal })
   if (!response.ok) {
@@ -606,6 +614,20 @@ export async function addOrderCallLog(orderId: string, payload: { result: string
     throw new Error('Could not save call log.')
   }
   return response.json()
+}
+
+export async function recordCodWhatsAppOpened(orderId: string): Promise<OrderOperations> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/whatsapp/cod-confirmation-opened`, { method: 'POST' })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail || 'Could not save WhatsApp audit event.')
+  return body
+}
+
+export async function saveManualShadowfaxShipment(orderId: string, payload: { awb?: string; provider_id?: string; service_name?: string; booked_at?: string; freight?: number; note?: string }): Promise<{ provider: string; shipment: Order['shipment'] }> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/shadowfax/manual`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail || 'Could not save manual Shadowfax shipment.')
+  return body
 }
 
 export async function addAddressConfirmationComment(orderId: string, comment: string): Promise<OrderOperations> {
