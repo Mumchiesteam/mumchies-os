@@ -61,6 +61,12 @@ describe('provider-neutral courier client', () => {
     await expect(getOrderOperations('1')).resolves.toMatchObject({ corrected_address: null, call_logs: [] })
   })
 
+  it('returns the complete canonical shipment used by the reopened drawer', async () => {
+    const shipment = { provider: 'shiprocket', courier_name: 'Delhivery Surface', awb: 'AWB-1', shipment_id: 'SHIP-1', provider_order_id: 'ORDER-1', booking_status: 'booked', booked_at: '2026-08-01T10:00:00Z', latest_status: 'Shipped', evidence_source: 'internal_and_shopify' }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ shipment }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    await expect(getOrderOperations('323976')).resolves.toMatchObject({ shipment })
+  })
+
   it('uses safe empty defaults when courier arrays are omitted', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ provider: 'multi', weight_kg: 0.5 }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
     const result = await checkShiprocketCouriers('1', { weight_kg: 0.5, courier_payment_mode: 'Prepaid' })

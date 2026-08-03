@@ -19,7 +19,7 @@ from app.schemas.orders import ShopifyOrder
 from app.repositories.shiprocket import get_shipment, get_shipments_by_order_id, snapshot as shipment_snapshot, sync_engage_orders
 from app.services.order_operations import OrderOperationsStore
 from app.services.delhivery import DelhiveryError, DelhiveryService
-from app.services.shipment_status import derive_operational_status, has_existing_shipment_evidence, merge_shopify_fulfillment_evidence
+from app.services.shipment_status import derive_operational_status, has_existing_shipment_evidence, has_persisted_provider_booking_evidence, merge_shopify_fulfillment_evidence
 from app.services.shiprocket import ShiprocketAPIError, ShiprocketConfigurationError, ShiprocketService
 from app.services.shopify import ShopifyConfigurationError, ShopifyService, ShopifySyncError
 from app.services.shopify_fulfillment import ShopifyFulfillmentSynchronizer, ShopifyFulfillmentSyncError
@@ -185,6 +185,41 @@ async def _load_reconciliation_orders(db: Session) -> list[ShopifyOrder]:
         raise HTTPException(status_code=502, detail="Shopify could not provide unfulfilled orders.") from error
     except httpx.HTTPError as error:
         raise HTTPException(status_code=502, detail="Unable to reach Shopify.") from error
+
+
+async def _canonical_shipment_readback(order: ShopifyOrder, operations: dict[str, object], db: Session) -> dict[str, object] | None:
+    """Read through to Shiprocket only to repair a confirmed, correlated shipment.
+
+    This path never creates an order, assigns a courier, or requests an AWB.  It may only read
+    an upstream order with the exact Shopify order number and persist identifiers already
+    returned by that provider.
+    """
+    local = get_shipment(db, order.order_id)
+    local_snapshot = shipment_snapshot(local) if local else None
+    merged = merge_shopify_fulfillment_evidence(local_snapshot, order.external_tracking)
+    selected = operations.get("selected_courier") if isinstance(operations.get("selected_courier"), dict) else {}
+    provider = str((merged or {}).get("provider") or getattr(order.external_tracking, "provider", None) or selected.get("provider") or "").casefold()
+    fulfillment = str(order.fulfillment_status or "").casefold()
+    confirmed_context = bool(
+        has_persisted_provider_booking_evidence(local_snapshot)
+        or getattr(order.external_tracking, "awb", None)
+        or fulfillment in {"fulfilled", "shipped", "partial", "partially_fulfilled"}
+    )
+    required = ("provider", "courier_name", "awb", "shipment_id", "provider_order_id", "booking_status", "booked_at", "latest_status")
+    incomplete = not merged or any(not (merged or {}).get(field) for field in required)
+    if provider == "shiprocket" and confirmed_context and incomplete:
+        try:
+            reconciled = await ShiprocketService().reconcile_existing_shipment(
+                db, order.order_id, order.order_number, local.shipment_id if local else None,
+            )
+            merged = merge_shopify_fulfillment_evidence(reconciled, order.external_tracking)
+            if merged is not None:
+                merged["readback_reconciliation_status"] = "reconciled"
+        except (ShiprocketAPIError, ShiprocketConfigurationError, httpx.HTTPError) as error:
+            if merged is not None:
+                merged["readback_reconciliation_status"] = "unavailable"
+                merged["readback_reconciliation_error"] = str(error)
+    return merged
 
 
 def _requires_reconciliation_action(order: ShopifyOrder) -> bool:
@@ -381,9 +416,18 @@ async def list_orders(
 @router.get("/{order_id}/operations")
 async def get_order_operations(order_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
     operations = OrderOperationsStore.get(order_id)
-    shipment = get_shipment(db, order_id)
+    try:
+        orders = await ShopifyService().get_latest_orders()
+        order = next((value for value in orders if value.order_id == order_id), None)
+    except (ShopifyConfigurationError, httpx.HTTPError):
+        order = None
+    if order is not None:
+        shipment = await _canonical_shipment_readback(order, operations, db)
+    else:
+        local = get_shipment(db, order_id)
+        shipment = shipment_snapshot(local) if local else None
     if shipment is not None:
-        operations = {**operations, "shipment": shipment_snapshot(shipment)}
+        operations = {**operations, "shipment": shipment}
     return operations
 
 

@@ -9,8 +9,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db.base import Base
+from app.api.routes.orders import _canonical_shipment_readback
 from app.repositories.shiprocket import get_shipment, snapshot, upsert_shipment
-from app.schemas.orders import ExternalTracking
+from app.schemas.orders import ExternalTracking, ShopifyOrder
 from app.services.courier_platform.base import ProviderError
 from app.services.courier_platform.models import BookingResult, NormalizedShipmentStatus
 from app.services.courier_platform.service import CourierPlatformService
@@ -19,7 +20,7 @@ from app.services.shipment_status import (
     has_uncertain_provider_booking,
     merge_shopify_fulfillment_evidence,
 )
-from app.services.shiprocket import ShiprocketService
+from app.services.shiprocket import ShiprocketPersistenceError, ShiprocketService
 
 
 @pytest.fixture()
@@ -138,3 +139,54 @@ async def test_failed_and_uncertain_outcomes_are_distinct_and_only_uncertain_blo
     with pytest.raises(ProviderError, match="uncertain outcome"):
         await CourierPlatformService().book(db, order_id="u", merchant_order_id="U", adapter=adapter, request={}, operator="Operator")
     assert adapter.calls == 1
+
+
+@pytest.mark.anyio
+async def test_readback_reconciles_incomplete_shiprocket_row_without_booking(monkeypatch, db):
+    upsert_shipment(db, "323976", provider="shiprocket", provider_order_id="323976")
+    order = ShopifyOrder(
+        order_id="323976", order_number="323976", created_date="2026-08-01T00:00:00Z",
+        products=[], total_amount=0, fulfillment_status="fulfilled", tags=[],
+        external_tracking=ExternalTracking(provider="Shiprocket", awb="AWB-323976", status="shipped"),
+    )
+    calls = []
+    async def reconcile(_self, session, local_order_id, channel_order_id, expected_shipment_id=None):
+        calls.append((local_order_id, channel_order_id, expected_shipment_id))
+        return snapshot(upsert_shipment(
+            session, local_order_id, provider="shiprocket", provider_order_id=channel_order_id,
+            shiprocket_order_id="SR-ORDER", shipment_id="SR-SHIPMENT", awb="AWB-323976",
+            courier_name="Delhivery Surface", courier_service="Surface", booking_status="booked",
+            booked_at=datetime(2026, 8, 1, tzinfo=timezone.utc), latest_status="Shipped",
+        ))
+    monkeypatch.setattr(ShiprocketService, "reconcile_existing_shipment", reconcile)
+    result = await _canonical_shipment_readback(order, {"selected_courier": {"provider": "shiprocket"}}, db)
+    assert calls == [("323976", "323976", None)]
+    assert (result["provider"], result["courier_name"], result["awb"]) == ("shiprocket", "Delhivery Surface", "AWB-323976")
+    assert (result["shipment_id"], result["provider_order_id"], result["booking_status"]) == ("SR-SHIPMENT", "323976", "booked")
+    assert result["booked_at"] and result["latest_status"] == "Shipped"
+    assert result["readback_reconciliation_status"] == "reconciled"
+
+
+@pytest.mark.anyio
+async def test_provider_success_local_persistence_failure_is_distinct_and_never_assigns_or_rebooks(monkeypatch):
+    service = ShiprocketService(email="x", password="x", pickup_location="Warehouse")
+    service.create_order = lambda _payload: None
+    async def created(_payload):
+        return {"order_id": "SR-ORDER", "shipment_id": "SR-SHIPMENT", "awb_code": "AWB-1"}
+    service.create_order = created
+    assigned = False
+    async def assign(*_args):
+        nonlocal assigned; assigned = True
+    service.assign_courier_and_generate_awb = assign
+    class BrokenDB:
+        rolled_back = False
+        def get(self, *_args): return None
+        def add(self, *_args): raise RuntimeError("database unavailable")
+        def rollback(self): self.rolled_back = True
+    broken = BrokenDB()
+    with pytest.raises(ShiprocketPersistenceError) as caught:
+        await service.create_shipment(broken, "1", {"order_id": "1"}, "42")
+    assert caught.value.safe_details["provider_success"] is True
+    assert caught.value.safe_details["rebooking_safe"] is False
+    assert caught.value.safe_details["shipment_id"] == "SR-SHIPMENT"
+    assert broken.rolled_back and not assigned

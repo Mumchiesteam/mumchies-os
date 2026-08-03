@@ -162,6 +162,9 @@ export interface Order {
     booking_confidence: 'confirmed' | 'uncertain' | 'reconciled' | null
     reconciliation_status: 'not_required' | 'pending' | 'confirmed' | 'failed' | 'manual_review' | null
     reconciliation_error: string | null
+    evidence_source?: 'internal_and_shopify' | 'shopify_fulfillment' | null
+    readback_reconciliation_status?: 'reconciled' | 'unavailable' | null
+    readback_reconciliation_error?: string | null
     ndr_reason: string | null
     ndr_attempt: number | null
     ndr_remarks: string | null

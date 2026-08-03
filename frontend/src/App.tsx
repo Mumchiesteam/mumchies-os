@@ -324,6 +324,14 @@ function App() {
   const reconciliationRows = useMemo(() => reconciliationDataset(reconciliation, reconciliationFilter), [reconciliation, reconciliationFilter])
   const reconciliationOrders = useMemo(() => reconciliationRows.map(reconciliationRecordToOrder), [reconciliationRows])
   const selectedOrder = useMemo(() => [...orders, ...reconciliationOrders].find(order => order.internalId === selectedOrderId) || (selectedOrderSnapshot?.internalId === selectedOrderId ? selectedOrderSnapshot : null), [orders, reconciliationOrders, selectedOrderId, selectedOrderSnapshot])
+
+  const applyCanonicalShipment = (orderId: string, shipment: Order['shipment']) => {
+    if (!shipment) return
+    const update = (order: Order) => JSON.stringify(order.shipment) === JSON.stringify(shipment) ? order : { ...order, shipment }
+    setOrders(previous => previous.map(order => order.internalId === orderId ? update(order) : order))
+    setSelectedOrderSnapshot(previous => previous?.internalId === orderId ? update(previous) : previous)
+  }
+
   useEffect(() => {
     if (!selectedOrder) return
     let active = true
@@ -338,6 +346,7 @@ function App() {
       const ops = await getOrderOperations(selectedOrder.internalId)
       if (!active) return
       setOperations(ops)
+      applyCanonicalShipment(selectedOrder.internalId, ops.shipment)
       setCallResult('No Answer')
       setCallComment('')
       setAddressDraft({
@@ -557,7 +566,9 @@ function App() {
       setOrders(prev => prev.map(order => order.internalId === selectedOrder.internalId
         ? { ...order, shipment: result.shipment ?? order.shipment, operationalStatus: 'Booked' }
         : order))
-      setOperations(await getOrderOperations(selectedOrder.internalId))
+      const reopened = await getOrderOperations(selectedOrder.internalId)
+      setOperations(reopened)
+      applyCanonicalShipment(selectedOrder.internalId, reopened.shipment ?? result.shipment ?? null)
       if (result.warning) setCourierError(`Shiprocket cleanup failed: ${result.warning}`)
       setNotice(result.warning ? 'Delhivery shipment booked; Shiprocket cleanup needs attention' : result.existing ? 'Existing shipment loaded' : 'Shipment booked')
     } catch (err) {

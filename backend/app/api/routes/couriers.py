@@ -23,6 +23,7 @@ from app.services.shiprocket import (
     CourierQuote,
     ShiprocketAPIError,
     ShiprocketConfigurationError,
+    ShiprocketPersistenceError,
     ShiprocketService,
 )
 from app.services.shopify import ShopifyConfigurationError, ShopifyService
@@ -539,6 +540,8 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
         raise HTTPException(status_code=502, detail={"message": "Unable to reach Delhivery. No automatic retry was attempted."}) from error
     except ShiprocketConfigurationError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
+    except ShiprocketPersistenceError as error:
+        raise HTTPException(status_code=500, detail={"message": str(error), **error.safe_details}) from error
     except ShiprocketAPIError as error:
         raise HTTPException(
             status_code=502,

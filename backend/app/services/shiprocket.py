@@ -32,6 +32,22 @@ class ShiprocketAPIError(RuntimeError):
         self.safe_details = safe_details or {}
 
 
+class ShiprocketPersistenceError(RuntimeError):
+    """Provider accepted an order, but its confirmed identifiers could not be committed locally."""
+
+    def __init__(self, *, provider_order_id: str | None, shipment_id: str | None, awb: str | None) -> None:
+        super().__init__("Shiprocket accepted the booking, but Mumchies OS could not persist the provider response. Do not rebook; use shipment reconciliation.")
+        self.safe_details = {
+            "operation": "persist_provider_success",
+            "provider": "shiprocket",
+            "provider_order_id": provider_order_id,
+            "shipment_id": shipment_id,
+            "awb": awb,
+            "provider_success": True,
+            "rebooking_safe": False,
+        }
+
+
 @dataclass(slots=True)
 class ShiprocketHealthResult:
     configured: bool
@@ -618,18 +634,26 @@ class ShiprocketService:
         awb = created_order.get("awb_code") or created_order.get("data", {}).get("awb_code")
         selected_courier_id = courier_id or created_order.get("courier_company_id") or created_order.get("data", {}).get("courier_company_id")
         courier_name = created_order.get("courier_name") or created_order.get("data", {}).get("courier_name")
-        persisted = upsert_shipment(
-            db,
-            order_id,
-            provider="shiprocket",
-            provider_order_id=str(order_payload.get("order_id") or ""),
-            shiprocket_order_id=str(order_data) if order_data is not None else None,
-            shipment_id=str(shipment_id) if shipment_id is not None else None,
-            courier_id=str(selected_courier_id) if selected_courier_id is not None else None,
-            booking_status="pending_awb",
-            latest_status="order_created",
-            last_synced_at=datetime.now(timezone.utc),
-        )
+        try:
+            persisted = upsert_shipment(
+                db,
+                order_id,
+                provider="shiprocket",
+                provider_order_id=str(order_payload.get("order_id") or ""),
+                shiprocket_order_id=str(order_data) if order_data is not None else None,
+                shipment_id=str(shipment_id) if shipment_id is not None else None,
+                courier_id=str(selected_courier_id) if selected_courier_id is not None else None,
+                booking_status="pending_awb",
+                latest_status="order_created",
+                last_synced_at=datetime.now(timezone.utc),
+            )
+        except Exception as error:
+            db.rollback()
+            raise ShiprocketPersistenceError(
+                provider_order_id=str(order_data) if order_data is not None else None,
+                shipment_id=str(shipment_id) if shipment_id is not None else None,
+                awb=str(awb) if awb else None,
+            ) from error
         assign_response = None
         if shipment_id and selected_courier_id:
             try:
