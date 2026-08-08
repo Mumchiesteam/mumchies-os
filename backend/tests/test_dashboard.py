@@ -31,7 +31,7 @@ def test_dashboard_date_periods_use_ist_business_days() -> None:
 def test_order_activity_uses_action_timestamp_and_unique_orders() -> None:
     operations = {
         "old-order": {"human_actions": [
-            {"action": "call_logged", "timestamp": "2026-08-09T03:00:00+00:00", "operator": "Ajit"},
+            {"action": "call_logged", "timestamp": "2026-08-09T03:00:00", "operator": "Ajit"},
             {"action": "address_verified", "timestamp": "2026-08-09T04:00:00+00:00", "operator": "Ajit"},
         ]},
         "outside": {"human_actions": [{"action": "call_logged", "timestamp": "2026-08-08T03:00:00+00:00", "operator": "Ajit"}]},

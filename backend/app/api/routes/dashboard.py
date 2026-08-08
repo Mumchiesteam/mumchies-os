@@ -56,7 +56,9 @@ def _period(preset: str, start: date | None, end: date | None, now: datetime | N
 def _at(value: object) -> datetime | None:
     if not value: return None
     if isinstance(value, datetime): return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-    try: return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
     except ValueError: return None
 
 
