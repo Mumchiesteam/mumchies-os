@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import traceback
+from pathlib import Path
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -173,7 +175,9 @@ async def _refresh_dashboard_snapshot(key: str, preset: str, start_at: datetime,
     except Exception as error:  # noqa: BLE001 - a stale snapshot is safer than blanking the Dashboard
         logger.exception("Dashboard snapshot refresh failed")
         message = str(error).strip()[:300]
-        ReportSnapshotStore.save_error(key, f"{type(error).__name__}: {message}" if message else type(error).__name__)
+        locations = " > ".join(f"{Path(frame.filename).name}:{frame.lineno}:{frame.name}" for frame in traceback.extract_tb(error.__traceback__)[-3:])
+        detail = f"{type(error).__name__}: {message}" if message else type(error).__name__
+        ReportSnapshotStore.save_error(key, f"{detail} [{locations}]")
     finally:
         _dashboard_refresh_tasks.pop(key, None)
 
