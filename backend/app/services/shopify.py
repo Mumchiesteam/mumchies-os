@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -380,7 +381,91 @@ class ShopifyService:
             return orders
 
     async def _fetch_orders(self, limit: int | None = None) -> list[ShopifyOrder]:
-        return await self._fetch_orders_for_enrichment(limit, include_transactions=True)
+        orders = await self._fetch_orders_for_enrichment(limit, include_transactions=True)
+        await self._enrich_repeat_customer_history(orders)
+        return orders
+
+    @staticmethod
+    def _repeat_email(value: object) -> str:
+        return str(value or "").strip().casefold()
+
+    @staticmethod
+    def _repeat_phone(value: object) -> str:
+        digits = re.sub(r"\D", "", str(value or ""))
+        return digits[-10:] if len(digits) >= 10 else digits
+
+    @staticmethod
+    def _search_value(value: str) -> str:
+        return value.replace("\\", "\\\\").replace('"', '\\"')
+
+    async def _repeat_history_rows(self, orders: list[ShopifyOrder]) -> list[dict[str, Any]]:
+        """Read full Shopify history in batches; this does not change the Orders lookback."""
+        identities: list[str] = []
+        for order in orders:
+            if order.customer_id:
+                identities.append(f"customer_id:{order.customer_id}")
+            elif self._repeat_email(order.email):
+                identities.append(f'email:"{self._search_value(self._repeat_email(order.email))}"')
+            elif self._repeat_phone(order.phone):
+                identities.append(f'phone:"{self._search_value(self._repeat_phone(order.phone))}"')
+        identities = list(dict.fromkeys(identities))
+        query = """query RepeatCustomerHistory($query: String!, $after: String) {
+          orders(first: 250, after: $after, query: $query, sortKey: CREATED_AT, reverse: true) {
+            nodes {
+              id cancelledAt email phone
+              customer { id email phone }
+              fulfillments(first: 1) { id }
+            }
+            pageInfo { hasNextPage endCursor }
+          }
+        }"""
+        rows: list[dict[str, Any]] = []
+        for start in range(0, len(identities), 20):
+            search = " OR ".join(identities[start:start + 20])
+            after: str | None = None
+            while True:
+                data = await self.graphql(query, {"query": search, "after": after})
+                connection = data.get("orders") or {}
+                rows.extend(value for value in connection.get("nodes") or [] if isinstance(value, dict))
+                page_info = connection.get("pageInfo") or {}
+                if not page_info.get("hasNextPage"):
+                    break
+                after = str(page_info.get("endCursor") or "") or None
+                if after is None:
+                    break
+        return rows
+
+    async def _enrich_repeat_customer_history(self, orders: list[ShopifyOrder]) -> None:
+        if not orders:
+            return
+        try:
+            history = await self._repeat_history_rows(orders)
+        except ShopifySyncError:
+            return
+        for order in orders:
+            customer_id = str(order.customer_id or "")
+            email = self._repeat_email(order.email)
+            phone = self._repeat_phone(order.phone)
+            repeat = False
+            for previous in history:
+                previous_id = str(previous.get("id") or "").rsplit("/", 1)[-1]
+                if previous_id == order.order_id:
+                    continue
+                customer = previous.get("customer") or {}
+                if customer_id:
+                    matches = str(customer.get("id") or "").rsplit("/", 1)[-1] == customer_id
+                else:
+                    previous_email = self._repeat_email(previous.get("email") or customer.get("email"))
+                    previous_phone = self._repeat_phone(previous.get("phone") or customer.get("phone"))
+                    matches = bool((email and previous_email == email) or (phone and previous_phone == phone))
+                if not matches:
+                    continue
+                fulfillments = previous.get("fulfillments") or []
+                cancelled_before_dispatch = bool(previous.get("cancelledAt")) and not bool(fulfillments)
+                if not cancelled_before_dispatch:
+                    repeat = True
+                    break
+            order.customer_orders_count = 2 if repeat else 1
 
     async def get_orders_for_ndr_enrichment(self) -> list[ShopifyOrder]:
         """Read recent orders without per-order transaction calls; NDR needs identity and fulfilment data only."""

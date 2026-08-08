@@ -54,12 +54,14 @@ async def test_shopify_service_follows_link_header_pagination(monkeypatch: pytes
     )
     fake_client = _FakeClient([first, second])
     monkeypatch.setattr("app.services.shopify.httpx.AsyncClient", lambda timeout: fake_client)
+    monkeypatch.setattr(ShopifyService, "_enrich_repeat_customer_history", lambda self, orders: __import__("asyncio").sleep(0))
 
     orders = await ShopifyService().get_latest_orders()
 
     assert [order.order_id for order in orders] == ["1", "2"]
     assert len(fake_client.requests) == 2
     assert fake_client.requests[0][1]["limit"] == "250"
+    assert "created_at_min" in fake_client.requests[0][1]
     assert fake_client.requests[1][1] is None
     assert fake_client.requests[0][2]["X-Shopify-Access-Token"] == "token"
 

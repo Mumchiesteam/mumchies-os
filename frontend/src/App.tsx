@@ -292,10 +292,11 @@ function App() {
       const counts = new Map<string, number>()
       const repeat = new Set<string>()
       for (const order of data.items) {
+        if ((order.customerOrdersCount || 0) > 1) repeat.add(order.internalId)
         if (order.customerId) {
           const next = (counts.get(order.customerId) || 0) + 1
           counts.set(order.customerId, next)
-          if (next > 1 || (order.customerOrdersCount || 0) > 1) repeat.add(order.internalId)
+          if (next > 1) repeat.add(order.internalId)
         }
       }
       setRepeatIds(repeat)
@@ -910,7 +911,7 @@ const OrderRow = memo(function OrderRow({ order, repeat, onClick, drawerEnabled 
       <td className="whitespace-nowrap px-4 py-3.5"><p className="font-medium text-slate-700">{placed.date}</p><p className="text-xs text-slate-400">{placed.time}</p></td>
       <td className="px-4 py-3.5">
         <div className="flex items-center gap-2">
-          {order.customerId && <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${repeat ? 'bg-violet-50 text-violet-700' : 'bg-slate-100 text-slate-600'}`}>{repeat ? '[RPT]' : '[NEW]'}</span>}
+          {(order.customerId || order.customerOrdersCount != null) && <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${repeat ? 'bg-violet-50 text-violet-700' : 'bg-slate-100 text-slate-600'}`}>{repeat ? '[RPT]' : '[NEW]'}</span>}
           <span className="font-medium text-slate-700">{order.customerName}</span>
         </div>
       </td>
@@ -1154,7 +1155,7 @@ const OrderDrawer = memo(function OrderDrawer({
               <KeyValue label="Customer Name" value={order.customerName} />
               <div><KeyValue label="Mobile" value={order.phone || 'No phone'} />{order.phone && <CopyButton value={order.phone} label="phone number" />}</div>
               <KeyValue label="Email" value={order.email || 'No email'} />
-              {order.customerId ? <KeyValue label="Customer Type" value={repeat ? '[RPT]' : '[NEW]'} /> : <KeyValue label="Customer Type" value="—" />}
+              {(order.customerId || order.customerOrdersCount != null) ? <KeyValue label="Customer Type" value={repeat ? '[RPT]' : '[NEW]'} /> : <KeyValue label="Customer Type" value="—" />}
             </div>
           </Section>
 
