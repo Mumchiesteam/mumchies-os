@@ -46,7 +46,7 @@ async def test_shopify_service_follows_link_header_pagination(monkeypatch: pytes
 
     recent = datetime.now(timezone.utc)
     first = _FakeResponse(
-        [{"id": 1, "name": "1001", "order_number": 1, "created_at": recent.isoformat(), "line_items": []}],
+        [{"id": 1, "name": "1001", "order_number": 1, "created_at": recent.replace(tzinfo=None).isoformat(), "line_items": []}],
         '<https://store.myshopify.com/admin/api/2025-07/orders.json?page_info=abc>; rel="next"',
     )
     second = _FakeResponse(

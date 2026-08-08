@@ -23,6 +23,11 @@ _KNOWN_TRACKING_URL_TEMPLATES = {
 }
 
 
+def _shopify_datetime(value: object) -> datetime:
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 class ShopifyConfigurationError(RuntimeError):
     """Raised when Shopify credentials have not been configured."""
 
@@ -579,7 +584,7 @@ class ShopifyService:
                 if limit is not None and len(orders) >= limit:
                     return orders[:limit]
                 next_url = self._next_page_url(response.headers.get("link"))
-                if payload and min(datetime.fromisoformat(str(order["created_at"]).replace("Z", "+00:00")) for order in payload) < datetime.fromisoformat(created_at_min):
+                if payload and min(_shopify_datetime(order["created_at"]) for order in payload) < _shopify_datetime(created_at_min):
                     next_url = None
                 params = None
 
