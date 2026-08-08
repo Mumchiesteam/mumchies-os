@@ -540,7 +540,7 @@ async def export_orders(payload: ExportPayload, db: Session = Depends(get_db)):
 
     if payload.mode == "full":
         summary = workbook.create_sheet("Summary")
-        fresh = [value for value in orders if not value.first_action_at and not value.cancelled_at]
+        fresh = [value for value in orders if _is_fresh_order(value)]
         summary.append(["Metric", "Count"])
         for metric, count in (("All Orders", len(orders)), ("Fresh Orders", len(fresh))):
             summary.append([metric, count])

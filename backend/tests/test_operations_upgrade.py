@@ -201,3 +201,15 @@ async def test_full_export_has_required_tabs_and_payment_columns(db, monkeypatch
     assert required.issubset(workbook.sheetnames)
     headings = [cell.value for cell in workbook["All Orders"][1]]
     assert {"Total Value", "Amount Paid", "COD / Outstanding", "Payment Type"}.issubset(headings)
+
+
+@pytest.mark.anyio
+async def test_full_export_fresh_tab_uses_canonical_fresh_classification(db, monkeypatch):
+    fresh = ShopifyService._to_order(raw_order()).model_copy(update={"order_id": "1", "order_number": "1"})
+    cancelled = ShopifyService._to_order({**raw_order(), "id": 2, "name": "#2", "cancelled_at": "2026-08-08T10:00:00Z"}).model_copy(update={"order_id": "2", "order_number": "2"})
+    async def fake_orders(_db): return [fresh, cancelled]
+    monkeypatch.setattr(orders_routes, "_load_orders", fake_orders)
+    workbook = load_workbook(BytesIO(await response_bytes(await export_orders(ExportPayload(mode="full"), db))))
+    assert workbook["Fresh Orders"].max_row == 2
+    assert workbook["Fresh Orders"]["A2"].value == "1"
+    assert workbook["Summary"]["B3"].value == 1

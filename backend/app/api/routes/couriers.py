@@ -458,6 +458,8 @@ async def save_manual_shadowfax_shipment(order_id: str, payload: ManualShadowfax
     if not awb and not provider_id:
         raise HTTPException(status_code=422, detail="Enter an AWB or Shadowfax shipment/order ID.")
     order, operations, shipment = await _load_context(order_id, db)
+    if order.cancelled_at or str(order.shopify_status or "").strip().casefold() in {"cancelled", "canceled"}:
+        raise HTTPException(status_code=409, detail="Cancelled Shopify orders cannot be marked as shipped through Shadowfax.")
     existing = get_shipment(db, order_id)
     if existing and has_persisted_provider_booking_evidence(shipment_snapshot(existing)):
         raise HTTPException(status_code=409, detail="An active shipment already exists for this order.")

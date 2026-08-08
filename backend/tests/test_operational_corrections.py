@@ -7,6 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.api.routes import couriers, orders
+from app.api.routes.couriers import ManualShadowfaxPayload
 from app.api.routes.orders import AddressConfirmationPayload, CancellationPayload, SaveVerifyAddressPayload, ShiprocketOnlyCancellationPayload
 from app.models.shiprocket import ShiprocketShipment
 from app.models.user import User
@@ -172,6 +173,40 @@ async def test_shiprocket_cancel_rejects_application_error_on_http_200(monkeypat
     monkeypatch.setattr(service, "_post", post)
     with pytest.raises(ShiprocketAPIError, match="Cancellation not allowed"):
         await service.cancel_unbooked_order({"id": 7, "status": "NEW", "shipments": []})
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("cancelled_at,shopify_status", [
+    ("2026-08-08T10:00:00Z", None),
+    (None, "cancelled"),
+    (None, "canceled"),
+])
+async def test_cancelled_unfulfilled_order_cannot_create_manual_shadowfax_evidence(monkeypatch, cancelled_at, shopify_status):
+    order = SimpleNamespace(cancelled_at=cancelled_at, shopify_status=shopify_status, fulfillment_status="unfulfilled")
+    async def context(_order_id, _db): return order, {"selected_courier": {"provider": "shadowfax"}}, None
+    monkeypatch.setattr(couriers, "_load_context", context)
+    monkeypatch.setattr(couriers, "upsert_shipment", lambda *_args, **_kwargs: pytest.fail("shipment evidence was persisted"))
+    with pytest.raises(orders.HTTPException, match="Cancelled Shopify orders") as error:
+        await couriers.save_manual_shadowfax_shipment("1", ManualShadowfaxPayload(provider_id="SFX-1"), authenticated_request(), None)
+    assert error.value.status_code == 409
+
+
+@pytest.mark.anyio
+async def test_eligible_order_can_create_manual_shadowfax_evidence(monkeypatch):
+    order = SimpleNamespace(cancelled_at=None, shopify_status="open", fulfillment_status="unfulfilled", tags=[], payment_status="pending")
+    operations = {"selected_courier": {"provider": "shadowfax"}}
+    async def context(_order_id, _db): return order, operations, None
+    saved = {}
+    def persist(_db, order_id, **values): saved.update(order_id=order_id, **values); return saved
+    monkeypatch.setattr(couriers, "_load_context", context)
+    monkeypatch.setattr(couriers, "get_shipment", lambda *_args: None)
+    monkeypatch.setattr(couriers, "upsert_shipment", persist)
+    monkeypatch.setattr(couriers, "shipment_snapshot", lambda value: dict(value))
+    monkeypatch.setattr(OrderOperationsStore, "record_timeline_event", lambda *_args, **_kwargs: {})
+    result = await couriers.save_manual_shadowfax_shipment("1", ManualShadowfaxPayload(provider_id="SFX-1"), authenticated_request(), None)
+    assert result["shipment"]["provider"] == "shadowfax"
+    assert result["shipment"]["booking_mode"] == "manual"
+    assert result["shipment"]["provider_order_id"] == "SFX-1"
 
 
 @pytest.mark.anyio
