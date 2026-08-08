@@ -218,6 +218,7 @@ function App() {
   const [cleanupResults, setCleanupResults] = useState<Record<string, ShiprocketCancellationResult>>({})
   const [reconciliation, setReconciliation] = useState<OrdersReconciliationSummary | null>(null)
   const [reconciliationError, setReconciliationError] = useState('')
+  const [reconciliationRetry, setReconciliationRetry] = useState(0)
   const [reconciliationFilter, setReconciliationFilter] = useState<ReconciliationFilter | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const [notice, setNotice] = useState('')
@@ -322,9 +323,13 @@ function App() {
     return () => window.clearTimeout(timeout)
   }, [searchDraft])
 
-  const refreshReconciliation = useCallback(() => {
+  const refreshReconciliation = useCallback((refresh = false) => {
     setReconciliationError('')
-    void getOrdersReconciliation().then(setReconciliation).catch(error => setReconciliationError((error as Error).message))
+    void getOrdersReconciliation(refresh).then(setReconciliation).catch(error => {
+      const message = (error as Error).message
+      setReconciliationError(message)
+      if (message.includes('preparing')) window.setTimeout(() => setReconciliationRetry(value => value + 1), 3_000)
+    })
   }, [])
 
   useEffect(() => {
@@ -341,10 +346,16 @@ function App() {
     const loads = workspaceLoadsForPage(activePage)
     if (loads.orders) { refreshLabels(); refreshCleanup() }
     if (loads.reconciliation) {
-      const timeout = window.setTimeout(refreshReconciliation, 0)
+      const timeout = window.setTimeout(() => refreshReconciliation(false), 0)
       return () => window.clearTimeout(timeout)
     }
-  }, [activePage, refreshCleanup, refreshLabels, refreshReconciliation])
+  }, [activePage, reconciliationRetry, refreshCleanup, refreshLabels, refreshReconciliation])
+
+  useEffect(() => {
+    if (activePage !== 'Reconciliation' || !reconciliation?.refreshing) return
+    const timeout = window.setTimeout(() => refreshReconciliation(false), 5_000)
+    return () => window.clearTimeout(timeout)
+  }, [activePage, reconciliation?.refreshing, refreshReconciliation])
 
   useEffect(() => {
     if (!workspaceLoadsForPage(activePage).orders || selectedOrderId) return
@@ -739,7 +750,7 @@ function App() {
         {activePage === 'Reconciliation' && <div>
           <div className="mb-5"><p className="text-sm font-medium text-[#ff6b35]">Reconciliation</p><h2 className="mt-1 text-2xl font-bold tracking-tight">Order reconciliation</h2></div>
           <div className="mb-5 border-b border-slate-200"><button className="border-b-2 border-slate-900 px-1 pb-3 text-sm font-semibold text-slate-900">OS / Shiprocket Reconciliation</button></div>
-          <section className="mb-5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-bold uppercase tracking-[.12em] text-slate-400">OS / Shiprocket reconciliation</p><p className="mt-1 text-xs text-slate-500">Operational and Shiprocket totals may differ while orders sync or use another courier.</p></div><button onClick={refreshReconciliation} className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600">Refresh reconciliation</button></div>{reconciliation ? <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{([
+          <section className="mb-5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-bold uppercase tracking-[.12em] text-slate-400">OS / Shiprocket reconciliation</p><p className="mt-1 text-xs text-slate-500">Operational and Shiprocket totals may differ while orders sync or use another courier.</p>{reconciliation?.last_refreshed_at && <p className="mt-1 text-[11px] text-slate-400">Last refreshed {formatDateTime(reconciliation.last_refreshed_at)}{reconciliation.refreshing ? ' · refreshing…' : ''}</p>}{reconciliation?.refresh_error && <p className="mt-1 text-[11px] text-amber-700">{reconciliation.refresh_error}</p>}</div><button onClick={() => refreshReconciliation(true)} className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600">Refresh reconciliation</button></div>{reconciliation ? <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{([
             ['operations', 'Operations Queue', reconciliation.operations_queue],
             ['shiprocket_new', 'Shiprocket New', reconciliation.shiprocket_new],
             ['both', 'Present in Both', reconciliation.present_in_both],

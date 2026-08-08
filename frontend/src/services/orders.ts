@@ -489,6 +489,9 @@ export interface ShiprocketCancellationResult {
 }
 
 export interface OrdersReconciliationSummary {
+  last_refreshed_at?: string | null
+  refresh_error?: string | null
+  refreshing?: boolean
   operations_queue: number
   fresh_orders: number
   previous_pending: number
@@ -533,9 +536,12 @@ export const selectReconciliationFilter = (_current: ReconciliationFilter | null
 export const clearReconciliationFilter = (): null => null
 export const reconciliationDataset = (summary: OrdersReconciliationSummary | null, filter: ReconciliationFilter | null): ReconciliationRecord[] => filter && summary ? summary.datasets[filter] || [] : []
 
-export async function getOrdersReconciliation(): Promise<OrdersReconciliationSummary> {
-  const response = await apiFetch(`${apiBase}/api/v1/orders/reconciliation-summary`)
-  if (!response.ok) throw new Error('Could not reconcile Mumchies OS and Shiprocket.')
+export async function getOrdersReconciliation(refresh = false): Promise<OrdersReconciliationSummary> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/reconciliation-summary${refresh ? '?refresh=true' : ''}`)
+  if (!response.ok) {
+    const body = await response.json().catch(() => null)
+    throw new Error(typeof body?.detail === 'string' ? body.detail : 'Could not reconcile Mumchies OS and Shiprocket.')
+  }
   return response.json()
 }
 

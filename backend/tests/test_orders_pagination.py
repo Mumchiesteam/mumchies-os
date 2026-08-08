@@ -208,7 +208,7 @@ async def test_reconciliation_sets_and_mismatch_classification(monkeypatch):
     monkeypatch.setattr(routes, "_load_reconciliation_orders", load)
     monkeypatch.setattr(routes.ShiprocketService, "list_new_orders", new)
     monkeypatch.setattr(routes.ShiprocketService, "find_existing_order", find)
-    result = await routes.reconciliation_summary(db=None)
+    result = await routes._build_reconciliation_summary(db=None)
     assert result["operations_queue"] == 2
     assert result["present_in_both"] == 1
     assert result["missing_in_shiprocket"] == 1
@@ -248,8 +248,26 @@ async def test_reconciliation_summary_counts_only_actionable_unfulfilled_orders(
     monkeypatch.setattr(routes.ShiprocketService, "list_new_orders", new)
     monkeypatch.setattr(routes.ShiprocketService, "find_existing_order", find)
 
-    result = await routes.reconciliation_summary(db=None)
+    result = await routes._build_reconciliation_summary(db=None)
 
     assert result["operations_queue"] == 3
     assert result["missing_in_shiprocket"] == 3
     assert {item["order_number"] for item in result["datasets"]["operations"]} == {"316167", "316999", "316995"}
+
+
+@pytest.mark.anyio
+async def test_reconciliation_returns_last_snapshot_while_background_refresh_runs(monkeypatch):
+    snapshot = {
+        "data": {"operations_queue": 112, "missing_in_shiprocket": 41},
+        "last_refreshed_at": "2026-08-09T00:00:00Z",
+        "refresh_error": "Temporary provider error",
+    }
+    started = []
+    monkeypatch.setattr(routes.ReportSnapshotStore, "get", lambda key: snapshot)
+    monkeypatch.setattr(routes, "_start_reconciliation_refresh", lambda: started.append(True) or True)
+
+    result = await routes.reconciliation_summary(refresh=True)
+
+    assert result["operations_queue"] == 112
+    assert result["refresh_error"] == "Temporary provider error"
+    assert started == [True]

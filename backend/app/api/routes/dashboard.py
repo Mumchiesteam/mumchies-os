@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -12,9 +13,10 @@ from app.api.routes.orders import (
     _call_outcome_is_on_hold, _call_outcome_requires_follow_up, _is_fresh_order,
     _load_orders,
 )
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.models.ndr import NDRCase, NDREvent
 from app.services.order_operations import OrderOperationsStore
+from app.services.report_snapshots import ReportSnapshotStore
 from app.services.shopify import ShopifyService
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -27,6 +29,7 @@ MEANINGFUL_ORDER_ACTIONS = {
     "WhatsApp opened for COD confirmation",
 }
 MEANINGFUL_NDR_ACTIONS = {"add_note", "assign", "customer_contacted", "courier_contacted", "resolve", "reopen"}
+_dashboard_refresh_tasks: dict[str, asyncio.Task[None]] = {}
 
 
 def _period(preset: str, start: date | None, end: date | None, now: datetime | None = None) -> tuple[datetime, datetime, str]:
@@ -116,12 +119,7 @@ def _business_metrics(orders: list, actioned_ids: set[str]) -> dict[str, object]
     }
 
 
-@router.get("")
-async def dashboard(
-    preset: str = Query("today"), start: date | None = None, end: date | None = None,
-    db: Session = Depends(get_db),
-) -> dict[str, object]:
-    start_at, end_at, label = _period(preset, start, end)
+async def _build_dashboard(preset: str, start_at: datetime, end_at: datetime, label: str, db: Session) -> dict[str, object]:
     operations = OrderOperationsStore.all()
     order_activity = _order_activity(operations, start_at, end_at)
     ndr_events = db.scalars(select(NDREvent).where(NDREvent.created_at >= start_at, NDREvent.created_at < end_at)).all()
@@ -158,4 +156,47 @@ async def dashboard(
         "needs_attention": needs,
         "team_activity": {"operators": team, "total": {"orders_actioned": len(set().union(*order_activity.values())), "ndrs_actioned": len(set().union(*ndr_activity.values()))}},
         **business,
+    }
+
+
+def _dashboard_key(preset: str, start_at: datetime, end_at: datetime) -> str:
+    return f"dashboard:{preset}:{start_at.date().isoformat()}:{end_at.date().isoformat()}"
+
+
+async def _refresh_dashboard_snapshot(key: str, preset: str, start_at: datetime, end_at: datetime, label: str) -> None:
+    try:
+        with SessionLocal() as db:
+            result = await _build_dashboard(preset, start_at, end_at, label, db)
+        ReportSnapshotStore.save_success(key, result)
+    except Exception:  # noqa: BLE001 - a stale snapshot is safer than blanking the Dashboard
+        ReportSnapshotStore.save_error(key, "Dashboard refresh failed. The last successful data is still available.")
+    finally:
+        _dashboard_refresh_tasks.pop(key, None)
+
+
+def _start_dashboard_refresh(key: str, preset: str, start_at: datetime, end_at: datetime, label: str) -> bool:
+    task = _dashboard_refresh_tasks.get(key)
+    if task and not task.done():
+        return False
+    _dashboard_refresh_tasks[key] = asyncio.create_task(_refresh_dashboard_snapshot(key, preset, start_at, end_at, label))
+    return True
+
+
+@router.get("")
+async def dashboard(
+    preset: str = Query("today"), start: date | None = None, end: date | None = None,
+    refresh: bool = False,
+) -> dict[str, object]:
+    start_at, end_at, label = _period(preset, start, end)
+    key = _dashboard_key(preset, start_at, end_at)
+    snapshot = ReportSnapshotStore.get(key)
+    if refresh or ReportSnapshotStore.is_stale(snapshot, 300):
+        _start_dashboard_refresh(key, preset, start_at, end_at, label)
+    if not snapshot or not isinstance(snapshot.get("data"), dict):
+        raise HTTPException(status_code=503, detail="Dashboard is preparing this period. Try again shortly.")
+    return {
+        **snapshot["data"],
+        "last_refreshed_at": snapshot.get("last_refreshed_at"),
+        "refresh_error": snapshot.get("refresh_error"),
+        "refreshing": bool(_dashboard_refresh_tasks.get(key) and not _dashboard_refresh_tasks[key].done()),
     }

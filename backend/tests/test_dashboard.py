@@ -83,7 +83,22 @@ async def test_today_dashboard_reuses_operational_read_without_reconciliation_or
     monkeypatch.setattr(dashboard_route, "_load_orders", operational)
     monkeypatch.setattr(dashboard_route.ShopifyService, "get_orders_created_between", unexpected_reporting)
 
-    result = await dashboard_route.dashboard(preset="today", start=None, end=None, db=Database())
+    start_at, end_at, label = dashboard_route._period("today", None, None)
+    result = await dashboard_route._build_dashboard("today", start_at, end_at, label, Database())
 
     assert result["needs_attention"]["reconciliation_exceptions"] is None
     assert result["orders"]["total"] == 0
+
+
+@pytest.mark.anyio
+async def test_dashboard_returns_stale_snapshot_while_refresh_starts(monkeypatch: pytest.MonkeyPatch) -> None:
+    snapshot = {"data": {"period": {"label": "Today"}, "orders": {"total": 9}}, "last_refreshed_at": "2026-08-09T00:00:00Z", "refresh_error": None}
+    started: list[str] = []
+    monkeypatch.setattr(dashboard_route.ReportSnapshotStore, "get", lambda key: snapshot)
+    monkeypatch.setattr(dashboard_route, "_start_dashboard_refresh", lambda key, preset, start, end, label: started.append(key) or True)
+
+    result = await dashboard_route.dashboard(preset="today", start=None, end=None, refresh=True)
+
+    assert result["orders"]["total"] == 9
+    assert result["last_refreshed_at"] == "2026-08-09T00:00:00Z"
+    assert started

@@ -13,11 +13,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.core.identity import current_actor
 from app.schemas.orders import ShopifyOrder
 from app.repositories.shiprocket import get_shipment, get_shipments_by_order_id, snapshot as shipment_snapshot, sync_engage_orders
 from app.services.order_operations import OrderOperationsStore
+from app.services.report_snapshots import ReportSnapshotStore
 from app.services.delhivery import DelhiveryError, DelhiveryService
 from app.services.shipment_status import derive_operational_status, has_existing_shipment_evidence, has_persisted_provider_booking_evidence, merge_shopify_fulfillment_evidence
 from app.services.shiprocket import ShiprocketAPIError, ShiprocketConfigurationError, ShiprocketService
@@ -25,6 +26,8 @@ from app.services.shopify import ShopifyConfigurationError, ShopifyService, Shop
 from app.services.shopify_fulfillment import ShopifyFulfillmentSynchronizer, ShopifyFulfillmentSyncError
 
 router = APIRouter(prefix="/orders", tags=["orders"])
+RECONCILIATION_SNAPSHOT_KEY = "reconciliation"
+_reconciliation_refresh_task: asyncio.Task[None] | None = None
 
 
 class AddressPayload(BaseModel):
@@ -937,8 +940,7 @@ def _reconciliation_record(
     }
 
 
-@router.get("/reconciliation-summary")
-async def reconciliation_summary(db: Session = Depends(get_db)) -> dict[str, object]:
+async def _build_reconciliation_summary(db: Session) -> dict[str, object]:
     """Compare active OS work with Shiprocket New without implying the sets must be equal."""
     os_orders = await _load_reconciliation_orders(db)
     operations = [order for order in os_orders if _requires_reconciliation_action(order)]
@@ -1016,6 +1018,49 @@ async def reconciliation_summary(db: Session = Depends(get_db)) -> dict[str, obj
         "only_in_shiprocket": only_sr_items,
         "duplicate_mapping_anomalies": anomalies,
         "datasets": datasets,
+    }
+
+
+def _safe_refresh_error(error: Exception) -> str:
+    if isinstance(error, HTTPException) and isinstance(error.detail, str):
+        return error.detail
+    if isinstance(error, (ShopifyConfigurationError, ShiprocketAPIError, ShiprocketConfigurationError)):
+        return str(error)
+    return "Reconciliation refresh failed. The last successful data is still available."
+
+
+async def _refresh_reconciliation_snapshot() -> None:
+    global _reconciliation_refresh_task
+    try:
+        with SessionLocal() as db:
+            result = await _build_reconciliation_summary(db)
+        ReportSnapshotStore.save_success(RECONCILIATION_SNAPSHOT_KEY, result)
+    except Exception as error:  # noqa: BLE001 - preserve stale data for any provider/runtime failure
+        ReportSnapshotStore.save_error(RECONCILIATION_SNAPSHOT_KEY, _safe_refresh_error(error))
+    finally:
+        _reconciliation_refresh_task = None
+
+
+def _start_reconciliation_refresh() -> bool:
+    global _reconciliation_refresh_task
+    if _reconciliation_refresh_task and not _reconciliation_refresh_task.done():
+        return False
+    _reconciliation_refresh_task = asyncio.create_task(_refresh_reconciliation_snapshot())
+    return True
+
+
+@router.get("/reconciliation-summary")
+async def reconciliation_summary(refresh: bool = False) -> dict[str, object]:
+    snapshot = ReportSnapshotStore.get(RECONCILIATION_SNAPSHOT_KEY)
+    if refresh or ReportSnapshotStore.is_stale(snapshot, 600):
+        _start_reconciliation_refresh()
+    if not snapshot or not isinstance(snapshot.get("data"), dict):
+        raise HTTPException(status_code=503, detail="Reconciliation is preparing its first snapshot. Try again shortly.")
+    return {
+        **snapshot["data"],
+        "last_refreshed_at": snapshot.get("last_refreshed_at"),
+        "refresh_error": snapshot.get("refresh_error"),
+        "refreshing": bool(_reconciliation_refresh_task and not _reconciliation_refresh_task.done()),
     }
 
 

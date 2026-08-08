@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -6,10 +8,13 @@ import logging
 import os
 
 from app.api.router import api_router
+from app.api.routes.dashboard import _dashboard_key, _dashboard_refresh_tasks, _period, _start_dashboard_refresh
+from app.api.routes.orders import _start_reconciliation_refresh
 from app.core.auth import read_session
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.user import User
+from app.services.report_snapshots import ReportSnapshotStore
 from sqlalchemy import select
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
@@ -65,12 +70,36 @@ app.add_middleware(
 app.include_router(api_router, prefix=settings.api_v1_prefix)
 
 
+@app.on_event("startup")
+async def warm_management_report_snapshots() -> None:
+    """Refresh persisted report snapshots without delaying service readiness."""
+    async def warm_sequentially() -> None:
+        start_at, end_at, label = _period("today", None, None)
+        key = _dashboard_key("today", start_at, end_at)
+        _start_dashboard_refresh(key, "today", start_at, end_at, label)
+        task = _dashboard_refresh_tasks.get(key)
+        if task:
+            await task
+        _start_reconciliation_refresh()
+
+    asyncio.create_task(warm_sequentially())
+
+
 @app.get("/health", tags=["health"])
 def health_check() -> dict:
     """Return deployment identity and the configured NDR ingestion mode."""
+    start_at, end_at, _ = _period("today", None, None)
+    dashboard_snapshot = ReportSnapshotStore.get(_dashboard_key("today", start_at, end_at))
+    reconciliation_snapshot = ReportSnapshotStore.get("reconciliation")
     return {
         "status": "ok",
         "git_sha": os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_SHA") or "unknown",
         "ndr_mode": "github_import",
         "ndr_import_enabled": bool(settings.ndr_ingest_token),
+        "report_snapshots": {
+            "dashboard_ready": bool(dashboard_snapshot and dashboard_snapshot.get("data")),
+            "dashboard_refreshed_at": (dashboard_snapshot or {}).get("last_refreshed_at"),
+            "reconciliation_ready": bool(reconciliation_snapshot and reconciliation_snapshot.get("data")),
+            "reconciliation_refreshed_at": (reconciliation_snapshot or {}).get("last_refreshed_at"),
+        },
     }
