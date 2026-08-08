@@ -95,6 +95,7 @@ const dispatchItems: { key: TabKey; label: string }[] = [
   { key: 'printed_today', label: 'Printed Today' },
 ]
 export const callResults: CallResult[] = ['Confirmed', 'No Answer', 'Busy', 'Switched Off', 'On Hold', 'Cancelled']
+export const callResultLabel = (result: CallResult) => result === 'Cancelled' ? 'Cancel' : result
 export const COD_WHATSAPP_MESSAGE = `Hello! We tried calling you to confirm your Mumchies COD order but couldnt connect.\n\nPlease reply CONFIRM if you would like to confirm your order and will be available to receive and pay for the order at the time of delivery.\n\nWe will dispatch the order after receiving your confirmation.\n\n Team Mumchies`
 export function indianWhatsAppNumber(value: string | null | undefined): string | null {
   let digits = String(value || '').replace(/\D/g, '')
@@ -1230,7 +1231,7 @@ const OrderDrawer = memo(function OrderDrawer({
             <div className="space-y-3">
               {isPrepaid ? <div className="grid gap-2 lg:grid-cols-[2fr_auto]"><input value={callComment} onChange={e => setCallComment(e.target.value)} placeholder="Address confirmation comment (optional)" className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none" /><button onClick={onSaveAddressConfirmation} className="rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white">Save Comment</button></div> : <div className="grid gap-2 lg:grid-cols-[1fr_2fr_auto]">
                 <select value={callResult} onChange={e => setCallResult(e.target.value as CallResult)} className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none">
-                  {callResults.map(result => <option key={result}>{result}</option>)}
+                  {callResults.map(result => <option key={result} value={result}>{callResultLabel(result)}</option>)}
                 </select>
                 <input value={callComment} onChange={e => setCallComment(e.target.value)} placeholder="Comment" className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none" />
                 <button onClick={onSaveCallLog} className="rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white">Save</button>

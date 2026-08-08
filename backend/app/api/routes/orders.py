@@ -750,8 +750,9 @@ async def _cancellation_preflight(order_id: str, db: Session) -> dict[str, objec
     shopify = await ShopifyService().get_order_cancellation_context(order_id)
     upstream = None
     shiprocket_error = None
+    shiprocket_lookup_id = str(shopify.get("order_number") or order_id)
     try:
-        upstream = await ShiprocketService().find_existing_order(order_id)
+        upstream = await ShiprocketService().find_existing_order(shiprocket_lookup_id)
     except (ShiprocketAPIError, ShiprocketConfigurationError) as error:
         shiprocket_error = str(error)
     upstream_awb = ShiprocketService._upstream_shipment(upstream)[1] if upstream else None
@@ -762,7 +763,7 @@ async def _cancellation_preflight(order_id: str, db: Session) -> dict[str, objec
     return {
         "allowed": not protected,
         "shopify": shopify,
-        "shiprocket": {"exists": bool(upstream), "order_id": str(upstream.get("id")) if upstream and upstream.get("id") is not None else None, "status": upstream.get("status") if upstream else None, "awb": upstream_awb, "lookup_error": shiprocket_error},
+        "shiprocket": {"exists": bool(upstream), "order_id": str(upstream.get("id")) if upstream and upstream.get("id") is not None else None, "lookup_id": shiprocket_lookup_id, "status": upstream.get("status") if upstream else None, "awb": upstream_awb, "lookup_error": shiprocket_error},
         "shipment": {"exists": shipment is not None, "provider": shipment.provider if shipment else None, "awb": local_awb, "status": shipment.latest_status if shipment else None},
         "blocked_reason": "Booked/AWB or shipped orders require a separate explicit cancellation workflow." if protected else None,
     }
@@ -794,12 +795,17 @@ async def cancel_order(order_id: str, payload: CancellationPayload, request: Req
             results["shopify"] = shopify_result
         except (ShopifySyncError, httpx.HTTPError) as error:
             results["shopify"] = {"status": "failed", "error": str(error)}
-    if payload.cancel_shiprocket and preflight["shiprocket"]["exists"]:
+    shiprocket_status = str(preflight["shiprocket"].get("status") or "").strip().casefold()
+    if preflight["shiprocket"]["exists"] and shiprocket_status in {"cancelled", "canceled"}:
+        results["shiprocket"] = {"status": "Already cancelled", "cancel_on_channel": False}
+    elif payload.cancel_shiprocket and preflight["shiprocket"]["exists"]:
         try:
-            upstream = await ShiprocketService().find_existing_order(order_id)
+            upstream = await ShiprocketService().find_existing_order(str(preflight["shiprocket"].get("lookup_id") or order_id))
             if upstream:
-                await ShiprocketService().cancel_unbooked_order(upstream)
-                results["shiprocket"] = {"status": "cancelled", "cancel_on_channel": False}
+                cancellation = await ShiprocketService().cancel_unbooked_order(upstream)
+                results["shiprocket"] = {"status": "cancelled" if cancellation.get("classification") == "accepted" else "cancellation_requested", "cancel_on_channel": False}
+            else:
+                results["shiprocket"] = {"status": "failed", "error": "The Shiprocket order disappeared before cancellation.", "cancel_on_channel": False}
         except (ShiprocketAPIError, ShiprocketConfigurationError) as error:
             results["shiprocket"] = {"status": "failed", "error": str(error), "cancel_on_channel": False}
     timestamp = datetime.now(timezone.utc).isoformat()

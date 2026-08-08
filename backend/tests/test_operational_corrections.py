@@ -67,7 +67,7 @@ async def test_save_verify_address_validates_syncs_and_invalidates_old_verificat
 
 
 def preflight(*, shopify=True, shiprocket=True):
-    return {"allowed": True, "shopify": {"exists": shopify}, "shiprocket": {"exists": shiprocket}, "shipment": {"exists": False}, "blocked_reason": None}
+    return {"allowed": True, "shopify": {"exists": shopify}, "shiprocket": {"exists": shiprocket, "status": "NEW", "lookup_id": "322835"}, "shipment": {"exists": False}, "blocked_reason": None}
 
 
 @pytest.mark.anyio
@@ -86,7 +86,7 @@ async def test_shopify_and_shiprocket_cancellation_are_independent(tmp_path, mon
     async def pf(_id, _db): return preflight()
     async def shopify_cancel(_self, _id): return {"status": "cancelled"}
     async def find(_self, _id): return {"id": 99, "status": "NEW", "shipments": []}
-    async def shiprocket_cancel(_self, _order): return {}
+    async def shiprocket_cancel(_self, _order): return {"classification": "accepted"}
     monkeypatch.setattr(orders, "_cancellation_preflight", pf)
     monkeypatch.setattr(orders.ShopifyService, "cancel_order", shopify_cancel)
     monkeypatch.setattr(orders.ShiprocketService, "find_existing_order", find)
@@ -94,6 +94,48 @@ async def test_shopify_and_shiprocket_cancellation_are_independent(tmp_path, mon
     result = await orders.cancel_order("1", CancellationPayload(operator="Untrusted"), authenticated_request(), None)
     assert result["results"]["shopify"]["status"] == "cancelled"
     assert result["results"]["shiprocket"] == {"status": "cancelled", "cancel_on_channel": False}
+
+
+@pytest.mark.anyio
+async def test_cancellation_looks_up_shiprocket_by_shopify_order_number(db, monkeypatch):
+    seen = []
+    async def context(_self, _id): return {"exists": True, "cancelled": False, "fulfillment_status": "UNFULFILLED", "order_number": "322835"}
+    async def find(_self, lookup_id):
+        seen.append(lookup_id)
+        return {"id": 99, "channel_order_id": "322835", "status": "NEW", "shipments": []}
+    monkeypatch.setattr(orders.ShopifyService, "get_order_cancellation_context", context)
+    monkeypatch.setattr(orders.ShiprocketService, "find_existing_order", find)
+    result = await orders._cancellation_preflight("6813934747726", db)
+    assert seen == ["322835"]
+    assert result["shiprocket"]["exists"] is True
+    assert result["shiprocket"]["lookup_id"] == "322835"
+
+
+@pytest.mark.anyio
+async def test_already_cancelled_shiprocket_order_is_not_cancelled_again(tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    async def pf(_id, _db):
+        value = preflight()
+        value["shiprocket"]["status"] = "CANCELED"
+        return value
+    async def unexpected(*_args): raise AssertionError("already cancelled order was sent again")
+    monkeypatch.setattr(orders, "_cancellation_preflight", pf)
+    monkeypatch.setattr(orders.ShiprocketService, "find_existing_order", unexpected)
+    result = await orders.cancel_order("1", CancellationPayload(cancel_shopify=False), authenticated_request(), None)
+    assert result["results"]["shiprocket"]["status"] == "Already cancelled"
+
+
+@pytest.mark.anyio
+async def test_shiprocket_application_rejection_is_reported_as_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    async def pf(_id, _db): return preflight(shopify=False)
+    async def find(_self, _id): return {"id": 99, "status": "NEW", "shipments": []}
+    async def reject(_self, _order): raise ShiprocketAPIError("Cancellation not allowed")
+    monkeypatch.setattr(orders, "_cancellation_preflight", pf)
+    monkeypatch.setattr(orders.ShiprocketService, "find_existing_order", find)
+    monkeypatch.setattr(orders.ShiprocketService, "cancel_unbooked_order", reject)
+    result = await orders.cancel_order("1", CancellationPayload(), authenticated_request(), None)
+    assert result["results"]["shiprocket"] == {"status": "failed", "error": "Cancellation not allowed", "cancel_on_channel": False}
 
 
 @pytest.mark.anyio
@@ -120,6 +162,16 @@ async def test_shiprocket_cancel_disables_channel_and_protects_awb(monkeypatch):
     assert seen["payload"] == {"ids": [7], "cancel_on_channel": False}
     with pytest.raises(ShiprocketAPIError, match="separate explicit"):
         await service.cancel_unbooked_order({"id": 8, "status": "NEW", "shipments": [{"awb": "AWB1"}]})
+
+
+@pytest.mark.anyio
+async def test_shiprocket_cancel_rejects_application_error_on_http_200(monkeypatch):
+    service = ShiprocketService()
+    async def post(_url, _payload):
+        return httpx.Response(200, json={"success": False, "message": "Cancellation not allowed"})
+    monkeypatch.setattr(service, "_post", post)
+    with pytest.raises(ShiprocketAPIError, match="Cancellation not allowed"):
+        await service.cancel_unbooked_order({"id": 7, "status": "NEW", "shipments": []})
 
 
 @pytest.mark.anyio

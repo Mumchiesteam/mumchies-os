@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 
-import { COD_WHATSAPP_MESSAGE, MultilineField, callResults, codWhatsAppUrl, indianWhatsAppNumber, shouldShowCodWhatsApp } from './App'
+import { COD_WHATSAPP_MESSAGE, MultilineField, callResultLabel, callResults, codWhatsAppUrl, indianWhatsAppNumber, shouldShowCodWhatsApp } from './App'
 
 describe('Orders COD workflow', () => {
   it('uses editable, full-width wrapped multiline address fields without horizontal scrolling', () => {
@@ -22,6 +22,8 @@ describe('Orders COD workflow', () => {
     expect(callResults).toEqual(['Confirmed', 'No Answer', 'Busy', 'Switched Off', 'On Hold', 'Cancelled'])
     expect(callResults).not.toContain('Callback Requested' as never)
     expect(callResults).not.toContain('Wrong Number' as never)
+    expect(callResultLabel('Cancelled')).toBe('Cancel')
+    expect(callResults).toContain('Cancelled')
   })
 
   it('normalizes valid Indian numbers and encodes the complete WhatsApp message', () => {

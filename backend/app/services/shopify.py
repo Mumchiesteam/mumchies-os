@@ -225,7 +225,12 @@ class ShopifyService:
         order = data.get("order")
         if not isinstance(order, dict):
             return {"exists": False, "cancelled": False, "fulfillment_status": None}
-        return {"exists": True, "cancelled": bool(order.get("cancelledAt")), "fulfillment_status": order.get("displayFulfillmentStatus")}
+        return {
+            "exists": True,
+            "cancelled": bool(order.get("cancelledAt")),
+            "fulfillment_status": order.get("displayFulfillmentStatus"),
+            "order_number": str(order.get("name") or "").lstrip("#") or None,
+        }
 
     async def cancel_order(self, order_id: str) -> dict[str, Any]:
         mutation = """mutation CancelOrder($orderId: ID!, $refundMethod: OrderCancelRefundMethodInput!) {

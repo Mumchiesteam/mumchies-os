@@ -480,7 +480,7 @@ class ShiprocketService:
 
     async def cancel_unbooked_order(self, order: dict[str, Any]) -> dict[str, Any]:
         result = await self.request_unbooked_order_cancellation(order)
-        if int(result["http_status"]) >= 400:
+        if int(result["http_status"]) >= 400 or result.get("classification") == "rejected":
             body = result.get("response") or {}
             message = str(body.get("message") or body.get("error") or "Shiprocket rejected the cancellation request.") if isinstance(body, dict) else "Shiprocket rejected the cancellation request."
             raise ShiprocketAPIError(message, status_code=int(result["http_status"]), safe_details={"operation": "cancel_order"})
