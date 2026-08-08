@@ -717,8 +717,8 @@ async def add_call_log(order_id: str, payload: CallLogPayload, request: Request)
     allowed = {"Confirmed", "No Answer", "Busy", "Switched Off", "On Hold", "Cancelled"}
     if payload.result not in allowed:
         raise HTTPException(status_code=422, detail="Unsupported COD result.")
-    if payload.result == "On Hold" and not str(payload.comment or "").strip():
-        raise HTTPException(status_code=422, detail="A note is required when placing a COD order On Hold.")
+    if payload.result == "On Hold" and len(str(payload.comment or "").strip()) < 3:
+        raise HTTPException(status_code=422, detail="Add a reason before placing the order On Hold.")
     entry = {
         "result": payload.result,
         "timestamp": payload.timestamp or datetime.now().isoformat(timespec="seconds"),

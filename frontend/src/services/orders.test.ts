@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { bookShiprocketShipment, cancelCourierShipment, checkShiprocketCouriers, clearReconciliationFilter, getOrderOperations, getOrders, reconciliationDataset, reconciliationFilterLabel, reconcileCourierBooking, refreshShiprocketShipment, selectReconciliationFilter, shiprocketCancellationMessage, shouldRemoveCleanupRecord, verifyShiprocketOnlyCancellation, type OrdersReconciliationSummary, type ReconciliationRecord, type ShiprocketCancellationResult, type ShiprocketCleanupRecord } from './orders'
+import { bookShiprocketShipment, cancelCourierShipment, checkShiprocketCouriers, clearReconciliationFilter, getOrderOperations, getOrders, reconciliationDataset, reconciliationFilterLabel, reconcileCourierBooking, refreshShiprocketShipment, saveAndVerifyOrderAddress, selectReconciliationFilter, shiprocketCancellationMessage, shouldRemoveCleanupRecord, verifyShiprocketOnlyCancellation, type OrdersReconciliationSummary, type ReconciliationRecord, type ShiprocketCancellationResult, type ShiprocketCleanupRecord } from './orders'
 
 const response = (pageSize: number, total = 0) => new Response(JSON.stringify({
   items: [],
@@ -13,6 +13,14 @@ const response = (pageSize: number, total = 0) => new Response(JSON.stringify({
 afterEach(() => vi.restoreAllMocks())
 
 describe('orders pagination client', () => {
+  it('submits complete long address lines when saving and verifying', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ operations: {}, validation: { blockers: [], warnings: [] }, verified: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    const address = { customer_name: 'Customer', phone: '9876543210', address_line1: 'House and street '.repeat(20), address_line2: 'Area and locality '.repeat(20), landmark: '', city: 'Mumbai', state: 'Maharashtra', pincode: '400001' }
+    await saveAndVerifyOrderAddress('1', address)
+    const request = fetchMock.mock.calls[0][1] as RequestInit
+    expect(JSON.parse(String(request.body))).toEqual(address)
+  })
+
   it('requests the default 20-row first page and preserves totals', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(response(20, 41))
     const result = await getOrders()

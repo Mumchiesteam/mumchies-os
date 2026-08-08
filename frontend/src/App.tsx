@@ -103,6 +103,13 @@ export function indianWhatsAppNumber(value: string | null | undefined): string |
   if (digits.length === 12 && digits.startsWith('91') && /^[6-9]/.test(digits.slice(2))) return digits
   return null
 }
+export function shouldShowCodWhatsApp(paymentType: string, latestResult: string | null | undefined): boolean {
+  return paymentType !== 'prepaid' && ['No Answer', 'Busy', 'Switched Off'].includes(latestResult || '')
+}
+export function codWhatsAppUrl(value: string | null | undefined): string | null {
+  const phone = indianWhatsAppNumber(value)
+  return phone ? `https://wa.me/${phone}?text=${encodeURIComponent(COD_WHATSAPP_MESSAGE)}` : null
+}
 const reconciliationDate = (value: string | null) => {
   if (!value) return '—'
   const parsed = new Date(value)
@@ -447,8 +454,8 @@ function App() {
 
   const saveCallLog = async () => {
     if (!selectedOrder) return
-    if (callResult === 'On Hold' && !callComment.trim()) {
-      setNotice('A note is required when placing an order On Hold')
+    if (callResult === 'On Hold' && callComment.trim().length < 3) {
+      setNotice('Add a reason before placing the order On Hold.')
       return
     }
     if (callResult === 'Cancelled') {
@@ -1229,11 +1236,11 @@ const OrderDrawer = memo(function OrderDrawer({
                 <button onClick={onSaveCallLog} className="rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white">Save</button>
               </div>}
               {!isPrepaid && <div className="space-y-2">
-                {['No Answer', 'Busy', 'Switched Off'].includes(callLog[0]?.result || '') && <button onClick={() => {
-                  const phone = indianWhatsAppNumber(addressDraft.phone || order.phone)
-                  if (!phone) { setWorkflowError('A valid Indian mobile number is required to open WhatsApp.'); return }
+                {shouldShowCodWhatsApp(order.paymentType, callLog[0]?.result) && <button onClick={() => {
+                  const url = codWhatsAppUrl(addressDraft.phone || order.phone)
+                  if (!url) { setWorkflowError('A valid Indian mobile number is required to open WhatsApp.'); return }
                   setWorkflowError('')
-                  window.open(`https://wa.me/${phone}?text=${encodeURIComponent(COD_WHATSAPP_MESSAGE)}`, '_blank', 'noopener,noreferrer')
+                  window.open(url, '_blank', 'noopener,noreferrer')
                   void recordCodWhatsAppOpened(order.internalId).catch(error => setWorkflowError(error.message))
                 }} className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-800">Send WhatsApp</button>}
                 {workflowError && <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{workflowError}</p>}
