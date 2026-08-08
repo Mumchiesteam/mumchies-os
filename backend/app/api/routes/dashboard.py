@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -30,6 +31,7 @@ MEANINGFUL_ORDER_ACTIONS = {
 }
 MEANINGFUL_NDR_ACTIONS = {"add_note", "assign", "customer_contacted", "courier_contacted", "resolve", "reopen"}
 _dashboard_refresh_tasks: dict[str, asyncio.Task[None]] = {}
+logger = logging.getLogger(__name__)
 
 
 def _period(preset: str, start: date | None, end: date | None, now: datetime | None = None) -> tuple[datetime, datetime, str]:
@@ -168,8 +170,10 @@ async def _refresh_dashboard_snapshot(key: str, preset: str, start_at: datetime,
         with SessionLocal() as db:
             result = await _build_dashboard(preset, start_at, end_at, label, db)
         ReportSnapshotStore.save_success(key, result)
-    except Exception:  # noqa: BLE001 - a stale snapshot is safer than blanking the Dashboard
-        ReportSnapshotStore.save_error(key, "Dashboard refresh failed. The last successful data is still available.")
+    except Exception as error:  # noqa: BLE001 - a stale snapshot is safer than blanking the Dashboard
+        logger.exception("Dashboard snapshot refresh failed")
+        message = str(error).strip()[:300]
+        ReportSnapshotStore.save_error(key, f"{type(error).__name__}: {message}" if message else type(error).__name__)
     finally:
         _dashboard_refresh_tasks.pop(key, None)
 

@@ -99,7 +99,9 @@ def health_check() -> dict:
         "report_snapshots": {
             "dashboard_ready": bool(dashboard_snapshot and dashboard_snapshot.get("data")),
             "dashboard_refreshed_at": (dashboard_snapshot or {}).get("last_refreshed_at"),
+            "dashboard_refresh_error": (dashboard_snapshot or {}).get("refresh_error"),
             "reconciliation_ready": bool(reconciliation_snapshot and reconciliation_snapshot.get("data")),
             "reconciliation_refreshed_at": (reconciliation_snapshot or {}).get("last_refreshed_at"),
+            "reconciliation_refresh_error": (reconciliation_snapshot or {}).get("refresh_error"),
         },
     }
