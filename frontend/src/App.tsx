@@ -86,6 +86,10 @@ type CourierQuote = {
 }
 
 const navItems = ['Dashboard', 'Orders', 'NDR', 'Reconciliation', 'Settings'] as const
+export const workspaceLoadsForPage = (page: typeof navItems[number]) => ({
+  orders: page === 'Orders',
+  reconciliation: page === 'Reconciliation',
+})
 const tabItems: { key: TabKey; label: string }[] = [
   { key: 'fresh', label: 'Fresh Orders' },
   { key: 'previous', label: 'Previous Pending Orders' },
@@ -213,6 +217,7 @@ function App() {
   const [cleanupRecords, setCleanupRecords] = useState<ShiprocketCleanupRecord[]>([])
   const [cleanupResults, setCleanupResults] = useState<Record<string, ShiprocketCancellationResult>>({})
   const [reconciliation, setReconciliation] = useState<OrdersReconciliationSummary | null>(null)
+  const [reconciliationError, setReconciliationError] = useState('')
   const [reconciliationFilter, setReconciliationFilter] = useState<ReconciliationFilter | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const [notice, setNotice] = useState('')
@@ -317,24 +322,35 @@ function App() {
     return () => window.clearTimeout(timeout)
   }, [searchDraft])
 
-  const refreshReconciliation = useCallback(() => void getOrdersReconciliation().then(setReconciliation).catch(() => undefined), [])
+  const refreshReconciliation = useCallback(() => {
+    setReconciliationError('')
+    void getOrdersReconciliation().then(setReconciliation).catch(error => setReconciliationError((error as Error).message))
+  }, [])
 
   useEffect(() => {
+    if (!workspaceLoadsForPage(activePage).orders) return
     const controller = new AbortController()
     const timeout = window.setTimeout(() => void loadOrders(controller.signal), 0)
     return () => {
       controller.abort()
       window.clearTimeout(timeout)
     }
-  }, [loadOrders])
-
-  useEffect(() => { refreshLabels(); refreshCleanup(); refreshReconciliation() }, [refreshCleanup, refreshLabels, refreshReconciliation])
+  }, [activePage, loadOrders])
 
   useEffect(() => {
-    if (selectedOrderId) return
+    const loads = workspaceLoadsForPage(activePage)
+    if (loads.orders) { refreshLabels(); refreshCleanup() }
+    if (loads.reconciliation) {
+      const timeout = window.setTimeout(refreshReconciliation, 0)
+      return () => window.clearTimeout(timeout)
+    }
+  }, [activePage, refreshCleanup, refreshLabels, refreshReconciliation])
+
+  useEffect(() => {
+    if (!workspaceLoadsForPage(activePage).orders || selectedOrderId) return
     const interval = window.setInterval(() => void loadOrders(), 60_000)
     return () => window.clearInterval(interval)
-  }, [loadOrders, selectedOrderId])
+  }, [activePage, loadOrders, selectedOrderId])
 
   useEffect(() => {
     if (!notice) return
@@ -729,7 +745,7 @@ function App() {
             ['both', 'Present in Both', reconciliation.present_in_both],
             ['cleanup_pending', 'Cleanup Pending', reconciliation.cleanup_pending],
             ['missing_in_shiprocket', 'Missing in Shiprocket', reconciliation.missing_in_shiprocket],
-          ] as [ReconciliationFilter, string, number][]).map(([key, label, value]) => { const active = reconciliationFilter === key; return <button type="button" aria-pressed={active} key={key} onClick={() => setReconciliationFilter(current => selectReconciliationFilter(current, key))} className={`cursor-pointer rounded-lg border px-3 py-2 text-left transition focus:outline-none focus:ring-2 focus:ring-orange-300 ${active ? 'border-orange-300 bg-orange-50 ring-2 ring-orange-100' : 'border-transparent bg-slate-50 hover:border-slate-300 hover:bg-slate-100'}`}><p className="text-[11px] font-semibold text-slate-500">{label}</p><p className="mt-1 text-lg font-bold text-slate-900">{value}</p></button> })}</div> : <p className="mt-3 text-sm text-slate-500">Reconciliation data is unavailable. Click Refresh to try again.</p>}</section>
+          ] as [ReconciliationFilter, string, number][]).map(([key, label, value]) => { const active = reconciliationFilter === key; return <button type="button" aria-pressed={active} key={key} onClick={() => setReconciliationFilter(current => selectReconciliationFilter(current, key))} className={`cursor-pointer rounded-lg border px-3 py-2 text-left transition focus:outline-none focus:ring-2 focus:ring-orange-300 ${active ? 'border-orange-300 bg-orange-50 ring-2 ring-orange-100' : 'border-transparent bg-slate-50 hover:border-slate-300 hover:bg-slate-100'}`}><p className="text-[11px] font-semibold text-slate-500">{label}</p><p className="mt-1 text-lg font-bold text-slate-900">{value}</p></button> })}</div> : <p className="mt-3 text-sm text-slate-500">{reconciliationError || 'Reconciliation data is unavailable. Click Refresh to try again.'}</p>}</section>
           {reconciliationFilter && <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-4"><div><h3 className="text-lg font-bold text-slate-900">{reconciliationFilterLabel(reconciliationFilter)}</h3><p className="text-sm text-slate-500">{reconciliationRows.length} orders</p></div><button onClick={() => setReconciliationFilter(clearReconciliationFilter())} className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">Clear Filter</button></div><OrdersTable orders={reconciliationOrders} repeatIds={repeatIds} onOpen={openOrder} reconciliationRows={reconciliationRows} reconciliationFilter={reconciliationFilter} cleanupRecords={cleanupRecords} cleanupResults={cleanupResults} onCleanup={sendShiprocketCleanup} onVerify={verifyShiprocketCleanup} emptyMessage="No orders match this reconciliation view." /></section>}
         </div>}
 

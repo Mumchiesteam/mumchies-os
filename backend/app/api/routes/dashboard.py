@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.api.routes.orders import (
     _call_outcome_is_on_hold, _call_outcome_requires_follow_up, _is_fresh_order,
-    _load_orders, reconciliation_summary,
+    _load_orders,
 )
 from app.db.session import get_db
 from app.models.ndr import NDRCase, NDREvent
@@ -126,18 +126,18 @@ async def dashboard(
     order_activity = _order_activity(operations, start_at, end_at)
     ndr_events = db.scalars(select(NDREvent).where(NDREvent.created_at >= start_at, NDREvent.created_at < end_at)).all()
     ndr_activity = _ndr_activity(list(ndr_events), start_at, end_at)
-    business_orders = await ShopifyService().get_orders_created_between(start_at, end_at)
+    operational = await _load_orders(db)
+    # Today, yesterday and last-seven-day views are already fully covered by the canonical
+    # 15-day operational read. Reuse it instead of issuing a second Shopify request.
+    if start_at >= datetime.now(timezone.utc) - timedelta(days=14):
+        business_orders = [order for order in operational if (created := _at(order.created_date)) and start_at <= created < end_at]
+    else:
+        business_orders = await ShopifyService().get_orders_created_between(start_at, end_at)
     business = _business_metrics(business_orders, _all_actioned_order_ids(operations))
 
-    operational = await _load_orders(db)
     ndr_cases = db.scalars(select(NDRCase)).all()
     now = datetime.now(timezone.utc)
     active_ndr = [case for case in ndr_cases if case.source_lifecycle == "active" and case.current_status != "resolved"]
-    try:
-        reconciliation = await reconciliation_summary(db)
-        reconciliation_exceptions: int | None = int(reconciliation["missing_in_shiprocket"]) + int(reconciliation["cleanup_pending"]) + len(reconciliation["duplicate_mapping_anomalies"])
-    except HTTPException:
-        reconciliation_exceptions = None
     needs = {
         "fresh": sum(_is_fresh_order(order) for order in operational),
         "follow_up": sum(_call_outcome_requires_follow_up(order) for order in operational),
@@ -145,7 +145,10 @@ async def dashboard(
         "ready_booking": sum(str(order.operational_status or "").casefold() == "ready for booking" for order in operational),
         "active_ndr": len(active_ndr),
         "ndr_over_sla": sum((now - (_at(case.first_ndr_at) or now)).total_seconds() > 172800 for case in active_ndr),
-        "reconciliation_exceptions": reconciliation_exceptions,
+        # The canonical reconciliation endpoint performs historical Shopify and Shiprocket
+        # reads. It is deliberately not nested in the Dashboard request: doing so duplicated
+        # that expensive provider workflow when App also loaded Reconciliation on startup.
+        "reconciliation_exceptions": None,
     }
     team = []
     for name in OPERATORS:

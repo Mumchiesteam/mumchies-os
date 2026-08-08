@@ -4,6 +4,9 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 
+import pytest
+
+from app.api.routes import dashboard as dashboard_route
 from app.api.routes.dashboard import _business_metrics, _ndr_activity, _order_activity, _period
 from app.schemas.orders import OrderProduct, ShopifyOrder
 
@@ -62,3 +65,25 @@ def test_business_metrics_payment_repeat_cancelled_and_products() -> None:
         "cod": {"count": 1, "percent": 33.3}, "prepaid": {"count": 1, "percent": 33.3}, "partial_cod": {"count": 1, "percent": 33.3},
     }
     assert metrics["top_products"] == [{"product": "Makhana", "quantity": 4, "orders": 2, "order_value": 160.0}]
+
+
+@pytest.mark.anyio
+async def test_today_dashboard_reuses_operational_read_without_reconciliation_or_second_shopify_load(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Results:
+        def all(self) -> list[object]: return []
+
+    class Database:
+        def scalars(self, statement: object) -> Results: return Results()
+
+    async def operational(db: object) -> list[ShopifyOrder]: return []
+    async def unexpected_reporting(self: object, start: datetime, end: datetime) -> list[ShopifyOrder]:
+        raise AssertionError("Today must reuse the operational Shopify read")
+
+    monkeypatch.setattr(dashboard_route.OrderOperationsStore, "all", lambda: {})
+    monkeypatch.setattr(dashboard_route, "_load_orders", operational)
+    monkeypatch.setattr(dashboard_route.ShopifyService, "get_orders_created_between", unexpected_reporting)
+
+    result = await dashboard_route.dashboard(preset="today", start=None, end=None, db=Database())
+
+    assert result["needs_attention"]["reconciliation_exceptions"] is None
+    assert result["orders"]["total"] == 0
