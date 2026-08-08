@@ -56,6 +56,7 @@ import { logout } from './services/auth'
 import { useAuth } from './auth-context'
 import { UsersPage } from './components/UsersPage'
 import { NDRPage } from './components/NDRPage'
+import { DashboardPage } from './components/DashboardPage'
 import { formatDateTime } from './utils/time'
 import { orderContactSectionTitle } from './utils/operations'
 import { EngageCircle, EngageProgress } from './components/EngageStatus'
@@ -189,7 +190,7 @@ const formatOrderDateTime = (value: string) => {
 }
 function App() {
   const authUser = useAuth()
-  const [activePage, setActivePage] = useState<'Orders' | 'NDR' | 'Reconciliation' | 'Settings'>('Orders')
+  const [activePage, setActivePage] = useState<'Dashboard' | 'Orders' | 'NDR' | 'Reconciliation' | 'Settings'>('Dashboard')
   const [orders, setOrders] = useState<Order[]>([])
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null)
   const [selectedOrderSnapshot, setSelectedOrderSnapshot] = useState<Order | null>(null)
@@ -696,7 +697,7 @@ function App() {
           </div>
           <nav className="ml-2 hidden flex-1 gap-2 overflow-x-auto md:flex">
             {navItems.filter(item => item !== 'Settings' || authUser?.role === 'owner').map(item => (
-              <button key={item} onClick={() => { if (item === 'Orders' || item === 'NDR' || item === 'Reconciliation' || item === 'Settings') setActivePage(item) }} className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-medium ${item === activePage ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{item}</button>
+              <button key={item} onClick={() => setActivePage(item)} className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-medium ${item === activePage ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{item}</button>
             ))}
           </nav>
           <div className="ml-auto flex items-center gap-2">
@@ -708,6 +709,15 @@ function App() {
       </header>
 
       <main className="mx-auto max-w-[1800px] px-4 py-5 lg:px-6">
+        {activePage === 'Dashboard' && <DashboardPage onNavigate={target => {
+          if (target === 'active_ndr' || target === 'ndr_over_sla') { setActivePage('NDR'); return }
+          if (target === 'reconciliation_exceptions') { setActivePage('Reconciliation'); return }
+          setActivePage('Orders')
+          if (target === 'fresh') setQueue('fresh')
+          else if (target === 'follow_up') { setQueue('previous'); setPendingView('follow_up') }
+          else if (target === 'on_hold') { setQueue('previous'); setPendingView('on_hold') }
+          else setQueue('all')
+        }} />}
         {activePage === 'Settings' && authUser?.role === 'owner' && <UsersPage />}
         {activePage === 'NDR' && <NDRPage />}
         {activePage === 'Reconciliation' && <div>

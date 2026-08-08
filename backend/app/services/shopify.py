@@ -41,6 +41,7 @@ class ShopifyService:
     _token_cache: dict[str, Any] | None = None
     _token_lock = asyncio.Lock()
     _orders_cache: dict[tuple[str, str], tuple[float, list[ShopifyOrder]]] = {}
+    _reporting_orders_cache: dict[tuple[str, str, str, str], tuple[float, list[ShopifyOrder]]] = {}
     _orders_lock = asyncio.Lock()
     _orders_cache_ttl_seconds = 300
 
@@ -498,6 +499,51 @@ class ShopifyService:
                 orders.extend(self._to_order(order) for order in payload)
                 next_url = self._next_page_url(response.headers.get("link"))
                 params = None
+        return orders
+
+    async def get_orders_created_between(self, start: datetime, end: datetime) -> list[ShopifyOrder]:
+        """Read a bounded business-reporting period without changing the operational lookback."""
+        cache_key = (self.store, self.api_version or "", start.isoformat(), end.isoformat())
+        cached = self._reporting_orders_cache.get(cache_key)
+        if cached and cached[0] > time.monotonic():
+            return list(cached[1])
+
+        async with self._orders_lock:
+            cached = self._reporting_orders_cache.get(cache_key)
+            if cached and cached[0] > time.monotonic():
+                return list(cached[1])
+            orders = await self._fetch_orders_created_between(start, end)
+            self._reporting_orders_cache[cache_key] = (
+                time.monotonic() + self._orders_cache_ttl_seconds,
+                list(orders),
+            )
+            return orders
+
+    async def _fetch_orders_created_between(self, start: datetime, end: datetime) -> list[ShopifyOrder]:
+        access_token = await self._get_access_token()
+        fields = "id,name,status,order_number,created_at,customer,email,phone,shipping_address,line_items,shipping_lines,total_price,current_total_price,total_outstanding,financial_status,fulfillment_status,cancelled_at,tags,payment_gateway_names,fulfillments"
+        url = f"https://{self.store}/admin/api/{self.api_version}/orders.json"
+        headers = {"X-Shopify-Access-Token": access_token}
+        raw_orders: list[dict[str, Any]] = []
+        next_url: str | None = url
+        params: dict[str, str] | None = {
+            "status": "any", "limit": "250", "order": "created_at desc", "fields": fields,
+            "created_at_min": start.isoformat(), "created_at_max": end.isoformat(),
+        }
+        seen_urls: set[str] = set()
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            while next_url:
+                if next_url in seen_urls:
+                    raise ShopifyConfigurationError("Shopify pagination repeated a page URL.")
+                seen_urls.add(next_url)
+                response = await client.get(next_url, params=params, headers=headers)
+                response.raise_for_status()
+                payload = response.json().get("orders", [])
+                raw_orders.extend(value for value in payload if isinstance(value, dict))
+                next_url = self._next_page_url(response.headers.get("link"))
+                params = None
+        orders = [self._to_order(value) for value in raw_orders]
+        await self._enrich_repeat_customer_history(orders)
         return orders
 
     async def _fetch_orders_for_enrichment(self, limit: int | None = None, *, include_transactions: bool) -> list[ShopifyOrder]:

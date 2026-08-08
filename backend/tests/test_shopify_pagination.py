@@ -89,3 +89,27 @@ async def test_unfulfilled_reconciliation_query_has_no_date_cutoff_and_paginates
     assert fake_client.requests[0][1]["fulfillment_status"] == "unfulfilled"
     assert "created_at_min" not in fake_client.requests[0][1]
     assert fake_client.requests[1][1] is None
+
+
+@pytest.mark.anyio
+async def test_dashboard_reporting_query_is_bounded_and_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(services.shopify.settings, "shopify_store", "dashboard.myshopify.com")
+    monkeypatch.setattr(services.shopify.settings, "shopify_client_id", "client-id")
+    monkeypatch.setattr(services.shopify.settings, "shopify_client_secret", "client-secret")
+    monkeypatch.setattr(services.shopify.settings, "shopify_api_version", "2025-07")
+    monkeypatch.setattr(ShopifyService, "_get_access_token", lambda self: __import__("asyncio").sleep(0, result="token"))
+    monkeypatch.setattr(ShopifyService, "_enrich_repeat_customer_history", lambda self, orders: __import__("asyncio").sleep(0))
+    ShopifyService._reporting_orders_cache.clear()
+    fake_client = _FakeClient([_FakeResponse([{"id": 9, "name": "1009", "order_number": 9, "created_at": "2026-08-09T05:00:00Z", "line_items": []}])])
+    monkeypatch.setattr("app.services.shopify.httpx.AsyncClient", lambda timeout: fake_client)
+    start = datetime(2026, 8, 8, 18, 30, tzinfo=timezone.utc)
+    end = datetime(2026, 8, 9, 18, 30, tzinfo=timezone.utc)
+
+    first = await ShopifyService().get_orders_created_between(start, end)
+    second = await ShopifyService().get_orders_created_between(start, end)
+
+    assert [value.order_id for value in first] == ["9"]
+    assert [value.order_id for value in second] == ["9"]
+    assert len(fake_client.requests) == 1
+    assert fake_client.requests[0][1]["created_at_min"] == start.isoformat()
+    assert fake_client.requests[0][1]["created_at_max"] == end.isoformat()
