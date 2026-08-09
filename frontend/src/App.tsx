@@ -57,6 +57,7 @@ import { useAuth } from './auth-context'
 import { UsersPage } from './components/UsersPage'
 import { NDRPage } from './components/NDRPage'
 import { DashboardPage } from './components/DashboardPage'
+import { AnalyticsPage } from './components/AnalyticsPage'
 import { formatDateTime } from './utils/time'
 import { orderContactSectionTitle } from './utils/operations'
 import { EngageCircle, EngageProgress } from './components/EngageStatus'
@@ -85,7 +86,7 @@ type CourierQuote = {
   rate_note: string
 }
 
-const navItems = ['Dashboard', 'Orders', 'NDR', 'Reconciliation', 'Settings'] as const
+const navItems = ['Dashboard', 'Analytics', 'Orders', 'NDR', 'Reconciliation', 'Settings'] as const
 export const workspaceLoadsForPage = (page: typeof navItems[number]) => ({
   orders: page === 'Orders',
   reconciliation: page === 'Reconciliation',
@@ -194,7 +195,7 @@ const formatOrderDateTime = (value: string) => {
 }
 function App() {
   const authUser = useAuth()
-  const [activePage, setActivePage] = useState<'Dashboard' | 'Orders' | 'NDR' | 'Reconciliation' | 'Settings'>('Dashboard')
+  const [activePage, setActivePage] = useState<typeof navItems[number]>('Dashboard')
   const [orders, setOrders] = useState<Order[]>([])
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null)
   const [selectedOrderSnapshot, setSelectedOrderSnapshot] = useState<Order | null>(null)
@@ -745,6 +746,7 @@ function App() {
           else if (target === 'on_hold') { setQueue('previous'); setPendingView('on_hold') }
           else setQueue('all')
         }} />}
+        {activePage === 'Analytics' && <AnalyticsPage />}
         {activePage === 'Settings' && authUser?.role === 'owner' && <UsersPage />}
         {activePage === 'NDR' && <NDRPage />}
         {activePage === 'Reconciliation' && <div>

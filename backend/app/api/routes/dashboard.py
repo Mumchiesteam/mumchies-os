@@ -42,7 +42,8 @@ def _period(preset: str, start: date | None, end: date | None, now: datetime | N
     if preset == "today": first = last = today
     elif preset == "yesterday": first = last = today - timedelta(days=1)
     elif preset == "last_7_days": first, last = today - timedelta(days=6), today
-    elif preset == "this_month": first, last = today.replace(day=1), today
+    elif preset in {"this_month", "month_to_date"}: first, last = today.replace(day=1), today
+    elif preset == "last_30_days": first, last = today - timedelta(days=29), today
     elif preset == "custom":
         if not start or not end or end < start: raise HTTPException(422, "Select a valid custom date range.")
         if (end - start).days > 365: raise HTTPException(422, "Dashboard date range cannot exceed 366 days.")

@@ -7,7 +7,7 @@ import { getDashboard } from './services/dashboard'
 describe('management dashboard', () => {
   it('renders the common period controls compactly', () => {
     const html = renderToStaticMarkup(<DashboardPage onNavigate={() => undefined} />)
-    for (const label of ['Today', 'Yesterday', 'Last 7 Days', 'This Month', 'Custom']) expect(html).toContain(label)
+    for (const label of ['Today', 'Yesterday', 'Last 7 Days', 'Month to Date', 'Last 30 Days', 'Custom']) expect(html).toContain(label)
     expect(html).toContain('Loading dashboard')
   })
 

@@ -9,6 +9,7 @@ import os
 
 from app.api.router import api_router
 from app.api.routes.dashboard import _dashboard_key, _dashboard_refresh_tasks, _period, _start_dashboard_refresh
+from app.api.routes.analytics import _analytics_tasks, _key as _analytics_key, start_analytics_refresh
 from app.api.routes.orders import _start_reconciliation_refresh
 from app.core.auth import read_session
 from app.core.config import settings
@@ -80,6 +81,12 @@ async def warm_management_report_snapshots() -> None:
         task = _dashboard_refresh_tasks.get(key)
         if task:
             await task
+        analytics_start, analytics_end, analytics_label = _period("last_30_days", None, None)
+        analytics_key = _analytics_key("last_30_days", analytics_start, analytics_end, "all", "all")
+        start_analytics_refresh(analytics_key, analytics_start, analytics_end, "last_30_days", analytics_label)
+        analytics_task = _analytics_tasks.get(analytics_key)
+        if analytics_task:
+            await analytics_task
         _start_reconciliation_refresh()
 
     asyncio.create_task(warm_sequentially())
@@ -91,6 +98,8 @@ def health_check() -> dict:
     start_at, end_at, _ = _period("today", None, None)
     dashboard_snapshot = ReportSnapshotStore.get(_dashboard_key("today", start_at, end_at))
     reconciliation_snapshot = ReportSnapshotStore.get("reconciliation")
+    analytics_start, analytics_end, _ = _period("last_30_days", None, None)
+    analytics_snapshot = ReportSnapshotStore.get(_analytics_key("last_30_days", analytics_start, analytics_end, "all", "all"))
     return {
         "status": "ok",
         "git_sha": os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_SHA") or "unknown",
@@ -103,5 +112,7 @@ def health_check() -> dict:
             "reconciliation_ready": bool(reconciliation_snapshot and reconciliation_snapshot.get("data")),
             "reconciliation_refreshed_at": (reconciliation_snapshot or {}).get("last_refreshed_at"),
             "reconciliation_refresh_error": (reconciliation_snapshot or {}).get("refresh_error"),
+            "analytics_ready": bool(analytics_snapshot and analytics_snapshot.get("data")),
+            "analytics_refreshed_at": (analytics_snapshot or {}).get("last_refreshed_at"),
         },
     }

@@ -1,6 +1,7 @@
 import { apiBase, apiFetch } from './orders'
+import type { PeriodPreset } from '../components/PeriodSelector'
 
-export type DashboardPreset = 'today' | 'yesterday' | 'last_7_days' | 'this_month' | 'custom'
+export type DashboardPreset = PeriodPreset
 export type DashboardData = {
   last_refreshed_at?: string | null
   refresh_error?: string | null
