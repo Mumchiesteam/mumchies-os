@@ -81,6 +81,12 @@ def eligible_shipments(db: Session, *, batch_size: int) -> list[ShiprocketShipme
     return [shipment for shipment in rows if shipment_poll_eligible(shipment)][:batch_size]
 
 
+def resolve_visible_order_number(order_id: str, canonical_order_numbers: dict[str, str] | None) -> str | None:
+    """Resolve only from an explicit canonical Shopify mapping; provider identifiers are never fallbacks."""
+    value = (canonical_order_numbers or {}).get(order_id)
+    return str(value).strip() if value is not None and str(value).strip() else None
+
+
 def _error_category(error: Exception) -> tuple[str, bool]:
     status = getattr(error, "http_status", None) or getattr(error, "status_code", None)
     if isinstance(error, httpx.TimeoutException):
@@ -191,6 +197,7 @@ def poller_status() -> dict[str, Any]:
 async def run_tracking_poll(
     session_factory, *, sleep: Callable[[float], Any] = asyncio.sleep,
     service: CourierPlatformService | None = None,
+    canonical_order_numbers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     if _run_lock.locked():
         return {"state": "overlap_skipped", "overlap_prevented": True}
@@ -225,7 +232,7 @@ async def run_tracking_poll(
                 timer = time.perf_counter()
                 attempt_row = ShipmentPollAttempt(
                     id=uuid4().hex, run_id=run_id, order_id=shipment.order_id,
-                    order_number=str(shipment.provider_order_id or "").strip() or None,
+                    order_number=resolve_visible_order_number(shipment.order_id, canonical_order_numbers),
                     provider=provider,
                     courier_service=str(shipment.courier_service or shipment.courier_name or "").strip() or None,
                     awb_reference=str(shipment.awb or shipment.shipment_id or shipment.provider_order_id or "").strip() or None,

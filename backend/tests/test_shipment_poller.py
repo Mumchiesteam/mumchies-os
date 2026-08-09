@@ -16,7 +16,7 @@ from app.repositories.shiprocket import get_shipment, upsert_shipment
 from app.services.courier_platform.base import ProviderError
 from app.services.courier_platform.models import NormalizedShipmentStatus, TrackingResult
 from app.services.shipment_poller import (
-    _error_category, _run_lock, cleanup_poller_audit, eligible_shipments, poller_audit_status, poller_status, run_tracking_poll,
+    _error_category, _run_lock, cleanup_poller_audit, eligible_shipments, poller_audit_status, poller_status, resolve_visible_order_number, run_tracking_poll,
     shipment_poll_eligible, shadowfax_polling_enabled,
 )
 
@@ -209,3 +209,25 @@ def test_error_summary_redacts_secrets_and_pii(sessions, monkeypatch):
 
 async def _done():
     return None
+
+
+def test_visible_shopify_order_number_never_uses_provider_order_id(sessions, monkeypatch):
+    class SuccessAdapter:
+        provider = "shiprocket"
+
+        async def track_shipment(self, shipment):
+            return TrackingResult(provider="shiprocket", status=NormalizedShipmentStatus.IN_TRANSIT, provider_status="In Transit")
+
+    shipment = add_shipment(sessions, "6854925719999", awb="AWB-PROVIDER")
+    assert shipment.provider_order_id == "REF-6854925719999"
+    assert resolve_visible_order_number(shipment.order_id, {shipment.order_id: "324999"}) == "324999"
+    assert resolve_visible_order_number(shipment.order_id, None) is None
+    monkeypatch.setattr("app.services.shipment_poller.courier_registry.get", lambda provider: SuccessAdapter())
+    import asyncio
+    asyncio.run(run_tracking_poll(
+        sessions, sleep=lambda _: _done(), canonical_order_numbers={shipment.order_id: "324999"},
+    ))
+    with sessions() as db:
+        attempt = db.scalar(select(ShipmentPollAttempt).where(ShipmentPollAttempt.order_id == shipment.order_id))
+        assert attempt.order_number == "324999"
+        assert attempt.order_number != shipment.provider_order_id
