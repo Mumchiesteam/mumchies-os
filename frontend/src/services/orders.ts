@@ -636,6 +636,13 @@ export async function saveManualShadowfaxShipment(orderId: string, payload: { aw
   return body
 }
 
+export async function testShadowfaxDirect324541(): Promise<{ booking: { provider_order_id?: string; awb?: string; status?: string }; tracking: { status?: string } }> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/shadowfax-test-324541`, { method: 'POST' })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail?.message || body?.detail || 'Shadowfax direct test failed.')
+  return body
+}
+
 export async function addAddressConfirmationComment(orderId: string, comment: string): Promise<OrderOperations> {
   const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/address-confirmation-comments`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ comment }) })
   if (!response.ok) throw new Error('Could not save address confirmation comment.')

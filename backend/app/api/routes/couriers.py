@@ -10,12 +10,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.core.identity import current_actor
+from app.core.identity import current_actor, current_user
 from app.repositories.shiprocket import get_shipment, snapshot as shipment_snapshot, upsert_shipment
 from app.schemas.orders import ShopifyOrder
 from app.services.order_operations import OrderOperationsStore
 from app.services.delhivery import DelhiveryError, DelhiveryService
 from app.services.courier_platform import ProviderError, courier_registry
+from app.services.courier_platform.adapters import ShadowfaxAdapter
 from app.services.courier_platform.service import CourierPlatformService
 from app.services.shipment_status import has_existing_shipment_evidence, has_persisted_provider_booking_evidence, has_uncertain_provider_booking
 from app.services.shiprocket import (
@@ -483,6 +484,93 @@ async def save_manual_shadowfax_shipment(order_id: str, payload: ManualShadowfax
     OrderOperationsStore.record_timeline_event(order_id, "shadowfax_manual_shipment_recorded", operator=actor)
     synchronized = await _sync_shopify_after_booking(db, order) if awb else shipment_snapshot(saved)
     return {"provider": "shadowfax", "shipment": synchronized or shipment_snapshot(saved)}
+
+
+@booking_router.post("/shadowfax-test-324541")
+async def temporary_shadowfax_direct_test_324541(request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
+    """Temporary, admin-only, single-order production validation endpoint."""
+    user = current_user(request)
+    if user.role not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="Admin access required.")
+
+    order = next(
+        (item for item in await ShopifyService().get_latest_orders(force_refresh=True) if item.order_number.lstrip("#") == "324541"),
+        None,
+    )
+    if order is None:
+        raise HTTPException(status_code=404, detail="Shopify order 324541 was not found.")
+    operations = OrderOperationsStore.get(order.order_id)
+    existing = get_shipment(db, order.order_id)
+    existing_snapshot = shipment_snapshot(existing) if existing else None
+    if has_existing_shipment_evidence(order, operations, existing_snapshot):
+        raise HTTPException(status_code=409, detail="Order 324541 already has shipment or fulfilment evidence.")
+    if any(event.get("action") == "shadowfax_direct_test_324541_started" for event in operations.get("timeline_events", [])):
+        raise HTTPException(status_code=409, detail="The one-time Shadowfax request for order 324541 was already attempted.")
+    eligibility = ShiprocketService().evaluate_booking_eligibility(order, operations, existing_snapshot)
+    if not eligibility.eligible:
+        raise HTTPException(status_code=409, detail={"message": "Order 324541 is not Ready for Booking.", "missing_requirements": eligibility.missing_requirements})
+    package_data = operations.get("package_details")
+    if not isinstance(package_data, dict):
+        raise HTTPException(status_code=409, detail="Package details are required before the Shadowfax test.")
+    package = PackageDetailsPayload.model_validate(package_data)
+    booking_request = await _build_provider_booking_request(order, operations, package)
+    if str((booking_request.get("customer_details") or {}).get("pincode")) != "700070":
+        raise HTTPException(status_code=409, detail="Order 324541 destination pincode is not 700070.")
+    for key in ("pickup_details", "rto_details"):
+        details = booking_request.get(key)
+        if isinstance(details, dict):
+            details.pop("unique_code", None)
+            details["name"] = "Mumchies Foods"
+            details["pincode"] = 560076
+
+    adapter = ShadowfaxAdapter()
+    serviceability = await adapter.serviceability({"delivery_pincode": "700070"})
+    if not serviceability.serviceable:
+        raise HTTPException(status_code=409, detail="Shadowfax does not report pincode 700070 as serviceable.")
+
+    actor = current_actor(request)
+    OrderOperationsStore.record_timeline_event(order.order_id, "shadowfax_direct_test_324541_started", operator=actor)
+    upsert_shipment(
+        db, order.order_id, provider="shadowfax", provider_order_id=None,
+        booking_status="booking_initiated", latest_status="Shadowfax direct test submitted",
+        booking_confidence=None, reconciliation_status=None, last_synced_at=datetime.now(timezone.utc),
+    )
+    try:
+        booking = await adapter.create_booking(booking_request)  # exactly one provider create POST; transport has no retries
+    except Exception as error:
+        uncertain = not isinstance(error, ProviderError) or error.uncertain
+        upsert_shipment(
+            db, order.order_id, booking_status="booking_uncertain" if uncertain else "booking_failed",
+            latest_status="Provider response uncertain" if uncertain else "Booking failed",
+            booking_confidence="uncertain", reconciliation_status="pending" if uncertain else "failed",
+            reconciliation_error=str(error), last_synced_at=datetime.now(timezone.utc),
+        )
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+    # The transport exposes Shadowfax `data.id` as shipment_id; do not confuse the
+    # echoed client_order_id with the provider's own order identifier.
+    booking = booking.model_copy(update={"provider_order_id": booking.shipment_id})
+    CourierPlatformService().persist_booking(db, order.order_id, booking)
+    OrderOperationsStore.record_timeline_event(
+        order.order_id, "shadowfax_direct_test_324541_booked", operator=actor,
+        details={"provider_order_id": booking.provider_order_id, "shipment_id": booking.shipment_id, "awb": booking.awb},
+    )
+    tracking = await CourierPlatformService().track(
+        db, order_id=order.order_id, adapter=adapter, operator=actor,
+    )
+    return {
+        "serviceability": {"serviceable": True, "pincode": "700070", "service": serviceability.quotes[0].service_type if serviceability.quotes else None},
+        "booking": {
+            "provider": "shadowfax", "client_order_id": "324541",
+            "provider_order_id": booking.provider_order_id, "shipment_id": booking.shipment_id,
+            "awb": booking.awb, "tracking_url": booking.tracking_url,
+            "status": booking.status.value, "service": booking.service,
+        },
+        "tracking": {
+            "status": tracking.get("latest_status"), "normalized_status": tracking.get("normalized_status"),
+            "latest_scan": tracking.get("latest_scan"), "tracking_url": tracking.get("tracking_url"),
+        },
+    }
 
 
 async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: Session, operator: str = "Mumchies OS") -> dict[str, object]:

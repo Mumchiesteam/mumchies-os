@@ -4,6 +4,7 @@ import {
   addOrderCallLog,
   recordCodWhatsAppOpened,
   saveManualShadowfaxShipment,
+  testShadowfaxDirect324541,
   addAddressConfirmationComment,
   cancelOrder,
   apiBase,
@@ -644,6 +645,19 @@ function App() {
     } catch (error) { setCourierError((error as Error).message); throw error } finally { setBookingLoading(false) }
   }
 
+  const testShadowfaxDirect = async () => {
+    if (!selectedOrder || selectedOrder.orderNumber !== '324541') return
+    if (!window.confirm('Create the one approved live Shadowfax shipment for order #324541? This can be used only once.')) return
+    setBookingLoading(true); setCourierError('')
+    try {
+      const result = await testShadowfaxDirect324541()
+      const reopened = await getOrderOperations(selectedOrder.internalId)
+      setOperations(reopened)
+      applyCanonicalShipment(selectedOrder.internalId, reopened.shipment ?? null)
+      setNotice(`Shadowfax booked: ${result.booking.awb || 'AWB returned'}`)
+    } catch (error) { setCourierError((error as Error).message) } finally { setBookingLoading(false) }
+  }
+
   const refreshShipment = async () => {
     if (!selectedOrder) return
     setShipmentRefreshLoading(true)
@@ -886,6 +900,8 @@ function App() {
           onSelectCourier={courier => void selectCourier(courier)}
           onBookShipment={bookShipment}
           onSaveManualShadowfax={saveManualShadowfax}
+          showShadowfaxDirectTest={selectedOrder.orderNumber === '324541' && ['owner', 'admin'].includes(authUser?.role || '')}
+          onTestShadowfaxDirect={() => void testShadowfaxDirect()}
           onRefreshShipment={() => void refreshShipment()}
           onReconcileShipment={() => void reconcileShipment()}
           onCancelShipment={() => void cancelShipment()}
@@ -1004,6 +1020,8 @@ const OrderDrawer = memo(function OrderDrawer({
   onSelectCourier,
   onBookShipment,
   onSaveManualShadowfax,
+  showShadowfaxDirectTest,
+  onTestShadowfaxDirect,
   onRefreshShipment,
   onReconcileShipment,
   onCancelShipment,
@@ -1080,6 +1098,8 @@ const OrderDrawer = memo(function OrderDrawer({
     height_cm: number | null
   }) => void
   onSaveManualShadowfax: (payload: { awb?: string; provider_id?: string; service_name?: string; booked_at?: string; freight?: number; note?: string }) => Promise<void>
+  showShadowfaxDirectTest: boolean
+  onTestShadowfaxDirect: () => void
   onRefreshShipment: () => void
   onReconcileShipment: () => void
   onCancelShipment: () => void
@@ -1354,6 +1374,7 @@ const OrderDrawer = memo(function OrderDrawer({
                 </div>
               )}
               {selectedCourier?.provider === 'shadowfax' && <p className="rounded-lg bg-amber-50 px-3 py-2 font-semibold text-amber-800">Manual booking on Shadowfax required</p>}
+              {showShadowfaxDirectTest && <button type="button" disabled={bookingLoading} onClick={onTestShadowfaxDirect} className="rounded-lg border border-violet-300 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:opacity-50">Test Shadowfax Direct</button>}
               {showShadowfaxForm && selectedCourier?.provider === 'shadowfax' && <div className="space-y-3 rounded-xl border border-slate-200 p-3">
                 <p className="font-semibold text-slate-800">Confirm manual Shadowfax booking</p>
                 <div className="grid gap-2 sm:grid-cols-2"><Field label="AWB" value={manualShadowfax.awb} onChange={awb => setManualShadowfax({ ...manualShadowfax, awb })} /><Field label="Shipment / Order ID" value={manualShadowfax.provider_id} onChange={provider_id => setManualShadowfax({ ...manualShadowfax, provider_id })} /><Field label="Service name" value={manualShadowfax.service_name} onChange={service_name => setManualShadowfax({ ...manualShadowfax, service_name })} /><Field label="Booking date/time" value={manualShadowfax.booked_at} onChange={booked_at => setManualShadowfax({ ...manualShadowfax, booked_at })} /><Field label="Freight (optional)" value={manualShadowfax.freight} onChange={freight => setManualShadowfax({ ...manualShadowfax, freight })} /><Field label="Operator note" value={manualShadowfax.note} onChange={note => setManualShadowfax({ ...manualShadowfax, note })} /></div>
