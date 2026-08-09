@@ -10,6 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.api.routes.couriers import PackageDetailsPayload, _build_delhivery_payload, _build_shiprocket_order_payload
+from app.api.routes.analytics import _payment
 from app.api.routes import orders as orders_routes
 from app.api.routes.labels import label_queue
 from app.api.routes.orders import AddressValidationPayload, ExportPayload, export_orders, validate_order_address
@@ -76,9 +77,52 @@ def test_shopify_shipping_address_preserves_all_drawer_fields():
     }
 
 
-@pytest.mark.parametrize(("status", "outstanding", "payment_type"), [("pending", "1577", "cod"), ("paid", "0", "prepaid")])
-def test_full_cod_and_prepaid_regression(status, outstanding, payment_type):
-    assert ShopifyService._to_order(raw_order(status, outstanding)).payment_type == payment_type
+@pytest.mark.parametrize(
+    ("status", "outstanding", "gateways", "payment_type"),
+    [("pending", "1577", ["Cash on Delivery (COD)"], "cod"), ("paid", "0", ["PayU"], "prepaid")],
+)
+def test_full_cod_and_prepaid_regression(status, outstanding, gateways, payment_type):
+    value = raw_order(status, outstanding)
+    value["payment_gateway_names"] = gateways
+    assert ShopifyService._to_order(value).payment_type == payment_type
+
+
+def test_cancelled_zero_balance_cod_keeps_stable_payment_type():
+    value = raw_order("voided", "0")
+    value["payment_gateway_names"] = ["Cash on Delivery (COD)"]
+    value["cancelled_at"] = "2026-07-21T05:22:00Z"
+    assert ShopifyService._to_order(value).payment_type == "cod"
+
+
+def test_cancelled_payu_remains_prepaid():
+    value = raw_order("voided", "0")
+    value["payment_gateway_names"] = ["PayU"]
+    value["cancelled_at"] = "2026-07-21T05:22:00Z"
+    assert ShopifyService._to_order(value).payment_type == "prepaid"
+
+
+def test_cancelled_partial_cod_uses_retained_gateway_and_payment_evidence():
+    value = raw_order("voided", "0")
+    value["cancelled_at"] = "2026-07-21T05:22:00Z"
+    assert ShopifyService._to_order(value).payment_type == "partial_cod"
+
+
+def test_cancelled_zero_balance_cod_counts_as_cod_not_prepaid_cancellation():
+    active_cod = raw_order("pending", "1577")
+    active_cod["payment_gateway_names"] = ["Cash on Delivery (COD)"]
+    cancelled_cod = raw_order("voided", "0")
+    cancelled_cod["payment_gateway_names"] = ["Cash on Delivery (COD)"]
+    cancelled_cod["cancelled_at"] = "2026-07-21T05:22:00Z"
+    active_payu = raw_order("paid", "0")
+    active_payu["payment_gateway_names"] = ["PayU"]
+    payment = {row["key"]: row for row in _payment([
+        ShopifyService._to_order(active_cod),
+        ShopifyService._to_order(cancelled_cod),
+        ShopifyService._to_order(active_payu),
+    ])}
+    assert payment["cod"]["orders"] == 1
+    assert payment["cod"]["cancellation_percent"] == 50
+    assert payment["prepaid"]["cancellation_percent"] == 0
 
 
 def test_partial_cod_provider_payloads_collect_only_balance():

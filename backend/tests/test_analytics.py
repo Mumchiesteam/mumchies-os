@@ -8,8 +8,8 @@ from app.api.routes.dashboard import _period
 from app.schemas.orders import OrderProduct, ShopifyOrder
 
 
-def order(identity: str, *, payment="cod", repeat=1, cancelled=False, created="2026-08-08T05:00:00Z", quantity=2, price=40) -> ShopifyOrder:
-    return ShopifyOrder(order_id=identity, order_number=identity, created_date=created, cancelled_at=created if cancelled else None, customer_orders_count=repeat, products=[OrderProduct(product_name="Makhana", sku="M1", quantity=quantity, price=Decimal(price))], total_amount=Decimal("100"), order_total=Decimal("100"), payment_type=payment, tags=[])
+def order(identity: str, *, payment="cod", repeat=1, cancelled=False, fulfilled=False, created="2026-08-08T05:00:00Z", quantity=2, price=40) -> ShopifyOrder:
+    return ShopifyOrder(order_id=identity, order_number=identity, created_date=created, cancelled_at=created if cancelled else None, customer_orders_count=repeat, fulfillment_status="fulfilled" if fulfilled else "unfulfilled", products=[OrderProduct(product_name="Makhana", sku="M1", quantity=quantity, price=Decimal(price))], total_amount=Decimal("100"), order_total=Decimal("100"), payment_type=payment, tags=[])
 
 
 def test_all_periods_and_previous_equivalent() -> None:
@@ -21,11 +21,13 @@ def test_all_periods_and_previous_equivalent() -> None:
 
 
 def test_business_customer_payment_product_and_trend_metrics() -> None:
-    rows = [order("repeat", repeat=2), order("prepaid", payment="prepaid", quantity=1), order("partial", payment="partial_cod", quantity=1), order("cancelled", cancelled=True)]
+    rows = [order("repeat", repeat=2, fulfilled=True), order("prepaid", payment="prepaid", quantity=1), order("partial", payment="partial_cod", quantity=1), order("cancelled", cancelled=True, fulfilled=True)]
     summary = _summary(rows)
-    assert summary["orders"] == 3 and summary["revenue"] == 300 and summary["aov"] == 100
-    assert summary["items_per_order"] == 1.33 and summary["cancellation_percent"] == 25
-    assert summary["repeat_percent"] == 33.3 and summary["new_percent"] == 66.7
+    assert summary["total_orders"] == 4 and summary["active_orders"] == 3
+    assert summary["order_value"] == 300 and summary["aov"] == 100
+    assert summary["items_per_order"] == 1.5 and summary["cancellation_percent"] == 25
+    assert summary["fulfilled_orders"] == 1 and summary["fulfillment_percent"] == 33.3
+    assert summary["repeat_percent"] == 33.3
     payment = {row["key"]: row for row in _payment(rows)}
     assert payment["partial_cod"]["orders"] == 1 and payment["cod"]["cancellation_percent"] == 50
     products = _products(rows, [order("old", quantity=1)])

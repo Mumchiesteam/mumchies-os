@@ -39,15 +39,18 @@ def _summary(orders: list) -> dict[str, float | int]:
     active = [order for order in orders if _active(order)]
     repeats = [order for order in active if _repeat(order)]
     value = sum(float(order.order_total) for order in active)
-    items = sum(item.quantity for order in active for item in order.products)
-    total = len(active)
+    items = sum(item.quantity for order in orders for item in order.products)
+    total = len(orders)
+    active_total = len(active)
+    fulfilled = sum(str(order.fulfillment_status or "").casefold() == "fulfilled" for order in active)
     return {
-        "orders": total, "revenue": round(value, 2), "aov": round(value / total, 2) if total else 0,
+        "total_orders": total, "active_orders": active_total, "order_value": round(value, 2),
+        "aov": round(value / active_total, 2) if active_total else 0,
         "items_per_order": round(items / total, 2) if total else 0,
-        "cancellation_percent": round((len(orders) - total) * 100 / len(orders), 1) if orders else 0,
-        "repeat_percent": round(len(repeats) * 100 / total, 1) if total else 0,
-        "new_percent": round((total - len(repeats)) * 100 / total, 1) if total else 0,
-        "repeat_orders": len(repeats), "repeat_revenue": round(sum(float(order.order_total) for order in repeats), 2),
+        "cancellation_percent": round((total - active_total) * 100 / total, 1) if total else 0,
+        "fulfilled_orders": fulfilled,
+        "fulfillment_percent": round(fulfilled * 100 / active_total, 1) if active_total else 0,
+        "repeat_percent": round(len(repeats) * 100 / active_total, 1) if active_total else 0,
     }
 
 
@@ -101,7 +104,7 @@ async def _build(start: datetime, end: datetime, preset: str, label: str, paymen
     return {"period": {"preset": preset, "start": start.date().isoformat(), "end": (end - timedelta(days=1)).date().isoformat(), "label": label}, "filters": {"payment": payment, "customer": customer}, "business": now, "comparisons": comparisons, "customers": customer_data, "payment": _payment(current), "products": _products(current, previous), "trend": _trend(current, start, end)}
 
 
-def _key(preset: str, start: datetime, end: datetime, payment: str, customer: str) -> str: return f"analytics:{preset}:{start.date()}:{end.date()}:{payment}:{customer}"
+def _key(preset: str, start: datetime, end: datetime, payment: str, customer: str) -> str: return f"analytics:v2:{preset}:{start.date()}:{end.date()}:{payment}:{customer}"
 
 async def _refresh(key: str, start: datetime, end: datetime, preset: str, label: str, payment: str, customer: str) -> None:
     try: ReportSnapshotStore.save_success(key, await _build(start, end, preset, label, payment, customer))

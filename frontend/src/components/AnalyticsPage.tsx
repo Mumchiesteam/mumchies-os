@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react'
 import { formatMoney } from '../services/orders'
-import { getAnalytics, type AnalyticsData } from '../services/analytics'
+import { analyticsKpis as KPI, getAnalytics, type AnalyticsData } from '../services/analytics'
 import { PeriodSelector, type PeriodPreset } from './PeriodSelector'
 
-const KPI: [string, string, 'money' | 'number' | 'rate'][] = [['orders', 'Total Orders', 'number'], ['revenue', 'Revenue', 'money'], ['aov', 'AOV', 'money'], ['items_per_order', 'Items / Order', 'number'], ['cancellation_percent', 'Cancellation', 'rate'], ['repeat_percent', 'Repeat Customer', 'rate'], ['new_percent', 'New Customer', 'rate'], ['repeat_orders', 'Repeat Orders', 'number'], ['repeat_revenue', 'Repeat Revenue', 'money']]
 const value = (amount: number, kind: string) => kind === 'money' ? formatMoney(amount) : kind === 'rate' ? `${amount}%` : String(amount)
 const compare = (data: AnalyticsData, key: string) => { const item = data.comparisons[key]; if (!item) return '—'; return item.points != null ? `${item.points >= 0 ? '+' : ''}${item.points} pp` : item.percent == null ? `${item.absolute >= 0 ? '+' : ''}${item.absolute}` : `${item.percent >= 0 ? '+' : ''}${item.percent}%` }
 

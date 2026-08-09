@@ -647,6 +647,29 @@ class ShopifyService:
         return ExternalTracking(provider=provider, awb=awb, status=status, tracking_url=tracking_url)
 
     @staticmethod
+    def _payment_type(
+        financial_status: str,
+        outstanding: Decimal,
+        gateways: list[str],
+    ) -> str:
+        normalized_gateways = {
+            " ".join(str(value).casefold().replace("_", " ").replace("-", " ").split())
+            for value in gateways
+        }
+        has_cod_gateway = any(
+            value == "cod" or "cash on delivery" in value
+            for value in normalized_gateways
+        )
+        has_payu_gateway = any("payu" in value for value in normalized_gateways)
+        if (has_cod_gateway and has_payu_gateway) or (
+            financial_status == "partially_paid" and (outstanding > 0 or has_cod_gateway)
+        ):
+            return "partial_cod"
+        if has_cod_gateway or outstanding > 0:
+            return "cod"
+        return "prepaid"
+
+    @staticmethod
     def _to_order(order: dict[str, Any]) -> ShopifyOrder:
         customer = order.get("customer") or {}
         address = order.get("shipping_address") or {}
@@ -664,7 +687,11 @@ class ShopifyService:
         else:
             outstanding = Decimal("0")
         paid = max(order_total - outstanding, Decimal("0"))
-        payment_type = "partial_cod" if financial_status == "partially_paid" and outstanding > 0 else "cod" if outstanding > 0 else "prepaid"
+        payment_type = ShopifyService._payment_type(
+            financial_status,
+            outstanding,
+            [str(value) for value in order.get("payment_gateway_names", [])],
+        )
         return ShopifyOrder(
             order_id=str(order["id"]),
             shopify_graphql_id=f"gid://shopify/Order/{order['id']}",
