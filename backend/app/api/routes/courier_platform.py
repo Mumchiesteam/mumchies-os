@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.services.courier_platform import courier_registry
 from app.services.shipment_events import shipment_event_history
-from app.services.shipment_poller import poller_status
+from app.services.shipment_poller import poller_audit_status, poller_status
 
 router = APIRouter(prefix="/couriers", tags=["courier-platform"])
 
@@ -23,8 +23,8 @@ async def courier_shipment_events(order_id: str, db: Session = Depends(get_db)) 
 
 
 @router.get("/poller/status")
-async def courier_poller_status(request: Request) -> dict[str, object]:
+async def courier_poller_status(request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     user = getattr(request.state, "auth_user", None)
     if user is None or user.role not in {"owner", "admin"}:
         raise HTTPException(status_code=403, detail="Admin access required.")
-    return poller_status()
+    return {**poller_status(), "audit": poller_audit_status(db)}

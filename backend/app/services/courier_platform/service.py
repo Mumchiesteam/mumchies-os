@@ -11,7 +11,7 @@ from app.services.courier_platform.base import CourierAdapter, ProviderConfigura
 from app.services.courier_platform.models import BookingConfidence, BookingResult, NormalizedShipmentStatus, ReconciliationStatus
 from app.services.order_operations import OrderOperationsStore
 from app.services.shipment_status import has_persisted_provider_booking_evidence, has_uncertain_provider_booking
-from app.services.shipment_events import append_tracking_events
+from app.services.shipment_events import append_tracking_events, extract_tracking_events
 
 
 def _json(value: Any) -> str | None:
@@ -100,7 +100,7 @@ class CourierPlatformService:
         OrderOperationsStore.record_timeline_event(order_id, "courier_booking_reconciled", operator=operator, details={"provider": adapter.provider, "awb": result.awb})
         return snapshot(persisted)
 
-    async def track(self, db: Session, *, order_id: str, adapter: CourierAdapter, operator: str) -> dict[str, Any]:
+    async def track(self, db: Session, *, order_id: str, adapter: CourierAdapter, operator: str, tracking_audit: dict[str, Any] | None = None) -> dict[str, Any]:
         shipment = get_shipment(db, order_id)
         if shipment is None:
             raise ProviderError("Shipment not found.", provider=adapter.provider, operation="tracking")
@@ -113,11 +113,27 @@ class CourierPlatformService:
             ndr_reason=result.ndr_reason, ndr_attempt=result.ndr_attempt, ndr_remarks=result.courier_remarks,
             raw_provider_response=_json(result.raw_response), last_synced_at=datetime.now(timezone.utc),
         )
-        append_tracking_events(
+        inserted_events = append_tracking_events(
             db, order_id=order_id, shipment=snapshot(persisted), result=result,
             source="api_poll",
             order_number=shipment.provider_order_id if adapter.provider in {"shiprocket", "delhivery"} else None,
         )
+        if tracking_audit is not None:
+            raw = result.raw_response if isinstance(result.raw_response, dict) else {}
+            if adapter.provider == "shiprocket" and "tracking_data" in raw:
+                response_format = "shiprocket_tracking_data"
+            elif adapter.provider == "delhivery" and ("raw" in raw or "ShipmentData" in raw):
+                response_format = "delhivery_shipment_data"
+            elif adapter.provider == "shadowfax" and ("tracking_details" in raw or "provider_response" in raw):
+                response_format = "shadowfax_v4_tracking"
+            else:
+                response_format = "normalized_current_status"
+            tracking_audit.update({
+                "events_returned": len(extract_tracking_events(result)),
+                "new_events_persisted": len(inserted_events),
+                "terminal_status_detected": result.status.value if result.terminal else None,
+                "response_format": response_format,
+            })
         OrderOperationsStore.record_timeline_event(order_id, "courier_tracking_updated", operator=operator, details={"provider": adapter.provider, "status": result.status.value, "scan": result.latest_scan})
         return snapshot(persisted)
 

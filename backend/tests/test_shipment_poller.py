@@ -1,20 +1,22 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
-
 import pytest
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
+
 from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core.config import settings
 from app.db.base import Base
 from app.models.shipment_event import ShipmentEvent
+from app.models.shipment_poll import ShipmentPollAttempt, ShipmentPollRun
 from app.repositories.shiprocket import get_shipment, upsert_shipment
 from app.services.courier_platform.base import ProviderError
 from app.services.courier_platform.models import NormalizedShipmentStatus, TrackingResult
 from app.services.shipment_poller import (
-    _error_category, _run_lock, eligible_shipments, poller_status, run_tracking_poll,
+    _error_category, _run_lock, cleanup_poller_audit, eligible_shipments, poller_audit_status, poller_status, run_tracking_poll,
     shipment_poll_eligible, shadowfax_polling_enabled,
 )
 
@@ -94,6 +96,22 @@ async def test_poll_ingests_history_deduplicates_preserves_timestamps_and_contin
         assert events[0].provider_event_at is not None
         assert any(event.normalized_status == "unknown" for event in events)
         assert get_shipment(db, "good").latest_status == "In Transit"
+        runs = db.scalars(select(ShipmentPollRun).order_by(ShipmentPollRun.started_at)).all()
+        assert len(runs) == 2 and runs[0].status == "completed"
+        assert runs[0].provider_counts["shiprocket"] == {"attempted": 3, "succeeded": 2, "failed": 1, "new_events": 6}
+        attempts = db.scalars(select(ShipmentPollAttempt).where(ShipmentPollAttempt.run_id == runs[0].run_id)).all()
+        assert len(attempts) == 3
+        success = next(item for item in attempts if item.order_id == "good")
+        assert success.result == "success" and success.events_returned == 3 and success.new_events_persisted == 3
+        assert success.response_format == "shiprocket_tracking_data" and success.duration_ms is not None
+        failure = next(item for item in attempts if item.order_id == "failed")
+        assert failure.result == "failure" and failure.error_category == "rate_limited" and failure.http_status == 429
+        assert failure.completed_at is not None
+        audit = poller_audit_status(db)
+        assert audit["provider_coverage"]["shiprocket"]["attempted"] == 6
+        assert audit["failure_breakdown"] == {"rate_limited": 2}
+        assert audit["event_count_by_provider"] == {"shiprocket": 6}
+        assert audit["provider_timestamped_events"] == {"shiprocket": 6}
 
 
 class DeliveredAdapter:
@@ -142,6 +160,51 @@ async def test_overlapping_run_is_prevented(sessions):
 def test_provider_http_error_categories(status, category, retryable):
     error = ProviderError("safe", provider="shiprocket", operation="tracking", http_status=status)
     assert _error_category(error) == (category, retryable)
+
+
+def test_retention_keeps_latest_100_runs_and_historical_runs_remain_queryable(sessions):
+    now = datetime.now(timezone.utc)
+    with sessions() as db:
+        for index in range(105):
+            run_id = uuid4().hex
+            started = now - timedelta(hours=104 - index)
+            db.add(ShipmentPollRun(
+                run_id=run_id, started_at=started, completed_at=started + timedelta(minutes=1),
+                total_attempted=1, total_succeeded=1, total_failed=0,
+                new_events_persisted=0, provider_counts={"shiprocket": {"attempted": 1}}, status="completed",
+            ))
+            db.add(ShipmentPollAttempt(
+                id=uuid4().hex, run_id=run_id, order_id=f"order-{index}", provider="shiprocket",
+                attempted_at=started, completed_at=started + timedelta(seconds=1), result="success",
+                events_returned=0, new_events_persisted=0,
+            ))
+        db.commit()
+        cleanup_poller_audit(db, now=now, max_runs=100, retention_days=30)
+        assert len(db.scalars(select(ShipmentPollRun)).all()) == 100
+        assert len(db.scalars(select(ShipmentPollAttempt)).all()) == 100
+        assert len(poller_audit_status(db, run_limit=10)["latest_runs"]) == 10
+
+
+def test_error_summary_redacts_secrets_and_pii(sessions, monkeypatch):
+    class UnsafeAdapter:
+        provider = "shiprocket"
+
+        async def track_shipment(self, shipment):
+            raise ProviderError(
+                "token=topsecret phone=9876543210 email=user@example.com",
+                provider="shiprocket", operation="tracking", http_status=403,
+            )
+
+    add_shipment(sessions, "unsafe", awb="SAFE-AWB")
+    monkeypatch.setattr("app.services.shipment_poller.courier_registry.get", lambda provider: UnsafeAdapter())
+    # The synchronous test uses a dedicated event loop through asyncio.run.
+    import asyncio
+    asyncio.run(run_tracking_poll(sessions, sleep=lambda _: _done()))
+    with sessions() as db:
+        attempt = db.scalar(select(ShipmentPollAttempt).where(ShipmentPollAttempt.order_id == "unsafe"))
+        assert "topsecret" not in attempt.error_summary
+        assert "9876543210" not in attempt.error_summary
+        assert "user@example.com" not in attempt.error_summary
 
 
 async def _done():
