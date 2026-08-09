@@ -35,6 +35,17 @@ def test_shadowfax_direct_diagnostics_merge_without_secrets(tmp_path, monkeypatc
     assert "token" not in str(OrderOperationsStore.get("1").get("shadowfax_direct_test")).casefold()
 
 
+def test_legacy_shadowfax_reset_removes_only_temporary_guard(tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    OrderOperationsStore.record_timeline_event("1", "address_verified", operator="Owner")
+    OrderOperationsStore.record_timeline_event("1", "shadowfax_direct_test_324541_started", operator="Owner")
+    OrderOperationsStore.update_shadowfax_direct_test("1", final_test_state="legacy_attempt_observed_without_diagnostics")
+    OrderOperationsStore.reset_legacy_shadowfax_direct_test("1")
+    record = OrderOperationsStore.get("1")
+    assert record["shadowfax_direct_test"] is None
+    assert [event["action"] for event in record["timeline_events"]] == ["address_verified"]
+
+
 @pytest.fixture()
 def db(tmp_path):
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'ops.db'}")

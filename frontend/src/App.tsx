@@ -6,6 +6,7 @@ import {
   saveManualShadowfaxShipment,
   testShadowfaxDirect324541,
   getShadowfaxDirect324541Status,
+  resetShadowfaxDirect324541,
   type ShadowfaxDirectTestState,
   addAddressConfirmationComment,
   cancelOrder,
@@ -669,6 +670,16 @@ function App() {
     }
   }
 
+  const resetShadowfaxDirect = async () => {
+    if (!selectedOrder || selectedOrder.orderNumber !== '324541') return
+    if (!window.confirm('Reset the Shadowfax test attempt for order 324541? Only continue after confirming no shipment exists in Shadowfax.')) return
+    setBookingLoading(true); setCourierError('')
+    try {
+      setShadowfaxTestState(await resetShadowfaxDirect324541())
+      setNotice('Shadowfax test attempt reset')
+    } catch (error) { setCourierError((error as Error).message) } finally { setBookingLoading(false) }
+  }
+
   const refreshShipment = async () => {
     if (!selectedOrder) return
     setShipmentRefreshLoading(true)
@@ -914,6 +925,7 @@ function App() {
           showShadowfaxDirectTest={selectedOrder.orderNumber === '324541' && ['owner', 'admin'].includes(authUser?.role || '')}
           onTestShadowfaxDirect={() => void testShadowfaxDirect()}
           shadowfaxTestState={shadowfaxTestState}
+          onResetShadowfaxDirect={() => void resetShadowfaxDirect()}
           onRefreshShipment={() => void refreshShipment()}
           onReconcileShipment={() => void reconcileShipment()}
           onCancelShipment={() => void cancelShipment()}
@@ -1035,6 +1047,7 @@ const OrderDrawer = memo(function OrderDrawer({
   showShadowfaxDirectTest,
   onTestShadowfaxDirect,
   shadowfaxTestState,
+  onResetShadowfaxDirect,
   onRefreshShipment,
   onReconcileShipment,
   onCancelShipment,
@@ -1114,6 +1127,7 @@ const OrderDrawer = memo(function OrderDrawer({
   showShadowfaxDirectTest: boolean
   onTestShadowfaxDirect: () => void
   shadowfaxTestState: ShadowfaxDirectTestState | null
+  onResetShadowfaxDirect: () => void
   onRefreshShipment: () => void
   onReconcileShipment: () => void
   onCancelShipment: () => void
@@ -1388,7 +1402,7 @@ const OrderDrawer = memo(function OrderDrawer({
                 </div>
               )}
               {selectedCourier?.provider === 'shadowfax' && <p className="rounded-lg bg-amber-50 px-3 py-2 font-semibold text-amber-800">Manual booking on Shadowfax required</p>}
-              {showShadowfaxDirectTest && <button type="button" disabled={bookingLoading} onClick={onTestShadowfaxDirect} className="rounded-lg border border-violet-300 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:opacity-50">Test Shadowfax Direct</button>}
+              {showShadowfaxDirectTest && <div className="flex flex-wrap gap-2"><button type="button" disabled={bookingLoading || shadowfaxTestState?.final_test_state === 'legacy_attempt_observed_without_diagnostics' || Boolean(shadowfaxTestState?.create_request_started_at)} onClick={onTestShadowfaxDirect} className="rounded-lg border border-violet-300 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:opacity-50">Test Shadowfax Direct</button>{shadowfaxTestState?.final_test_state === 'legacy_attempt_observed_without_diagnostics' && <button type="button" disabled={bookingLoading} onClick={onResetShadowfaxDirect} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 disabled:opacity-50">Reset Shadowfax Test</button>}</div>}
               {showShadowfaxDirectTest && shadowfaxTestState && <details open className="rounded-lg border border-violet-200 bg-violet-50/40 p-3 text-xs text-slate-700">
                 <summary className="cursor-pointer font-semibold text-violet-900">Shadowfax direct test status</summary>
                 <dl className="mt-2 grid gap-x-3 gap-y-1 sm:grid-cols-2">{Object.entries(shadowfaxTestState).map(([key, value]) => <div key={key}><dt className="font-semibold">{key.replaceAll('_', ' ')}</dt><dd className="break-words">{value == null ? '—' : typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd></div>)}</dl>

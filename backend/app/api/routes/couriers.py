@@ -652,6 +652,39 @@ async def temporary_shadowfax_direct_test_324541_status(request: Request) -> dic
     return {"order_number": "324541", "state": state}
 
 
+@booking_router.post("/shadowfax-test-324541/reset")
+async def reset_temporary_shadowfax_direct_test_324541(request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
+    user = current_user(request)
+    if user.role not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    order = next(
+        (item for item in await ShopifyService().get_latest_orders() if item.order_number.lstrip("#") == "324541"),
+        None,
+    )
+    if order is None:
+        raise HTTPException(status_code=404, detail="Shopify order 324541 was not found.")
+    operations = OrderOperationsStore.get(order.order_id)
+    attempted = next(
+        (event for event in operations.get("timeline_events", []) if event.get("action") == "shadowfax_direct_test_324541_started"),
+        None,
+    )
+    diagnostic = operations.get("shadowfax_direct_test")
+    legacy = attempted is not None and not isinstance(diagnostic, dict)
+    if not legacy:
+        raise HTTPException(status_code=409, detail="Only the legacy unobserved Shadowfax test attempt can be reset.")
+
+    shipment = shipment_snapshot(get_shipment(db, order.order_id))
+    shadowfax_record = str(shipment.get("provider") or "").casefold() == "shadowfax"
+    successful_status = str(shipment.get("booking_status") or "").casefold() in {"booked", "manual_confirmed"}
+    if shadowfax_record and (
+        shipment.get("provider_order_id") or shipment.get("shipment_id") or shipment.get("awb") or successful_status
+    ):
+        raise HTTPException(status_code=409, detail="A persisted Shadowfax booking identifier or successful booking exists; reset is blocked.")
+
+    OrderOperationsStore.reset_legacy_shadowfax_direct_test(order.order_id)
+    return {"order_number": "324541", "reset": True, "state": {"final_test_state": "not_attempted"}}
+
+
 async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: Session, operator: str = "Mumchies OS") -> dict[str, object]:
     actor = operator
     try:

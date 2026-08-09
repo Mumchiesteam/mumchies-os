@@ -84,6 +84,20 @@ class OrderOperationsStore:
             return deepcopy(state)
 
     @classmethod
+    def reset_legacy_shadowfax_direct_test(cls, order_id: str) -> None:
+        """Remove only the temporary legacy guard/diagnostics for order 324541."""
+        with cls._lock:
+            data = cls._read_all()
+            record = data.get(order_id, deepcopy(cls._default_record))
+            record["timeline_events"] = [
+                event for event in record.get("timeline_events", [])
+                if event.get("action") != "shadowfax_direct_test_324541_started"
+            ]
+            record["shadowfax_direct_test"] = None
+            data[order_id] = record
+            cls._write_all(data)
+
+    @classmethod
     def save_address(cls, order_id: str, address: dict[str, Any], courier_sync_status: str | None = None, courier_sync_error: str | None = None, operator: str | None = None) -> dict[str, Any]:
         with cls._lock:
             data = cls._read_all()
