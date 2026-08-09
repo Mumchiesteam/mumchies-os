@@ -69,6 +69,7 @@ import { formatDateTime } from './utils/time'
 import { orderContactSectionTitle } from './utils/operations'
 import { EngageCircle, EngageProgress } from './components/EngageStatus'
 import { OrderStatusBadge } from './components/OrderStatusBadge'
+import { ShipmentHistory } from './components/ShipmentHistory'
 import { engageCategory } from './utils/engage'
 import { hasShipmentEvidence, listStatus, type OperationalStatus } from './utils/orderStatus'
 import { displayedOrderNumber, orderNumberClipboardValue, stopCopyPropagation } from './utils/orderNumber'
@@ -952,6 +953,7 @@ function App() {
           onSyncShopifyFulfillment={() => void syncFulfillment()}
           onDownloadLabel={() => retrieveLabel('download')}
           onPrintLabel={() => retrieveLabel('print')}
+          shipmentHistoryPrivileged={['owner', 'admin'].includes(authUser?.role || '')}
         />
       )}
 
@@ -1076,6 +1078,7 @@ const OrderDrawer = memo(function OrderDrawer({
   onSyncShopifyFulfillment,
   onDownloadLabel,
   onPrintLabel,
+  shipmentHistoryPrivileged,
 }: {
   order: Order
   repeat: boolean
@@ -1158,6 +1161,7 @@ const OrderDrawer = memo(function OrderDrawer({
   onSyncShopifyFulfillment: () => void
   onDownloadLabel: () => void
   onPrintLabel: () => void
+  shipmentHistoryPrivileged: boolean
 }) {
   const [packageDraft, setPackageDraft] = useState(() => ({
     weight_kg: order.packageDetails?.weight_kg?.toString() || (order.products.reduce((sum, product) => sum + (product.weightGrams ? product.weightGrams * product.quantity : 0), 0) > 0 ? (order.products.reduce((sum, product) => sum + (product.weightGrams ? product.weightGrams * product.quantity : 0), 0) / 1000).toFixed(2) : ''),
@@ -1473,6 +1477,7 @@ const OrderDrawer = memo(function OrderDrawer({
               {courierOptions.length === 0 && !courierLoading && !courierError && <p className="text-xs text-slate-500">{courierSyncMessage || (canCheckCouriers ? 'No courier options are available.' : 'Complete the requirements above to load courier options automatically.')}</p>}
               </>
               )}
+              <ShipmentHistory orderId={order.internalId} privileged={shipmentHistoryPrivileged} />
             </div>
           </Section>
 
