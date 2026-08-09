@@ -345,7 +345,7 @@ async def _build_provider_booking_request(order: ShopifyOrder, operations: dict[
             "additional_details": {"quantity": item.quantity},
         }
         if item.sku:
-            product["client_sku_id"] = item.sku
+            product["sku_id"] = item.sku
         product_details.append(product)
 
     payment_mode = _order_payment_mode(order)

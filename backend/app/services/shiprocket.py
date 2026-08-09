@@ -17,6 +17,9 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.repositories.shiprocket import get_shipment, snapshot, upsert_shipment
 from app.services.shipment_status import derive_operational_status, has_existing_shipment_evidence, has_persisted_provider_booking_evidence
+from app.services.courier_platform.models import TrackingResult
+from app.services.courier_platform.status import is_terminal, normalize_status
+from app.services.shipment_events import append_tracking_events
 
 
 class ShiprocketConfigurationError(RuntimeError):
@@ -597,6 +600,7 @@ class ShiprocketService:
         booked_at = self._parse_upstream_datetime(shipment.get("awb_assign_date"))
         tracking_url = None
         latest_status = upstream_status or "AWB pending"
+        tracking_payload: dict[str, Any] | None = None
         if awb:
             try:
                 tracking_payload = await self.tracking(str(awb))
@@ -625,6 +629,17 @@ class ShiprocketService:
             tracking_url=str(tracking_url) if tracking_url else None,
             label_url=f"/api/v1/orders/{local_order_id}/shipping-label" if awb else None,
         )
+        if tracking_payload is not None:
+            status = normalize_status(latest_status)
+            append_tracking_events(
+                db, order_id=local_order_id, shipment=snapshot(persisted),
+                result=TrackingResult(
+                    provider="shiprocket", status=status,
+                    provider_status=str(latest_status or "") or None,
+                    latest_tracking_at=None, tracking_url=str(tracking_url) if tracking_url else None,
+                    terminal=is_terminal(status), raw_response=self.sanitize_response(tracking_payload),
+                ), source="api_poll", order_number=channel_order_id,
+            )
         return snapshot(persisted)
 
     async def create_shipment(self, db: Session, order_id: str, order_payload: dict[str, Any], courier_id: str | None = None) -> dict[str, Any]:
@@ -825,5 +840,15 @@ class ShiprocketService:
             latest_status=latest_status,
             last_synced_at=datetime.now(timezone.utc),
             tracking_url=tracking_url,
+        )
+        status = normalize_status(latest_status)
+        append_tracking_events(
+            db, order_id=order_id, shipment=snapshot(shipment),
+            result=TrackingResult(
+                provider="shiprocket", status=status,
+                provider_status=str(latest_status or "") or None,
+                latest_tracking_at=None, tracking_url=tracking_url,
+                terminal=is_terminal(status), raw_response=self.sanitize_response(payload),
+            ), source="api_poll", order_number=shipment.provider_order_id,
         )
         return snapshot(shipment)

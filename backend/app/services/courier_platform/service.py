@@ -11,6 +11,7 @@ from app.services.courier_platform.base import CourierAdapter, ProviderConfigura
 from app.services.courier_platform.models import BookingConfidence, BookingResult, NormalizedShipmentStatus, ReconciliationStatus
 from app.services.order_operations import OrderOperationsStore
 from app.services.shipment_status import has_persisted_provider_booking_evidence, has_uncertain_provider_booking
+from app.services.shipment_events import append_tracking_events
 
 
 def _json(value: Any) -> str | None:
@@ -111,6 +112,11 @@ class CourierPlatformService:
             terminal_status=result.status.value if result.terminal else None,
             ndr_reason=result.ndr_reason, ndr_attempt=result.ndr_attempt, ndr_remarks=result.courier_remarks,
             raw_provider_response=_json(result.raw_response), last_synced_at=datetime.now(timezone.utc),
+        )
+        append_tracking_events(
+            db, order_id=order_id, shipment=snapshot(persisted), result=result,
+            source="api_poll",
+            order_number=shipment.provider_order_id if adapter.provider in {"shiprocket", "delhivery"} else None,
         )
         OrderOperationsStore.record_timeline_event(order_id, "courier_tracking_updated", operator=operator, details={"provider": adapter.provider, "status": result.status.value, "scan": result.latest_scan})
         return snapshot(persisted)

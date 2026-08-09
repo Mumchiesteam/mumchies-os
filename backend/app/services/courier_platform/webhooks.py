@@ -10,10 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.shiprocket import CourierWebhookEvent
-from app.repositories.shiprocket import get_shipment, upsert_shipment
+from app.repositories.shiprocket import get_shipment, snapshot, upsert_shipment
 from app.services.courier_platform.base import ProviderError
 from app.services.courier_platform.models import TrackingResult
 from app.services.order_operations import OrderOperationsStore
+from app.services.shipment_events import append_tracking_events
 
 Verifier = Callable[[bytes, dict[str, str]], bool]
 Normalizer = Callable[[dict[str, Any]], tuple[str, str, TrackingResult]]
@@ -51,6 +52,11 @@ def process_webhook(db: Session, *, provider: str, body: bytes, headers: dict[st
         db.commit()
         return {"accepted": True, "duplicate": False, "manual_review": True, "event_id": event_id}
     upsert_shipment(db, order_id, latest_status=tracking.provider_status or tracking.status.value, normalized_status=tracking.status.value, latest_scan=tracking.latest_scan, latest_tracking_at=tracking.latest_tracking_at, terminal_status=tracking.status.value if tracking.terminal else None, ndr_reason=tracking.ndr_reason, ndr_attempt=tracking.ndr_attempt, ndr_remarks=tracking.courier_remarks, last_synced_at=datetime.now(timezone.utc))
+    append_tracking_events(
+        db, order_id=order_id, shipment=snapshot(get_shipment(db, order_id)),
+        result=tracking, source="webhook",
+        order_number=shipment.provider_order_id if provider in {"shiprocket", "delhivery"} else None,
+    )
     event.status, event.processed_at = "processed", datetime.now(timezone.utc)
     db.commit()
     OrderOperationsStore.record_timeline_event(order_id, "courier_webhook", operator=provider, details={"event_id": event_id, "status": tracking.status.value})

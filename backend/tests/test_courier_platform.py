@@ -90,7 +90,7 @@ async def test_shadowfax_booking_payload_uses_shopify_package_operator_and_wareh
     }
     assert payload["pickup_details"] == expected_warehouse
     assert payload["rto_details"] == expected_warehouse
-    assert payload["product_details"] == [{"sku_name": "Cookies", "client_sku_id": "COOKIE-1", "price": 250.0, "additional_details": {"quantity": 2}}]
+    assert payload["product_details"] == [{"sku_name": "Cookies", "sku_id": "COOKIE-1", "price": 250.0, "additional_details": {"quantity": 2}}]
     assert "unique_code" not in payload["pickup_details"] and "unique_code" not in payload["rto_details"]
 
 
@@ -114,7 +114,8 @@ async def test_shadowfax_324541_contract_values_and_units(monkeypatch):
     }
     assert payload["customer_details"]["name"] == "Customer"
     assert payload["pickup_details"] == payload["rto_details"]
-    assert payload["product_details"][0]["client_sku_id"] == "SKU-1"
+    assert payload["product_details"][0]["sku_id"] == "SKU-1"
+    assert "client_sku_id" not in payload["product_details"][0]
 
 
 def test_shadowfax_local_validation_blocks_blank_required_field():

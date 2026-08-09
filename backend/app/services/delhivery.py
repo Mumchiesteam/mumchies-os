@@ -11,6 +11,9 @@ import httpx
 from app.core.config import settings
 from app.repositories.shiprocket import get_shipment, snapshot, upsert_shipment
 from app.services.shipment_status import has_persisted_provider_booking_evidence, has_uncertain_provider_booking
+from app.services.courier_platform.models import TrackingResult
+from app.services.courier_platform.status import is_terminal, normalize_status
+from app.services.shipment_events import append_tracking_events, sanitize_provider_event
 
 
 class DelhiveryError(RuntimeError):
@@ -339,6 +342,17 @@ class DelhiveryService:
             label_url=None,
             expected_delivery_date=tracked.get("expected_delivery_date"),
             delivered_at=tracked.get("delivered_at"),
+        )
+        status = normalize_status(tracked.get("status"))
+        append_tracking_events(
+            db, order_id=order_id, shipment=snapshot(persisted),
+            result=TrackingResult(
+                provider="delhivery", status=status,
+                provider_status=str(tracked.get("status") or "") or None,
+                latest_tracking_at=tracked.get("delivered_at") if isinstance(tracked.get("delivered_at"), datetime) else None,
+                tracking_url=tracked.get("tracking_url"), terminal=is_terminal(status),
+                raw_response=sanitize_provider_event(tracked),
+            ), source="api_poll", order_number=order_number,
         )
         return snapshot(persisted)
 

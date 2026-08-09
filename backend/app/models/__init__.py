@@ -3,5 +3,6 @@
 from app.models.shiprocket import ShiprocketShipment
 from app.models.user import User
 from app.models.ndr import NDRCase, NDREvent, NDRImportRun, NDRSyncRun
+from app.models.shipment_event import ShipmentEvent
 
-__all__ = ["ShiprocketShipment", "User", "NDRCase", "NDREvent", "NDRSyncRun", "NDRImportRun"]
+__all__ = ["ShiprocketShipment", "ShipmentEvent", "User", "NDRCase", "NDREvent", "NDRSyncRun", "NDRImportRun"]

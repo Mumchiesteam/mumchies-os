@@ -90,7 +90,7 @@ class ShiprocketAdapter(CourierAdapter):
         latest = tracks[0] if isinstance(tracks, list) and tracks else {}
         provider_status = latest.get("current_status") or latest.get("status") or data.get("shipment_status")
         status = normalize_status(provider_status)
-        return TrackingResult(provider=self.provider, status=status, provider_status=str(provider_status or "") or None, latest_scan=str(latest.get("location") or latest.get("activity") or "") or None, latest_tracking_at=datetime.now(timezone.utc), tracking_url=data.get("track_url") or data.get("tracking_url"), terminal=is_terminal(status), raw_response=self.sanitize(raw))
+        return TrackingResult(provider=self.provider, status=status, provider_status=str(provider_status or "") or None, latest_scan=str(latest.get("location") or latest.get("activity") or "") or None, latest_tracking_at=None, tracking_url=data.get("track_url") or data.get("tracking_url"), terminal=is_terminal(status), raw_response=self.sanitize(raw))
 
     async def cancel_booking(self, shipment: dict[str, Any]) -> CancellationResult:
         raise ProviderError("Shiprocket shipment cancellation remains protected by its existing preflight workflow.", provider=self.provider, operation="cancellation")
@@ -136,7 +136,7 @@ class DelhiveryAdapter(CourierAdapter):
         if not shipment.get("awb"): raise ProviderError("Shipment has no AWB.", provider=self.provider, operation="tracking")
         raw = await DelhiveryService().tracking(str(shipment["awb"]))
         status = normalize_status(raw.get("status"))
-        return TrackingResult(provider=self.provider, status=status, provider_status=str(raw.get("status") or "") or None, latest_scan=str(raw.get("location") or "") or None, latest_tracking_at=datetime.now(timezone.utc), tracking_url=raw.get("tracking_url"), terminal=is_terminal(status), raw_response=self.sanitize(raw))
+        return TrackingResult(provider=self.provider, status=status, provider_status=str(raw.get("status") or "") or None, latest_scan=str(raw.get("location") or "") or None, latest_tracking_at=None, tracking_url=raw.get("tracking_url"), terminal=is_terminal(status), raw_response=self.sanitize(raw))
 
     async def cancel_booking(self, shipment: dict[str, Any]) -> CancellationResult:
         from app.services.delhivery import DelhiveryService
@@ -241,7 +241,7 @@ class ShadowfaxAdapter(CourierAdapter):
         return TrackingResult(
             provider=self.provider, status=status, provider_status=str(raw.get("status") or "") or None,
             latest_scan=str(raw.get("latest_scan") or "") or None,
-            latest_tracking_at=raw.get("timestamp") if isinstance(raw.get("timestamp"), datetime) else datetime.now(timezone.utc),
+            latest_tracking_at=raw.get("timestamp") if isinstance(raw.get("timestamp"), datetime) else None,
             tracking_url=str(raw.get("tracking_url") or "") or None, terminal=is_terminal(status),
             ndr_reason=str(raw.get("ndr_reason") or "") or None,
             ndr_attempt=int(raw["ndr_attempt"]) if raw.get("ndr_attempt") is not None else None,
