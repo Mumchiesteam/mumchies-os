@@ -717,7 +717,7 @@ function App() {
       <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur">
         <div className="mx-auto flex max-w-[1800px] items-center gap-4 px-4 py-4 lg:px-6">
           <div className="flex items-center gap-3">
-            <div className="grid h-10 w-10 place-items-center rounded-xl bg-[#ff6b35] text-lg font-black text-white">m</div>
+            <img src="/mumchies-logo.png" alt="Mumchies" className="h-10 w-auto object-contain" />
             <div>
               <p className="text-xs font-bold uppercase tracking-[.14em] text-slate-400">Mumchies OS</p>
               <h1 className="text-lg font-bold tracking-tight">Operations Console</h1>
