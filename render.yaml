@@ -79,6 +79,16 @@ services:
         sync: false
       - key: NDR_INGEST_TOKEN
         sync: false
+      - key: SHIPMENT_TRACKING_POLLER_ENABLED
+        value: true
+      - key: SHIPMENT_TRACKING_POLL_INTERVAL_SECONDS
+        value: 7200
+      - key: SHIPMENT_TRACKING_POLL_BATCH_SIZE
+        value: 50
+      - key: SHIPMENT_TRACKING_POLL_SPACING_SECONDS
+        value: 1.0
+      - key: SHADOWFAX_TRACKING_POLL_ENABLED
+        value: false
     disk:
       name: mumchies-os-data
       mountPath: /var/data/mumchies

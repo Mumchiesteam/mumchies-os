@@ -775,7 +775,7 @@ class ShiprocketService:
     async def tracking(self, awb: str) -> dict[str, Any]:
         response = await self._get(f"https://apiv2.shiprocket.in/v1/external/courier/track/awb/{awb}")
         if response.status_code >= 400:
-            raise ShiprocketAPIError(self._safe_message(response))
+            raise self._api_error(response)
         return response.json()
 
     async def list_ndr_shipments(self) -> list[dict[str, Any]]:

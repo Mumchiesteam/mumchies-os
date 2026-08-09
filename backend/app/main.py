@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.services.report_snapshots import ReportSnapshotStore
+from app.services.shipment_poller import poller_status, tracking_poller_loop
 from sqlalchemy import select
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
@@ -92,6 +93,13 @@ async def warm_management_report_snapshots() -> None:
     asyncio.create_task(warm_sequentially())
 
 
+@app.on_event("startup")
+async def start_shipment_tracking_poller() -> None:
+    """Start one conservative GET-only tracking loop per backend process."""
+    if settings.shipment_tracking_poller_enabled:
+        app.state.shipment_tracking_poller_task = asyncio.create_task(tracking_poller_loop(app.state.session_factory))
+
+
 @app.get("/health", tags=["health"])
 def health_check() -> dict:
     """Return deployment identity and the configured NDR ingestion mode."""
@@ -100,11 +108,22 @@ def health_check() -> dict:
     reconciliation_snapshot = ReportSnapshotStore.get("reconciliation")
     analytics_start, analytics_end, _ = _period("last_30_days", None, None)
     analytics_snapshot = ReportSnapshotStore.get(_analytics_key("last_30_days", analytics_start, analytics_end, "all", "all"))
+    tracking_poller = poller_status()
     return {
         "status": "ok",
         "git_sha": os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_SHA") or "unknown",
         "ndr_mode": "github_import",
         "ndr_import_enabled": bool(settings.ndr_ingest_token),
+        "shipment_tracking_poller": {
+            "enabled": tracking_poller.get("enabled"),
+            "last_poll_started": tracking_poller.get("last_poll_started"),
+            "last_poll_completed": tracking_poller.get("last_poll_completed"),
+            "state": tracking_poller.get("state"),
+            "shipments_attempted": tracking_poller.get("shipments_attempted", 0),
+            "shipments_failed": tracking_poller.get("shipments_failed", 0),
+            "new_events_persisted": tracking_poller.get("new_events_persisted", 0),
+            "shadowfax_enabled": tracking_poller.get("providers", {}).get("shadowfax", False),
+        },
         "report_snapshots": {
             "dashboard_ready": bool(dashboard_snapshot and dashboard_snapshot.get("data")),
             "dashboard_refreshed_at": (dashboard_snapshot or {}).get("last_refreshed_at"),
