@@ -108,6 +108,60 @@ def test_exact_324541_stale_identifier_repair_and_test_reset(db, tmp_path, monke
     assert not any(event["action"] == "shadowfax_direct_test_324541_started" for event in operations["timeline_events"])
 
 
+@pytest.mark.anyio
+async def test_admin_repair_clears_exact_stale_id_and_client_name_diagnostic(db, tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    shipment = ShiprocketShipment(
+        order_id="6854925713486", provider="shadowfax", provider_order_id="324541",
+        shipment_id=None, awb=None, booking_status="booking_failed", booked_at=None,
+        latest_status="Booking failed", raw_provider_response=None,
+    )
+    db.add(shipment)
+    db.commit()
+    OrderOperationsStore.record_timeline_event(
+        shipment.order_id, "shadowfax_direct_test_324541_started", operator="Owner",
+    )
+    OrderOperationsStore.update_shadowfax_direct_test(
+        shipment.order_id, create_result="provider_rejected", create_http_status=400,
+        sanitized_provider_error="{'order_details': {'client_name': ['This field may not be blank.']}}",
+        returned_provider_id=None, returned_awb=None, final_test_state="provider_rejected",
+    )
+
+    result = await couriers.repair_temporary_shadowfax_direct_test_324541(admin_request(), db)
+
+    db.refresh(shipment)
+    assert result["provider_order_id_cleared"] is True
+    assert result["test_state_reset"] is True
+    assert result["state"] == {"final_test_state": "not_attempted"}
+    assert shipment.provider_order_id is None
+    assert OrderOperationsStore.get(shipment.order_id)["shadowfax_direct_test"] is None
+
+
+@pytest.mark.anyio
+async def test_admin_repair_resets_client_name_diagnostic_after_migration_cleared_id(db, tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    shipment = ShiprocketShipment(
+        order_id="6854925713486", provider="shadowfax", provider_order_id=None,
+        shipment_id=None, awb=None, booking_status="booking_failed", booked_at=None,
+    )
+    db.add(shipment)
+    db.commit()
+    OrderOperationsStore.record_timeline_event(
+        shipment.order_id, "shadowfax_direct_test_324541_started", operator="Owner",
+    )
+    OrderOperationsStore.update_shadowfax_direct_test(
+        shipment.order_id, create_result="provider_rejected",
+        sanitized_provider_error="order_details.client_name may not be blank",
+        returned_provider_id=None, returned_awb=None, final_test_state="provider_rejected",
+    )
+
+    result = await couriers.repair_temporary_shadowfax_direct_test_324541(admin_request(), db)
+
+    assert result["provider_order_id_cleared"] is True
+    assert result["test_state_reset"] is True
+    assert result["state"] == {"final_test_state": "not_attempted"}
+
+
 def test_324541_repair_refuses_any_genuine_identifier(db, tmp_path, monkeypatch):
     monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
     shipment = ShiprocketShipment(

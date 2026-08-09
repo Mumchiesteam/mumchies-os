@@ -35,14 +35,17 @@ def repair_legacy_shadowfax_test_324541(db: Session) -> dict[str, bool]:
         for event in operations.get("timeline_events", [])
     )
     diagnostic = operations.get("shadowfax_direct_test")
-    legacy_diagnostic = not isinstance(diagnostic, dict) or (
-        diagnostic.get("final_test_state") == "legacy_attempt_observed_without_diagnostics"
-        and not diagnostic.get("returned_provider_id")
-        and not diagnostic.get("returned_awb")
-        and not diagnostic.get("create_http_status")
-        and diagnostic.get("create_result") in {None, "unknown"}
+    no_returned_booking = not isinstance(diagnostic, dict) or (
+        not diagnostic.get("returned_provider_id") and not diagnostic.get("returned_awb")
     )
-    reset = fixed_shape and shipment.provider_order_id is None and legacy_guard and legacy_diagnostic
+    known_failed_test = not isinstance(diagnostic, dict) or (
+        diagnostic.get("final_test_state") == "legacy_attempt_observed_without_diagnostics"
+        or (
+            diagnostic.get("create_result") == "provider_rejected"
+            and "client_name" in str(diagnostic.get("sanitized_provider_error") or "")
+        )
+    )
+    reset = fixed_shape and shipment.provider_order_id is None and legacy_guard and no_returned_booking and known_failed_test
     if reset:
         OrderOperationsStore.reset_legacy_shadowfax_direct_test(ORDER_ID)
     return {"provider_order_id_cleared": cleared, "test_state_reset": reset}

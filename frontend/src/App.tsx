@@ -7,6 +7,7 @@ import {
   testShadowfaxDirect324541,
   getShadowfaxDirect324541Status,
   getShadowfaxShipmentRow324541,
+  repairShadowfaxStaleState324541,
   resetShadowfaxDirect324541,
   type ShadowfaxDirectTestState,
   type ShadowfaxShipmentRowDiagnostic,
@@ -684,6 +685,18 @@ function App() {
     } catch (error) { setCourierError((error as Error).message) } finally { setBookingLoading(false) }
   }
 
+  const repairShadowfaxStaleState = async () => {
+    if (!selectedOrder || selectedOrder.orderNumber !== '324541') return
+    if (!window.confirm('Clear the confirmed stale client-order identifier and failed Shadowfax test diagnostics for order 324541?')) return
+    setBookingLoading(true); setCourierError('')
+    try {
+      const result = await repairShadowfaxStaleState324541()
+      setShadowfaxTestState(result.state)
+      setShadowfaxShipmentRow(await getShadowfaxShipmentRow324541())
+      setNotice('Stale Shadowfax test state repaired')
+    } catch (error) { setCourierError((error as Error).message) } finally { setBookingLoading(false) }
+  }
+
   const refreshShipment = async () => {
     if (!selectedOrder) return
     setShipmentRefreshLoading(true)
@@ -931,6 +944,7 @@ function App() {
           shadowfaxTestState={shadowfaxTestState}
           shadowfaxShipmentRow={shadowfaxShipmentRow}
           onResetShadowfaxDirect={() => void resetShadowfaxDirect()}
+          onRepairShadowfaxStaleState={() => void repairShadowfaxStaleState()}
           onRefreshShipment={() => void refreshShipment()}
           onReconcileShipment={() => void reconcileShipment()}
           onCancelShipment={() => void cancelShipment()}
@@ -1054,6 +1068,7 @@ const OrderDrawer = memo(function OrderDrawer({
   shadowfaxTestState,
   shadowfaxShipmentRow,
   onResetShadowfaxDirect,
+  onRepairShadowfaxStaleState,
   onRefreshShipment,
   onReconcileShipment,
   onCancelShipment,
@@ -1135,6 +1150,7 @@ const OrderDrawer = memo(function OrderDrawer({
   shadowfaxTestState: ShadowfaxDirectTestState | null
   shadowfaxShipmentRow: ShadowfaxShipmentRowDiagnostic | null
   onResetShadowfaxDirect: () => void
+  onRepairShadowfaxStaleState: () => void
   onRefreshShipment: () => void
   onReconcileShipment: () => void
   onCancelShipment: () => void
@@ -1423,6 +1439,7 @@ const OrderDrawer = memo(function OrderDrawer({
                   <p className="mt-1 break-words">{shadowfaxShipmentRow.reset_blocker.condition}</p>
                   <p className="mt-1">True fields: {shadowfaxShipmentRow.reset_blocker.true_fields.join(', ') || 'none'}</p>
                 </div>
+                {shadowfaxShipmentRow.fields.provider === 'shadowfax' && (shadowfaxShipmentRow.fields.provider_order_id === '324541' || String(shadowfaxTestState?.sanitized_provider_error || '').includes('client_name')) && shadowfaxShipmentRow.fields.shipment_id == null && shadowfaxShipmentRow.fields.awb == null && shadowfaxShipmentRow.fields.booking_status === 'booking_failed' && shadowfaxShipmentRow.fields.booked_at == null && <button type="button" disabled={bookingLoading} onClick={onRepairShadowfaxStaleState} className="mt-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 font-semibold text-amber-800 disabled:opacity-50">Repair stale Shadowfax test state</button>}
               </details>}
               {showShadowfaxForm && selectedCourier?.provider === 'shadowfax' && <div className="space-y-3 rounded-xl border border-slate-200 p-3">
                 <p className="font-semibold text-slate-800">Confirm manual Shadowfax booking</p>

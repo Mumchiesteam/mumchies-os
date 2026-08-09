@@ -61,7 +61,10 @@ def sync_engage_orders(db: Session, orders_by_number: dict[str, str], upstream_o
         engage = upstream.get("engage")
         engage = engage if isinstance(engage, dict) else None
         shipment.shiprocket_order_id = str(upstream.get("id")) if upstream.get("id") is not None else shipment.shiprocket_order_id
-        shipment.provider_order_id = normalized_number
+        # The channel order number is a Shiprocket reference only. Never overwrite
+        # another provider's canonical identifier while syncing Engage metadata.
+        if str(shipment.provider or "").casefold() in {"", "shiprocket"}:
+            shipment.provider_order_id = normalized_number
         shipment.engage_order_id = str(engage.get("engage_order_id")) if engage and engage.get("engage_order_id") is not None else None
         for field in ("order_confirmation", "order_confirmation_message", "address_confirmation", "address_confirmation_message", "cod_to_prepaid", "cod_to_prepaid_message"):
             setattr(shipment, field, engage.get(field) if engage else None)

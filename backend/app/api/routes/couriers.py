@@ -30,6 +30,7 @@ from app.services.shiprocket import (
 )
 from app.services.shopify import ShopifyConfigurationError, ShopifyService
 from app.services.shopify_fulfillment import ShopifyFulfillmentSynchronizer, ShopifyFulfillmentSyncError
+from app.services.temporary_shadowfax_repair import repair_legacy_shadowfax_test_324541
 
 router = APIRouter(prefix="/couriers/shiprocket", tags=["couriers"])
 booking_router = APIRouter(prefix="/orders", tags=["couriers"])
@@ -754,6 +755,38 @@ async def temporary_shadowfax_direct_test_324541_shipment_row(
             "condition": "provider == shadowfax AND (genuine provider_order_id OR shipment_id OR awb OR booked_at OR booking_status in [booked, manual_confirmed])",
             "true_fields": blocker_fields if shadowfax_record else [],
         },
+    }
+
+
+@booking_router.post("/shadowfax-test-324541/repair-stale-state")
+async def repair_temporary_shadowfax_direct_test_324541(
+    request: Request, db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Owner/admin-triggered exact-match local repair; performs no external calls."""
+    user = current_user(request)
+    if user.role not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    before = get_shipment(db, "6854925713486")
+    exact_failed_shape = bool(
+        before
+        and str(before.provider or "").casefold() == "shadowfax"
+        and before.provider_order_id in {None, "324541"}
+        and before.shipment_id is None
+        and before.awb is None
+        and str(before.booking_status or "").casefold() == "booking_failed"
+        and before.booked_at is None
+    )
+    if not exact_failed_shape:
+        raise HTTPException(status_code=409, detail="The canonical row no longer matches the exact approved stale state; nothing was changed.")
+    result = repair_legacy_shadowfax_test_324541(db)
+    repaired = get_shipment(db, "6854925713486")
+    if repaired is None or repaired.provider_order_id is not None:
+        raise HTTPException(status_code=409, detail="The stale client order identifier was not cleared; nothing further was changed.")
+    return {
+        "order_number": "324541",
+        "provider_order_id_cleared": True,
+        "test_state_reset": result["test_state_reset"],
+        "state": OrderOperationsStore.get("6854925713486").get("shadowfax_direct_test") or {"final_test_state": "not_attempted"},
     }
 
 

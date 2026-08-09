@@ -8,6 +8,7 @@ import pytest
 from app.api.routes import orders as routes
 from app.api.routes.orders import _base_filtered_orders, _engage_category, _full_counts
 from app.db.base import Base
+from app.models.shiprocket import ShiprocketShipment
 from app.repositories.shiprocket import get_shipment, snapshot, sync_engage_orders
 from app.services.shiprocket import ShiprocketService
 from tests.test_orders_pagination import queue_order
@@ -44,6 +45,27 @@ def test_absent_engage_clears_existing_fields_without_failure():
     saved = get_shipment(db, "shopify-1")
     assert saved.order_confirmation is None
     assert saved.engage_raw_status is None
+
+
+def test_engage_sync_does_not_overwrite_shadowfax_provider_identifier():
+    db = session()
+    shipment = ShiprocketShipment(
+        order_id="6854925713486", provider="shadowfax", provider_order_id=None,
+        booking_status="booking_failed",
+    )
+    db.add(shipment)
+    db.commit()
+
+    sync_engage_orders(
+        db, {"324541": shipment.order_id},
+        [{"id": 77, "channel_order_id": "324541", "engage": {"order_confirmation": 1}}],
+        datetime.now(timezone.utc),
+    )
+
+    db.refresh(shipment)
+    assert shipment.provider_order_id is None
+    assert shipment.provider == "shadowfax"
+    assert shipment.shiprocket_order_id == "77"
 
 
 def test_engage_filter_categories_and_summary_counts():

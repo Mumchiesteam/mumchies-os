@@ -667,6 +667,13 @@ export async function getShadowfaxShipmentRow324541(): Promise<ShadowfaxShipment
   return body
 }
 
+export async function repairShadowfaxStaleState324541(): Promise<{ provider_order_id_cleared: boolean; test_state_reset: boolean; state: ShadowfaxDirectTestState }> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/shadowfax-test-324541/repair-stale-state`, { method: 'POST' })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail || 'Could not repair the stale Shadowfax test state.')
+  return body
+}
+
 export async function resetShadowfaxDirect324541(): Promise<ShadowfaxDirectTestState> {
   const response = await apiFetch(`${apiBase}/api/v1/orders/shadowfax-test-324541/reset`, { method: 'POST' })
   const body = await response.json().catch(() => null)
