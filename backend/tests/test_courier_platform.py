@@ -175,6 +175,8 @@ async def test_official_shadowfax_http_transport_contract():
         assert serviceability["serviceable"] is True and serviceability["service_type"] == "Regular"
         booking = await transport.create_booking(official_booking_payload())
         assert booking["awb"] == "SF-STAGE-1" and booking["shipment_id"] == "42"
+        assert booking["provider_order_id"] == "42"
+        assert booking["provider_order_id"] != booking["provider_response"]["data"]["client_order_id"]
         tracking = await transport.track_shipment({"awb": "SF-STAGE-1"})
         assert tracking["status"] == "ofd" and tracking["latest_scan"] == "BLR Hub"
         cancellation = await transport.cancel_booking({"awb": "SF-STAGE-1"})
@@ -334,6 +336,7 @@ async def test_uncertain_booking_blocks_retry(db):
     platform = CourierPlatformService()
     with pytest.raises(TimeoutError): await platform.book(db, order_id="2", merchant_order_id="1002", adapter=adapter, request={}, operator="Operator")
     stored = get_shipment(db, "2")
+    assert stored.provider_order_id is None
     assert stored.booking_confidence == BookingConfidence.UNCERTAIN
     assert stored.reconciliation_status == ReconciliationStatus.PENDING
     with pytest.raises(ProviderError, match="uncertain outcome"):

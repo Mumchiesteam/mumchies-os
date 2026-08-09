@@ -138,7 +138,8 @@ class ShadowfaxHTTPTransport:
             duplicate_awb = payload.get("AWB")
             if duplicate_awb:
                 return {
-                    "provider_order_id": str(payload.get("COID") or "") or None,
+                    # COID is the client_order_id, not a Shadowfax-generated ID.
+                    "provider_order_id": None,
                     "shipment_id": str(duplicate_awb), "awb": str(duplicate_awb),
                     "status": "new", "provider_response": payload, "http_status": response.status_code,
                 }
@@ -147,9 +148,10 @@ class ShadowfaxHTTPTransport:
                 provider="shadowfax", operation="booking", http_status=response.status_code,
             )
         awb = str(data.get("awb_number") or "") or None
+        provider_order_id = str(data.get("id") or "") or None
         return {
-            "provider_order_id": str(data.get("client_order_id") or "") or None,
-            "shipment_id": str(data.get("id") or "") or None,
+            "provider_order_id": provider_order_id,
+            "shipment_id": provider_order_id,
             "awb": awb,
             "status": str(data.get("status") or "new"),
             "tracking_url": str(data.get("customer_track_url") or "") or None,

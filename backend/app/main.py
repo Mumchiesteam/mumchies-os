@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.services.report_snapshots import ReportSnapshotStore
+from app.services.temporary_shadowfax_repair import repair_legacy_shadowfax_test_324541
 from sqlalchemy import select
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
@@ -74,6 +75,9 @@ app.include_router(api_router, prefix=settings.api_v1_prefix)
 @app.on_event("startup")
 async def warm_management_report_snapshots() -> None:
     """Refresh persisted report snapshots without delaying service readiness."""
+    with SessionLocal() as db:
+        repair_legacy_shadowfax_test_324541(db)
+
     async def warm_sequentially() -> None:
         start_at, end_at, label = _period("today", None, None)
         key = _dashboard_key("today", start_at, end_at)

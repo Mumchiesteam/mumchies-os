@@ -17,6 +17,7 @@ from app.services.order_operations import OrderOperationsStore
 from app.services.shiprocket import ShiprocketAPIError, ShiprocketService
 from app.services.shopify import ShopifySyncError
 from app.services.shopify import ShopifyService
+from app.services.temporary_shadowfax_repair import repair_legacy_shadowfax_test_324541
 from tests.test_operations_upgrade import raw_order
 
 
@@ -47,7 +48,7 @@ async def test_shadowfax_shipment_row_diagnostic_is_read_only_and_reports_exact_
     assert result["non_null"]["awb"] is False
     assert result["reset_blocker"] == {
         "evaluates_true": True,
-        "condition": "provider == shadowfax AND (provider_order_id OR shipment_id OR awb OR booking_status in [booked, manual_confirmed])",
+        "condition": "provider == shadowfax AND (genuine provider_order_id OR shipment_id OR awb OR booked_at OR booking_status in [booked, manual_confirmed])",
         "true_fields": ["shipment_id"],
     }
     assert db.get(ShiprocketShipment, "6854925713486").shipment_id == "stale-id"
@@ -80,6 +81,49 @@ def test_legacy_shadowfax_reset_removes_only_temporary_guard(tmp_path, monkeypat
     record = OrderOperationsStore.get("1")
     assert record["shadowfax_direct_test"] is None
     assert [event["action"] for event in record["timeline_events"]] == ["address_verified"]
+
+
+def test_exact_324541_stale_identifier_repair_and_test_reset(db, tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    shipment = ShiprocketShipment(
+        order_id="6854925713486", provider="shadowfax", provider_order_id="324541",
+        shipment_id=None, awb=None, booking_status="booking_failed", booked_at=None,
+        latest_status="Booking failed",
+    )
+    db.add(shipment)
+    db.commit()
+    OrderOperationsStore.record_timeline_event(
+        shipment.order_id, "shadowfax_direct_test_324541_started", operator="Owner",
+    )
+
+    result = repair_legacy_shadowfax_test_324541(db)
+
+    assert result == {"provider_order_id_cleared": True, "test_state_reset": True}
+    db.refresh(shipment)
+    assert shipment.provider_order_id is None
+    assert shipment.provider == "shadowfax" and shipment.booking_status == "booking_failed"
+    assert shipment.shipment_id is None and shipment.awb is None and shipment.booked_at is None
+    operations = OrderOperationsStore.get(shipment.order_id)
+    assert operations["shadowfax_direct_test"] is None
+    assert not any(event["action"] == "shadowfax_direct_test_324541_started" for event in operations["timeline_events"])
+
+
+def test_324541_repair_refuses_any_genuine_identifier(db, tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    shipment = ShiprocketShipment(
+        order_id="6854925713486", provider="shadowfax", provider_order_id="324541",
+        shipment_id="shadowfax-id", awb=None, booking_status="booking_failed", booked_at=None,
+    )
+    db.add(shipment)
+    db.commit()
+    OrderOperationsStore.record_timeline_event(
+        shipment.order_id, "shadowfax_direct_test_324541_started", operator="Owner",
+    )
+
+    result = repair_legacy_shadowfax_test_324541(db)
+
+    assert result == {"provider_order_id_cleared": False, "test_state_reset": False}
+    assert db.get(ShiprocketShipment, shipment.order_id).provider_order_id == "324541"
 
 
 @pytest.fixture()

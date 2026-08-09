@@ -613,9 +613,7 @@ async def temporary_shadowfax_direct_test_324541(request: Request, db: Session =
         )
         raise HTTPException(status_code=502, detail=str(error)) from error
 
-    # The transport exposes Shadowfax `data.id` as shipment_id; do not confuse the
-    # echoed client_order_id with the provider's own order identifier.
-    booking = booking.model_copy(update={"provider_order_id": booking.shipment_id})
+    # The transport maps only Shadowfax `data.id` to provider_order_id/shipment_id.
     OrderOperationsStore.update_shadowfax_direct_test(
         order.order_id, create_request_completed_at=datetime.now(timezone.utc).isoformat(),
         create_http_status=(booking.raw_response or {}).get("http_status") if isinstance(booking.raw_response, dict) else 200,
@@ -730,11 +728,20 @@ async def temporary_shadowfax_direct_test_324541_shipment_row(
     }
     shadowfax_record = str(values["provider"] or "").casefold() == "shadowfax"
     successful_status = str(values["booking_status"] or "").casefold() in {"booked", "manual_confirmed"}
+    stale_client_reference = (
+        values["provider_order_id"] == "324541"
+        and str(values["booking_status"] or "").casefold() == "booking_failed"
+        and values["shipment_id"] is None and values["awb"] is None and values["booked_at"] is None
+    )
     blocker_fields = [
-        field for field in ("provider_order_id", "shipment_id", "awb") if values[field] is not None
+        field for field in ("shipment_id", "awb") if values[field] is not None
     ]
+    if values["provider_order_id"] is not None and not stale_client_reference:
+        blocker_fields.insert(0, "provider_order_id")
     if successful_status:
         blocker_fields.append("booking_status")
+    if values["booked_at"] is not None:
+        blocker_fields.append("booked_at")
     blocker_true = shadowfax_record and bool(blocker_fields)
     return {
         "order_number": "324541",
@@ -744,7 +751,7 @@ async def temporary_shadowfax_direct_test_324541_shipment_row(
         "non_null": {field: value is not None for field, value in values.items()},
         "reset_blocker": {
             "evaluates_true": blocker_true,
-            "condition": "provider == shadowfax AND (provider_order_id OR shipment_id OR awb OR booking_status in [booked, manual_confirmed])",
+            "condition": "provider == shadowfax AND (genuine provider_order_id OR shipment_id OR awb OR booked_at OR booking_status in [booked, manual_confirmed])",
             "true_fields": blocker_fields if shadowfax_record else [],
         },
     }
@@ -774,8 +781,14 @@ async def reset_temporary_shadowfax_direct_test_324541(request: Request, db: Ses
     shipment = shipment_snapshot(get_shipment(db, order.order_id))
     shadowfax_record = str(shipment.get("provider") or "").casefold() == "shadowfax"
     successful_status = str(shipment.get("booking_status") or "").casefold() in {"booked", "manual_confirmed"}
+    stale_client_reference = (
+        shipment.get("provider_order_id") == "324541"
+        and str(shipment.get("booking_status") or "").casefold() == "booking_failed"
+        and not shipment.get("shipment_id") and not shipment.get("awb") and not shipment.get("booked_at")
+    )
     if shadowfax_record and (
-        shipment.get("provider_order_id") or shipment.get("shipment_id") or shipment.get("awb") or successful_status
+        (shipment.get("provider_order_id") and not stale_client_reference)
+        or shipment.get("shipment_id") or shipment.get("awb") or shipment.get("booked_at") or successful_status
     ):
         raise HTTPException(status_code=409, detail="A persisted Shadowfax booking identifier or successful booking exists; reset is blocked.")
 

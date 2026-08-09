@@ -46,7 +46,9 @@ class CourierPlatformService:
             return {"shipment": snapshot(persisted), "existing": True, "reconciled": True}
 
         upsert_shipment(
-            db, order_id, provider=adapter.provider, provider_order_id=merchant_order_id,
+            db, order_id, provider=adapter.provider,
+            # Shadowfax client_order_id is our merchant reference, not provider evidence.
+            provider_order_id=None if adapter.provider == "shadowfax" else merchant_order_id,
             booking_status="booking_initiated", booking_confidence=None,
             reconciliation_status=None, latest_status="Booking request initiated",
             last_synced_at=datetime.now(timezone.utc),
