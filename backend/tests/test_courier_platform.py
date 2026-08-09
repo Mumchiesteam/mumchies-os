@@ -26,7 +26,7 @@ from app.services.courier_platform.shadowfax_http import ShadowfaxHTTPTransport
 from app.services.courier_platform.webhooks import WebhookHandler, process_webhook, webhook_registry
 from app.services.courier_platform.models import TrackingResult
 from app.services.label_printing import LabelPrintError, LabelService, confirm_batch, create_batch, image_label_to_pdf, print_ready_pdf
-from app.api.routes.couriers import PackageDetailsPayload, _build_provider_booking_request
+from app.api.routes.couriers import PackageDetailsPayload, _build_provider_booking_request, _validate_shadowfax_booking_request
 from app.schemas.orders import OrderProduct, ShippingAddress, ShopifyOrder
 
 
@@ -75,7 +75,7 @@ async def test_shadowfax_booking_payload_uses_shopify_package_operator_and_wareh
     )
     assert payload["order_type"] == "warehouse"
     assert payload["order_details"] == {
-        "client_order_id": "323999", "client_name": "Customer Name", "actual_weight": 500, "volumetric_weight": 600,
+        "client_order_id": "323999", "client_name": "Mumchies Foods", "actual_weight": 500, "volumetric_weight": 600,
         "product_value": 500.0, "payment_mode": "COD", "cod_amount": 500.0,
         "total_amount": 500.0, "order_service": "regular",
     }
@@ -86,11 +86,42 @@ async def test_shadowfax_booking_payload_uses_shopify_package_operator_and_wareh
     expected_warehouse = {
         "name": "Mumchies Foods", "contact": "9876543210", "address_line_1": "10 Factory Road",
         "address_line_2": "Industrial Area", "city": "Bengaluru", "state": "Karnataka",
-        "pincode": 560077, "unique_code": "Mumchies Warehouse",
+        "pincode": 560077,
     }
     assert payload["pickup_details"] == expected_warehouse
     assert payload["rto_details"] == expected_warehouse
-    assert payload["product_details"] == [{"sku_name": "Cookies", "sku_id": "COOKIE-1", "price": 250.0, "additional_details": {"quantity": 2}}]
+    assert payload["product_details"] == [{"sku_name": "Cookies", "client_sku_id": "COOKIE-1", "price": 250.0, "additional_details": {"quantity": 2}}]
+    assert "unique_code" not in payload["pickup_details"] and "unique_code" not in payload["rto_details"]
+
+
+@pytest.mark.anyio
+async def test_shadowfax_324541_contract_values_and_units(monkeypatch):
+    async def pickup_location(_self):
+        return {"name": "Mumchies Foods", "phone": "9876543210", "address": "Factory Road", "city": "Bengaluru", "state": "Karnataka", "pin_code": "560076"}
+    monkeypatch.setattr("app.api.routes.couriers.ShiprocketService.pickup_location_details", pickup_location)
+    order = ShopifyOrder(
+        order_id="6854925713486", order_number="324541", created_date="2026-08-09T00:00:00Z",
+        customer_name="Customer", phone="9999999999",
+        shipping_address=ShippingAddress(name="Customer", address="Customer address", city="Kolkata", state="West Bengal", pincode="700070"),
+        products=[OrderProduct(product_name="Mumchies Product", sku="SKU-1", quantity=1, price=Decimal("508"))],
+        total_amount=Decimal("508"), order_total=Decimal("508"), cod_collectable_amount=Decimal("508"), payment_type="cod", tags=[],
+    )
+    payload = await _build_provider_booking_request(order, {}, PackageDetailsPayload(weight_kg=.95, length_cm=5, breadth_cm=5, height_cm=5))
+    assert payload["order_details"] == {
+        "client_order_id": "324541", "client_name": "Mumchies Foods", "actual_weight": 950,
+        "volumetric_weight": 25, "product_value": 508.0, "payment_mode": "COD",
+        "cod_amount": 508.0, "total_amount": 508.0, "order_service": "regular",
+    }
+    assert payload["customer_details"]["name"] == "Customer"
+    assert payload["pickup_details"] == payload["rto_details"]
+    assert payload["product_details"][0]["client_sku_id"] == "SKU-1"
+
+
+def test_shadowfax_local_validation_blocks_blank_required_field():
+    payload = official_booking_payload()
+    payload["order_details"]["client_name"] = ""
+    with pytest.raises(HTTPException, match="Shadowfax payload validation failed before provider request"):
+        _validate_shadowfax_booking_request(payload)
 
 
 @pytest.mark.anyio

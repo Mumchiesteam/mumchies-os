@@ -130,6 +130,43 @@ def _order_latest_address(order: ShopifyOrder, operations: dict[str, object]) ->
     return operations.get("corrected_address") or operations.get("verified_address_snapshot") or (order.shipping_address.model_dump() if order.shipping_address else None)
 
 
+def _validate_shadowfax_booking_request(payload: dict[str, object]) -> None:
+    """Fail locally before consuming a one-time provider request."""
+    errors: list[str] = []
+    order = payload.get("order_details") if isinstance(payload.get("order_details"), dict) else {}
+    customer = payload.get("customer_details") if isinstance(payload.get("customer_details"), dict) else {}
+    pickup = payload.get("pickup_details") if isinstance(payload.get("pickup_details"), dict) else {}
+    rto = payload.get("rto_details") if isinstance(payload.get("rto_details"), dict) else {}
+    products = payload.get("product_details") if isinstance(payload.get("product_details"), list) else []
+    if payload.get("order_type") != "warehouse": errors.append("order_type")
+    for field in ("client_order_id", "client_name", "product_value", "payment_mode", "cod_amount"):
+        if order.get(field) in (None, ""): errors.append(f"order_details.{field}")
+    if order.get("payment_mode") not in {"COD", "Prepaid"}: errors.append("order_details.payment_mode")
+    if order.get("payment_mode") == "COD" and float(order.get("cod_amount") or 0) <= 0: errors.append("order_details.cod_amount")
+    for field in ("actual_weight", "volumetric_weight"):
+        if float(order.get(field) or 0) <= 0: errors.append(f"order_details.{field}")
+    if order.get("order_service") != "regular": errors.append("order_details.order_service")
+    for label, details, required in (
+        ("customer_details", customer, ("name", "contact", "address_line_1", "city", "state", "pincode")),
+        ("pickup_details", pickup, ("contact", "address_line_1", "city", "state", "pincode")),
+        ("rto_details", rto, ("name", "contact", "address_line_1", "city", "state", "pincode")),
+    ):
+        for field in required:
+            if details.get(field) in (None, ""): errors.append(f"{label}.{field}")
+        phone = "".join(ch for ch in str(details.get("contact") or "") if ch.isdigit())
+        if not 10 <= len(phone) <= 13: errors.append(f"{label}.contact")
+        pin = str(details.get("pincode") or "")
+        if not (pin.isdigit() and len(pin) == 6): errors.append(f"{label}.pincode")
+    if not products: errors.append("product_details")
+    for index, product in enumerate(products):
+        if not isinstance(product, dict) or not str(product.get("sku_name") or "").strip(): errors.append(f"product_details[{index}].sku_name")
+        if not isinstance(product, dict) or product.get("price") is None: errors.append(f"product_details[{index}].price")
+        quantity = ((product.get("additional_details") or {}).get("quantity") if isinstance(product, dict) and isinstance(product.get("additional_details"), dict) else None)
+        if not isinstance(quantity, int) or quantity <= 0: errors.append(f"product_details[{index}].additional_details.quantity")
+    if errors:
+        raise HTTPException(status_code=422, detail={"message": "Shadowfax payload validation failed before provider request.", "fields": sorted(set(errors))})
+
+
 def _build_shiprocket_order_payload(order: ShopifyOrder, operations: dict[str, object], package: PackageDetailsPayload) -> dict[str, object]:
     address = _order_latest_address(order, operations)
     if not isinstance(address, dict):
@@ -259,8 +296,8 @@ async def _build_provider_booking_request(order: ShopifyOrder, operations: dict[
         raise HTTPException(status_code=400, detail="Customer phone and delivery postcode are required.")
     if not pincode.isdigit() or len(pincode) != 6:
         raise HTTPException(status_code=400, detail="Delivery postcode must contain exactly 6 digits.")
-    client_name = str(address.get("customer_name") or address.get("name") or order.customer_name or "").strip()
-    if not client_name:
+    customer_name = str(address.get("customer_name") or address.get("name") or order.customer_name or "").strip()
+    if not customer_name:
         raise HTTPException(status_code=400, detail="Customer name is required for Shadowfax booking.")
     customer_address = {
         "address_line_1": address.get("address_line1") or address.get("address"),
@@ -287,7 +324,6 @@ async def _build_provider_booking_request(order: ShopifyOrder, operations: dict[
         "city": warehouse_value("city"),
         "state": warehouse_value("state"),
         "pincode": int(warehouse_pincode) if warehouse_pincode.isdigit() and len(warehouse_pincode) == 6 else None,
-        "unique_code": warehouse_value("pickup_location"),
     }
     required_warehouse = ("name", "contact", "address_line_1", "city", "state", "pincode")
     missing_warehouse = [field for field in required_warehouse if not warehouse_details.get(field)]
@@ -307,16 +343,16 @@ async def _build_provider_booking_request(order: ShopifyOrder, operations: dict[
             "additional_details": {"quantity": item.quantity},
         }
         if item.sku:
-            product["sku_id"] = item.sku
+            product["client_sku_id"] = item.sku
         product_details.append(product)
 
     payment_mode = _order_payment_mode(order)
     product_value = sum(float(item.price) * item.quantity for item in order.products)
-    return {
+    payload = {
         "order_type": "warehouse",
         "order_details": {
             "client_order_id": order.order_number,
-            "client_name": client_name,
+            "client_name": "Mumchies Foods",
             "actual_weight": max(round(package.weight_kg * 1000), 1),
             "volumetric_weight": max(round((package.length_cm * package.breadth_cm * package.height_cm) / 5000 * 1000), 1),
             "product_value": product_value,
@@ -326,7 +362,7 @@ async def _build_provider_booking_request(order: ShopifyOrder, operations: dict[
             "order_service": "regular",
         },
         "customer_details": {
-            "name": client_name,
+            "name": customer_name,
             "contact": phone,
             "address_line_1": customer_address["address_line_1"],
             "address_line_2": " ".join(filter(None, [address.get("address_line2"), address.get("landmark")])),
@@ -338,6 +374,8 @@ async def _build_provider_booking_request(order: ShopifyOrder, operations: dict[
         "rto_details": dict(warehouse_details),
         "product_details": product_details,
     }
+    _validate_shadowfax_booking_request(payload)
+    return payload
 
 
 @router.get("/health")
@@ -522,6 +560,7 @@ async def temporary_shadowfax_direct_test_324541(request: Request, db: Session =
             details.pop("unique_code", None)
             details["name"] = "Mumchies Foods"
             details["pincode"] = 560076
+    _validate_shadowfax_booking_request(booking_request)
 
     adapter = ShadowfaxAdapter()
     OrderOperationsStore.update_shadowfax_direct_test(
