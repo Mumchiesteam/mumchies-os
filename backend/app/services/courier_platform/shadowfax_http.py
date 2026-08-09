@@ -75,7 +75,7 @@ class ShadowfaxHTTPTransport:
             message = payload.get("message") or payload.get("responseMsg") or payload.get("detail") if isinstance(payload, dict) else None
             raise ProviderError(
                 str(message or f"Shadowfax rejected the request with HTTP {response.status_code}."),
-                provider="shadowfax", operation=operation,
+                provider="shadowfax", operation=operation, http_status=response.status_code,
             )
         return payload
 
@@ -106,6 +106,7 @@ class ShadowfaxHTTPTransport:
             "service_type": str(services[0]) if services else None,
             "reason": None if match else "Shadowfax does not list this pincode for customer delivery.",
             "provider_response": payload,
+            "http_status": response.status_code,
         }
 
     @staticmethod
@@ -139,11 +140,11 @@ class ShadowfaxHTTPTransport:
                 return {
                     "provider_order_id": str(payload.get("COID") or "") or None,
                     "shipment_id": str(duplicate_awb), "awb": str(duplicate_awb),
-                    "status": "new", "provider_response": payload,
+                    "status": "new", "provider_response": payload, "http_status": response.status_code,
                 }
             raise ProviderError(
                 str(payload.get("errors") or payload.get("message") or "Shadowfax rejected the booking."),
-                provider="shadowfax", operation="booking",
+                provider="shadowfax", operation="booking", http_status=response.status_code,
             )
         awb = str(data.get("awb_number") or "") or None
         return {
@@ -154,6 +155,7 @@ class ShadowfaxHTTPTransport:
             "tracking_url": str(data.get("customer_track_url") or "") or None,
             "service": str((data.get("order_details") or {}).get("order_service") or "") or None,
             "provider_response": payload,
+            "http_status": response.status_code,
         }
 
     async def find_booking(self, merchant_order_id: str) -> dict[str, Any] | None:

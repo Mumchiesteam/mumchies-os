@@ -10,12 +10,13 @@ from app.services.courier_platform.models import (
 
 
 class ProviderError(RuntimeError):
-    def __init__(self, message: str, *, provider: str, operation: str, retryable: bool = False, uncertain: bool = False) -> None:
+    def __init__(self, message: str, *, provider: str, operation: str, retryable: bool = False, uncertain: bool = False, http_status: int | None = None) -> None:
         super().__init__(message)
         self.provider = provider
         self.operation = operation
         self.retryable = retryable
         self.uncertain = uncertain
+        self.http_status = http_status
 
 
 class ProviderConfigurationError(ProviderError):

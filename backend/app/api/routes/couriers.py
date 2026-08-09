@@ -524,7 +524,21 @@ async def temporary_shadowfax_direct_test_324541(request: Request, db: Session =
             details["pincode"] = 560076
 
     adapter = ShadowfaxAdapter()
-    serviceability = await adapter.serviceability({"delivery_pincode": "700070"})
+    OrderOperationsStore.update_shadowfax_direct_test(
+        order.order_id, serviceability_started_at=datetime.now(timezone.utc).isoformat(), final_test_state="checking_serviceability",
+    )
+    try:
+        serviceability = await adapter.serviceability({"delivery_pincode": "700070"})
+    except Exception as error:
+        OrderOperationsStore.update_shadowfax_direct_test(
+            order.order_id, serviceability_result={"error": str(error)[:1000]}, final_test_state="serviceability_failed",
+        )
+        raise
+    OrderOperationsStore.update_shadowfax_direct_test(
+        order.order_id,
+        serviceability_result={"serviceable": serviceability.serviceable, "pincode": "700070", "service": serviceability.quotes[0].service_type if serviceability.quotes else None},
+        final_test_state="serviceable" if serviceability.serviceable else "not_serviceable",
+    )
     if not serviceability.serviceable:
         raise HTTPException(status_code=409, detail="Shadowfax does not report pincode 700070 as serviceable.")
 
@@ -535,10 +549,22 @@ async def temporary_shadowfax_direct_test_324541(request: Request, db: Session =
         booking_status="booking_initiated", latest_status="Shadowfax direct test submitted",
         booking_confidence=None, reconciliation_status=None, last_synced_at=datetime.now(timezone.utc),
     )
+    OrderOperationsStore.update_shadowfax_direct_test(
+        order.order_id, create_request_started_at=datetime.now(timezone.utc).isoformat(),
+        create_request_completed_at=None, create_http_status=None, create_result="unknown",
+        sanitized_provider_error=None, final_test_state="create_request_in_flight",
+    )
     try:
         booking = await adapter.create_booking(booking_request)  # exactly one provider create POST; transport has no retries
     except Exception as error:
         uncertain = not isinstance(error, ProviderError) or error.uncertain
+        message = str(error)
+        result = "timeout" if "timed out" in message.casefold() else "transport_error" if uncertain else "provider_rejected"
+        OrderOperationsStore.update_shadowfax_direct_test(
+            order.order_id, create_request_completed_at=datetime.now(timezone.utc).isoformat(),
+            create_http_status=getattr(error, "http_status", None), create_result=result,
+            sanitized_provider_error=message[:1000], final_test_state="create_outcome_unknown" if uncertain else "provider_rejected",
+        )
         upsert_shipment(
             db, order.order_id, booking_status="booking_uncertain" if uncertain else "booking_failed",
             latest_status="Provider response uncertain" if uncertain else "Booking failed",
@@ -550,14 +576,40 @@ async def temporary_shadowfax_direct_test_324541(request: Request, db: Session =
     # The transport exposes Shadowfax `data.id` as shipment_id; do not confuse the
     # echoed client_order_id with the provider's own order identifier.
     booking = booking.model_copy(update={"provider_order_id": booking.shipment_id})
+    OrderOperationsStore.update_shadowfax_direct_test(
+        order.order_id, create_request_completed_at=datetime.now(timezone.utc).isoformat(),
+        create_http_status=(booking.raw_response or {}).get("http_status") if isinstance(booking.raw_response, dict) else 200,
+        create_result="success", returned_provider_id=booking.provider_order_id,
+        returned_awb=booking.awb, final_test_state="create_succeeded",
+    )
     CourierPlatformService().persist_booking(db, order.order_id, booking)
+    OrderOperationsStore.update_shadowfax_direct_test(
+        order.order_id, persistence_completed_at=datetime.now(timezone.utc).isoformat(), final_test_state="persisted",
+    )
     OrderOperationsStore.record_timeline_event(
         order.order_id, "shadowfax_direct_test_324541_booked", operator=actor,
         details={"provider_order_id": booking.provider_order_id, "shipment_id": booking.shipment_id, "awb": booking.awb},
     )
-    tracking = await CourierPlatformService().track(
-        db, order_id=order.order_id, adapter=adapter, operator=actor,
+    OrderOperationsStore.update_shadowfax_direct_test(
+        order.order_id, tracking_started_at=datetime.now(timezone.utc).isoformat(), final_test_state="tracking_in_progress",
     )
+    try:
+        tracking = await CourierPlatformService().track(
+            db, order_id=order.order_id, adapter=adapter, operator=actor,
+        )
+        tracking_summary = {
+            "status": tracking.get("latest_status"), "normalized_status": tracking.get("normalized_status"),
+            "latest_scan": tracking.get("latest_scan"), "tracking_url": tracking.get("tracking_url"),
+        }
+        OrderOperationsStore.update_shadowfax_direct_test(
+            order.order_id, tracking_result=tracking_summary, final_test_state="completed",
+        )
+    except Exception as error:
+        tracking_summary = {"error": str(error)[:1000]}
+        OrderOperationsStore.update_shadowfax_direct_test(
+            order.order_id, tracking_result=tracking_summary, final_test_state="tracking_failed_after_booking",
+        )
+        raise
     return {
         "serviceability": {"serviceable": True, "pincode": "700070", "service": serviceability.quotes[0].service_type if serviceability.quotes else None},
         "booking": {
@@ -566,11 +618,38 @@ async def temporary_shadowfax_direct_test_324541(request: Request, db: Session =
             "awb": booking.awb, "tracking_url": booking.tracking_url,
             "status": booking.status.value, "service": booking.service,
         },
-        "tracking": {
-            "status": tracking.get("latest_status"), "normalized_status": tracking.get("normalized_status"),
-            "latest_scan": tracking.get("latest_scan"), "tracking_url": tracking.get("tracking_url"),
-        },
+        "tracking": tracking_summary,
     }
+
+
+@booking_router.get("/shadowfax-test-324541/status")
+async def temporary_shadowfax_direct_test_324541_status(request: Request) -> dict[str, object]:
+    user = current_user(request)
+    if user.role not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    order = next(
+        (item for item in await ShopifyService().get_latest_orders() if item.order_number.lstrip("#") == "324541"),
+        None,
+    )
+    if order is None:
+        raise HTTPException(status_code=404, detail="Shopify order 324541 was not found.")
+    operations = OrderOperationsStore.get(order.order_id)
+    state = operations.get("shadowfax_direct_test")
+    if not isinstance(state, dict):
+        attempted = next(
+            (event for event in operations.get("timeline_events", []) if event.get("action") == "shadowfax_direct_test_324541_started"),
+            None,
+        )
+        state = {
+            "serviceability_started_at": None, "serviceability_result": None,
+            "create_request_started_at": None, "create_request_completed_at": None,
+            "create_http_status": None, "create_result": "unknown" if attempted else None,
+            "sanitized_provider_error": None, "returned_provider_id": None, "returned_awb": None,
+            "persistence_completed_at": None, "tracking_started_at": None, "tracking_result": None,
+            "final_test_state": "legacy_attempt_observed_without_diagnostics" if attempted else "not_attempted",
+            "one_time_guard_set_at": attempted.get("timestamp") if attempted else None,
+        }
+    return {"order_number": "324541", "state": state}
 
 
 async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: Session, operator: str = "Mumchies OS") -> dict[str, object]:

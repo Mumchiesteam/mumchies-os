@@ -643,6 +643,15 @@ export async function testShadowfaxDirect324541(): Promise<{ booking: { provider
   return body
 }
 
+export type ShadowfaxDirectTestState = Record<string, unknown>
+
+export async function getShadowfaxDirect324541Status(): Promise<ShadowfaxDirectTestState> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/shadowfax-test-324541/status`)
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail || 'Could not load Shadowfax test status.')
+  return body.state || {}
+}
+
 export async function addAddressConfirmationComment(orderId: string, comment: string): Promise<OrderOperations> {
   const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/address-confirmation-comments`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ comment }) })
   if (!response.ok) throw new Error('Could not save address confirmation comment.')

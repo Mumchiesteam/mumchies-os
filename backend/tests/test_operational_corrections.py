@@ -24,6 +24,17 @@ def authenticated_request(display_name="Authenticated Operator"):
     return SimpleNamespace(state=SimpleNamespace(auth_user=User(username="operator", display_name=display_name, password_hash="unused", role="operator", is_active=True)))
 
 
+def test_shadowfax_direct_diagnostics_merge_without_secrets(tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    OrderOperationsStore.update_shadowfax_direct_test("1", create_request_started_at="2026-08-09T00:00:00+00:00", create_result="unknown")
+    state = OrderOperationsStore.update_shadowfax_direct_test("1", create_http_status=422, create_result="provider_rejected")
+    assert state == {
+        "create_request_started_at": "2026-08-09T00:00:00+00:00",
+        "create_result": "provider_rejected", "create_http_status": 422,
+    }
+    assert "token" not in str(OrderOperationsStore.get("1").get("shadowfax_direct_test")).casefold()
+
+
 @pytest.fixture()
 def db(tmp_path):
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'ops.db'}")
