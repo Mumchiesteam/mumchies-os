@@ -24,6 +24,42 @@ def authenticated_request(display_name="Authenticated Operator"):
     return SimpleNamespace(state=SimpleNamespace(auth_user=User(username="operator", display_name=display_name, password_hash="unused", role="operator", is_active=True)))
 
 
+def admin_request(role="admin"):
+    return SimpleNamespace(state=SimpleNamespace(auth_user=User(username=role, display_name=role.title(), password_hash="unused", role=role, is_active=True)))
+
+
+@pytest.mark.anyio
+async def test_shadowfax_shipment_row_diagnostic_is_read_only_and_reports_exact_blocker(db):
+    shipment = ShiprocketShipment(
+        order_id="6854925713486", provider="shadowfax", provider_order_id=None,
+        shipment_id="stale-id", awb=None, booking_status="booking_failed",
+        latest_status="Booking failed", courier_name="Stored courier", courier_service="Stored service",
+        raw_provider_response='{"token":"secret","status":"rejected"}',
+    )
+    db.add(shipment)
+    db.commit()
+
+    result = await couriers.temporary_shadowfax_direct_test_324541_shipment_row(admin_request(), db)
+
+    assert result["fields"]["shipment_id"] == "stale-id"
+    assert result["fields"]["raw_provider_response"] == {"token": "[REDACTED]", "status": "rejected"}
+    assert result["non_null"]["shipment_id"] is True
+    assert result["non_null"]["awb"] is False
+    assert result["reset_blocker"] == {
+        "evaluates_true": True,
+        "condition": "provider == shadowfax AND (provider_order_id OR shipment_id OR awb OR booking_status in [booked, manual_confirmed])",
+        "true_fields": ["shipment_id"],
+    }
+    assert db.get(ShiprocketShipment, "6854925713486").shipment_id == "stale-id"
+
+
+@pytest.mark.anyio
+async def test_shadowfax_shipment_row_diagnostic_requires_admin(db):
+    with pytest.raises(Exception) as error:
+        await couriers.temporary_shadowfax_direct_test_324541_shipment_row(authenticated_request(), db)
+    assert getattr(error.value, "status_code", None) == 403
+
+
 def test_shadowfax_direct_diagnostics_merge_without_secrets(tmp_path, monkeypatch):
     monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
     OrderOperationsStore.update_shadowfax_direct_test("1", create_request_started_at="2026-08-09T00:00:00+00:00", create_result="unknown")

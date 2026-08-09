@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime, timezone
+import json
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -689,6 +690,64 @@ async def temporary_shadowfax_direct_test_324541_status(request: Request) -> dic
             "one_time_guard_set_at": attempted.get("timestamp") if attempted else None,
         }
     return {"order_number": "324541", "state": state}
+
+
+def _sanitized_persisted_provider_response(value: str | None) -> object | None:
+    """Return persisted provider metadata with credential-like keys redacted."""
+    if value is None:
+        return None
+    try:
+        parsed: object = json.loads(value)
+    except (TypeError, ValueError):
+        return value
+    return ShiprocketService.sanitize_response(parsed)
+
+
+@booking_router.get("/shadowfax-test-324541/shipment-row")
+async def temporary_shadowfax_direct_test_324541_shipment_row(
+    request: Request, db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Admin-only, read-only inspection of the one canonical shipment row."""
+    user = current_user(request)
+    if user.role not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="Admin access required.")
+
+    shipment = get_shipment(db, "6854925713486")
+    values: dict[str, object | None] = {
+        "provider": shipment.provider if shipment else None,
+        "provider_order_id": shipment.provider_order_id if shipment else None,
+        "shipment_id": shipment.shipment_id if shipment else None,
+        "awb": shipment.awb if shipment else None,
+        "booking_status": shipment.booking_status if shipment else None,
+        "booked_at": shipment.booked_at.isoformat() if shipment and shipment.booked_at else None,
+        "latest_status": shipment.latest_status if shipment else None,
+        "courier_name": shipment.courier_name if shipment else None,
+        "courier_service": shipment.courier_service if shipment else None,
+        "raw_provider_response": _sanitized_persisted_provider_response(shipment.raw_provider_response if shipment else None),
+        # The canonical shipment table currently has no created_at/updated_at columns.
+        "created_at": None,
+        "updated_at": None,
+    }
+    shadowfax_record = str(values["provider"] or "").casefold() == "shadowfax"
+    successful_status = str(values["booking_status"] or "").casefold() in {"booked", "manual_confirmed"}
+    blocker_fields = [
+        field for field in ("provider_order_id", "shipment_id", "awb") if values[field] is not None
+    ]
+    if successful_status:
+        blocker_fields.append("booking_status")
+    blocker_true = shadowfax_record and bool(blocker_fields)
+    return {
+        "order_number": "324541",
+        "shopify_order_id": "6854925713486",
+        "row_exists": shipment is not None,
+        "fields": values,
+        "non_null": {field: value is not None for field, value in values.items()},
+        "reset_blocker": {
+            "evaluates_true": blocker_true,
+            "condition": "provider == shadowfax AND (provider_order_id OR shipment_id OR awb OR booking_status in [booked, manual_confirmed])",
+            "true_fields": blocker_fields if shadowfax_record else [],
+        },
+    }
 
 
 @booking_router.post("/shadowfax-test-324541/reset")
