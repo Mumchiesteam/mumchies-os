@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     gdrive_folder_id: str | None = None
     gdrive_service_account_json: str | None = None
     ndr_ingest_token: str | None = None
-    shipment_tracking_poller_enabled: bool = False
+    shipment_tracking_poller_enabled: bool = True
     shipment_tracking_poll_interval_seconds: int = 7200
     shipment_tracking_poll_batch_size: int = 50
     shipment_tracking_poll_spacing_seconds: float = 1.0
