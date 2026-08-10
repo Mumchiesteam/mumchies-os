@@ -3,7 +3,7 @@ export type SemanticTone = 'positive' | 'warning' | 'negative' | 'neutral'
 type Comparison = { percent: number | null; points: number | null }
 
 const HIGHER_IS_FAVOURABLE = new Set([
-  'total_orders', 'active_orders', 'order_value', 'aov',
+  'total_orders', 'orders', 'active_orders', 'order_value', 'aov', 'customers',
   'fulfilled_orders', 'fulfillment_percent', 'repeat_percent',
 ])
 
@@ -12,7 +12,8 @@ export function kpiComparisonTone(key: string, comparison?: Comparison): Semanti
   const movement = comparison.points ?? comparison.percent
   const threshold = comparison.points != null ? 0.5 : 1
   if (movement == null || Math.abs(movement) < threshold) return 'neutral'
-  const favourable = key === 'cancellation_percent' ? movement < 0 : HIGHER_IS_FAVOURABLE.has(key) && movement > 0
+  if (key !== 'cancellation_percent' && !HIGHER_IS_FAVOURABLE.has(key)) return 'neutral'
+  const favourable = key === 'cancellation_percent' ? movement < 0 : movement > 0
   return favourable ? 'positive' : 'negative'
 }
 

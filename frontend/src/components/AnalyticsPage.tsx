@@ -7,6 +7,7 @@ import {
 } from "../services/analytics";
 import { PeriodSelector, type PeriodPreset } from "./PeriodSelector";
 import { TrackingPollerHealth } from "./TrackingPollerHealth";
+import { GeographyAnalytics } from "./GeographyAnalytics";
 import {
   cancellationTone,
   deltaTone,
@@ -46,6 +47,7 @@ export function AnalyticsPage({ showDiagnostics = false }: { showDiagnostics?: b
   const [data, setData] = useState<AnalyticsData | null>(null);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
+  const [view, setView] = useState<'overview' | 'geography'>('overview');
   useEffect(() => {
     let active = true;
     let timer: number | undefined;
@@ -131,7 +133,8 @@ export function AnalyticsPage({ showDiagnostics = false }: { showDiagnostics?: b
           {error}
         </p>
       )}
-      {data && (
+      <div className="mb-3 flex gap-1 border-b"><button onClick={() => setView('overview')} className={`px-3 py-2 text-xs font-semibold ${view === 'overview' ? 'border-b-2 border-orange-500 text-orange-700' : 'text-slate-500'}`}>Overview</button><button onClick={() => setView('geography')} className={`px-3 py-2 text-xs font-semibold ${view === 'geography' ? 'border-b-2 border-orange-500 text-orange-700' : 'text-slate-500'}`}>Geography</button></div>
+      {data && view === 'overview' && (
         <>
           <section>
             <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
@@ -252,7 +255,8 @@ export function AnalyticsPage({ showDiagnostics = false }: { showDiagnostics?: b
           <Trend data={data} />
         </>
       )}
-      {showDiagnostics && <TrackingPollerHealth />}
+      {data && view === 'geography' && <GeographyAnalytics data={data.geography} showDataQuality={showDiagnostics} />}
+      {showDiagnostics && view === 'overview' && <TrackingPollerHealth />}
     </div>
   );
 }
