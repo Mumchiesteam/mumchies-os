@@ -21,6 +21,7 @@ from app.services.order_operations import OrderOperationsStore
 from app.services.delhivery import DelhiveryError, DelhiveryService
 from app.services.courier_platform import ProviderError, courier_registry
 from app.services.courier_platform.adapters import ShadowfaxAdapter
+from app.services.courier_platform.shadowfax_http import reset_shadowfax_outbound_observer, set_shadowfax_outbound_observer
 from app.services.courier_platform.service import CourierPlatformService
 from app.services.shipment_status import has_existing_shipment_evidence, has_persisted_provider_booking_evidence, has_uncertain_provider_booking
 from app.services.shiprocket import (
@@ -565,36 +566,42 @@ async def save_manual_shadowfax_shipment(order_id: str, payload: ManualShadowfax
     return {"provider": "shadowfax", "shipment": synchronized or shipment_snapshot(saved)}
 
 
-@booking_router.post("/shadowfax-test-324541")
-async def temporary_shadowfax_direct_test_324541(request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
+@booking_router.post("/shadowfax-test-324663")
+async def temporary_shadowfax_direct_test_324663(request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     """Temporary, admin-only, single-order production validation endpoint."""
     user = current_user(request)
     if user.role not in {"owner", "admin"}:
         raise HTTPException(status_code=403, detail="Admin access required.")
 
     order = next(
-        (item for item in await ShopifyService().get_latest_orders(force_refresh=True) if item.order_number.lstrip("#") == "324541"),
+        (item for item in await ShopifyService().get_latest_orders(force_refresh=True) if item.order_number.lstrip("#") == "324663"),
         None,
     )
     if order is None:
-        raise HTTPException(status_code=404, detail="Shopify order 324541 was not found.")
+        raise HTTPException(status_code=404, detail="Shopify order 324663 was not found.")
     operations = OrderOperationsStore.get(order.order_id)
     existing = get_shipment(db, order.order_id)
     existing_snapshot = shipment_snapshot(existing) if existing else None
+    cancelled = bool(order.cancelled_at) or str(order.shopify_status or "").casefold() in {"cancelled", "canceled"}
+    fulfilled = str(order.fulfillment_status or "unfulfilled").casefold() != "unfulfilled"
+    persisted_status = str((existing_snapshot or {}).get("booking_status") or "").casefold()
+    if cancelled or fulfilled:
+        raise HTTPException(status_code=409, detail="Order 324663 is cancelled or fulfilled and cannot be tested.")
+    if (existing_snapshot or {}).get("awb") or (existing_snapshot or {}).get("provider_order_id") or (existing_snapshot or {}).get("shipment_id") or persisted_status in {"booked", "manual_confirmed"}:
+        raise HTTPException(status_code=409, detail="Order 324663 already has a provider identifier or booked shipment state.")
     if has_existing_shipment_evidence(order, operations, existing_snapshot):
-        raise HTTPException(status_code=409, detail="Order 324541 already has shipment or fulfilment evidence.")
-    if any(event.get("action") == "shadowfax_direct_test_324541_started" for event in operations.get("timeline_events", [])):
-        raise HTTPException(status_code=409, detail="The one-time Shadowfax request for order 324541 was already attempted.")
+        raise HTTPException(status_code=409, detail="Order 324663 already has shipment or fulfilment evidence.")
+    if any(event.get("action") == "shadowfax_direct_test_324663_started" for event in operations.get("timeline_events", [])):
+        raise HTTPException(status_code=409, detail="The one-time Shadowfax request for order 324663 was already attempted.")
     eligibility = ShiprocketService().evaluate_booking_eligibility(order, operations, existing_snapshot)
     if not eligibility.eligible:
-        raise HTTPException(status_code=409, detail={"message": "Order 324541 is not Ready for Booking.", "missing_requirements": eligibility.missing_requirements})
+        raise HTTPException(status_code=409, detail={"message": "Order 324663 is not Ready for Booking.", "missing_requirements": eligibility.missing_requirements})
     package_data = operations.get("package_details")
     if not isinstance(package_data, dict):
         raise HTTPException(status_code=409, detail="Package details are required before the Shadowfax test.")
     package = PackageDetailsPayload.model_validate(package_data)
     booking_request = await _build_provider_booking_request(order, operations, package)
-    if str((booking_request.get("customer_details") or {}).get("pincode")) != "700070":
-        raise HTTPException(status_code=409, detail="Order 324541 destination pincode is not 700070.")
+    delivery_pincode = str((booking_request.get("customer_details") or {}).get("pincode") or "")
     for key in ("pickup_details", "rto_details"):
         details = booking_request.get(key)
         if isinstance(details, dict):
@@ -608,7 +615,7 @@ async def temporary_shadowfax_direct_test_324541(request: Request, db: Session =
         order.order_id, serviceability_started_at=datetime.now(timezone.utc).isoformat(), final_test_state="checking_serviceability",
     )
     try:
-        serviceability = await adapter.serviceability({"delivery_pincode": "700070"})
+        serviceability = await adapter.serviceability({"delivery_pincode": delivery_pincode})
     except Exception as error:
         OrderOperationsStore.update_shadowfax_direct_test(
             order.order_id, serviceability_result={"error": str(error)[:1000]}, final_test_state="serviceability_failed",
@@ -616,14 +623,14 @@ async def temporary_shadowfax_direct_test_324541(request: Request, db: Session =
         raise
     OrderOperationsStore.update_shadowfax_direct_test(
         order.order_id,
-        serviceability_result={"serviceable": serviceability.serviceable, "pincode": "700070", "service": serviceability.quotes[0].service_type if serviceability.quotes else None},
+        serviceability_result={"serviceable": serviceability.serviceable, "pincode": delivery_pincode, "service": serviceability.quotes[0].service_type if serviceability.quotes else None},
         final_test_state="serviceable" if serviceability.serviceable else "not_serviceable",
     )
     if not serviceability.serviceable:
-        raise HTTPException(status_code=409, detail="Shadowfax does not report pincode 700070 as serviceable.")
+        raise HTTPException(status_code=409, detail=f"Shadowfax does not report pincode {delivery_pincode} as serviceable.")
 
     actor = current_actor(request)
-    OrderOperationsStore.record_timeline_event(order.order_id, "shadowfax_direct_test_324541_started", operator=actor)
+    OrderOperationsStore.record_timeline_event(order.order_id, "shadowfax_direct_test_324663_started", operator=actor)
     upsert_shipment(
         db, order.order_id, provider="shadowfax", provider_order_id=None,
         booking_status="booking_initiated", latest_status="Shadowfax direct test submitted",
@@ -633,6 +640,11 @@ async def temporary_shadowfax_direct_test_324541(request: Request, db: Session =
         order.order_id, create_request_started_at=datetime.now(timezone.utc).isoformat(),
         create_request_completed_at=None, create_http_status=None, create_result="unknown",
         sanitized_provider_error=None, final_test_state="create_request_in_flight",
+    )
+    observer_token = set_shadowfax_outbound_observer(
+        lambda snapshot: OrderOperationsStore.update_shadowfax_direct_test(
+            order.order_id, outbound_request_snapshot=snapshot,
+        )
     )
     try:
         booking = await adapter.create_booking(booking_request)  # exactly one provider create POST; transport has no retries
@@ -652,6 +664,8 @@ async def temporary_shadowfax_direct_test_324541(request: Request, db: Session =
             reconciliation_error=str(error), last_synced_at=datetime.now(timezone.utc),
         )
         raise HTTPException(status_code=502, detail=str(error)) from error
+    finally:
+        reset_shadowfax_outbound_observer(observer_token)
 
     # The transport maps only Shadowfax `data.id` to provider_order_id/shipment_id.
     OrderOperationsStore.update_shadowfax_direct_test(
@@ -665,7 +679,7 @@ async def temporary_shadowfax_direct_test_324541(request: Request, db: Session =
         order.order_id, persistence_completed_at=datetime.now(timezone.utc).isoformat(), final_test_state="persisted",
     )
     OrderOperationsStore.record_timeline_event(
-        order.order_id, "shadowfax_direct_test_324541_booked", operator=actor,
+        order.order_id, "shadowfax_direct_test_324663_booked", operator=actor,
         details={"provider_order_id": booking.provider_order_id, "shipment_id": booking.shipment_id, "awb": booking.awb},
     )
     OrderOperationsStore.update_shadowfax_direct_test(
@@ -689,9 +703,9 @@ async def temporary_shadowfax_direct_test_324541(request: Request, db: Session =
         )
         raise
     return {
-        "serviceability": {"serviceable": True, "pincode": "700070", "service": serviceability.quotes[0].service_type if serviceability.quotes else None},
+        "serviceability": {"serviceable": True, "pincode": delivery_pincode, "service": serviceability.quotes[0].service_type if serviceability.quotes else None},
         "booking": {
-            "provider": "shadowfax", "client_order_id": "324541",
+            "provider": "shadowfax", "client_order_id": "324663",
             "provider_order_id": booking.provider_order_id, "shipment_id": booking.shipment_id,
             "awb": booking.awb, "tracking_url": booking.tracking_url,
             "status": booking.status.value, "service": booking.service,
@@ -700,22 +714,22 @@ async def temporary_shadowfax_direct_test_324541(request: Request, db: Session =
     }
 
 
-@booking_router.get("/shadowfax-test-324541/status")
-async def temporary_shadowfax_direct_test_324541_status(request: Request) -> dict[str, object]:
+@booking_router.get("/shadowfax-test-324663/status")
+async def temporary_shadowfax_direct_test_324663_status(request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     user = current_user(request)
     if user.role not in {"owner", "admin"}:
         raise HTTPException(status_code=403, detail="Admin access required.")
     order = next(
-        (item for item in await ShopifyService().get_latest_orders() if item.order_number.lstrip("#") == "324541"),
+        (item for item in await ShopifyService().get_latest_orders() if item.order_number.lstrip("#") == "324663"),
         None,
     )
     if order is None:
-        raise HTTPException(status_code=404, detail="Shopify order 324541 was not found.")
+        raise HTTPException(status_code=404, detail="Shopify order 324663 was not found.")
     operations = OrderOperationsStore.get(order.order_id)
     state = operations.get("shadowfax_direct_test")
     if not isinstance(state, dict):
         attempted = next(
-            (event for event in operations.get("timeline_events", []) if event.get("action") == "shadowfax_direct_test_324541_started"),
+            (event for event in operations.get("timeline_events", []) if event.get("action") == "shadowfax_direct_test_324663_started"),
             None,
         )
         state = {
@@ -727,7 +741,25 @@ async def temporary_shadowfax_direct_test_324541_status(request: Request) -> dic
             "final_test_state": "legacy_attempt_observed_without_diagnostics" if attempted else "not_attempted",
             "one_time_guard_set_at": attempted.get("timestamp") if attempted else None,
         }
-    return {"order_number": "324541", "state": state}
+    shipment = shipment_snapshot(get_shipment(db, order.order_id))
+    cancelled = bool(order.cancelled_at) or str(order.shopify_status or "").casefold() in {"cancelled", "canceled"}
+    fulfilled = str(order.fulfillment_status or "unfulfilled").casefold() != "unfulfilled"
+    successful_status = str(shipment.get("booking_status") or "").casefold() in {"booked", "manual_confirmed"}
+    evidence = {
+        "awb": shipment.get("awb") or (order.external_tracking.awb if order.external_tracking else None),
+        "provider_order_id": shipment.get("provider_order_id"),
+        "shipment_id": shipment.get("shipment_id"),
+        "booking_status": shipment.get("booking_status"),
+        "booked_at": shipment.get("booked_at"),
+    }
+    eligible = not cancelled and not fulfilled and not any((evidence["awb"], evidence["provider_order_id"], evidence["shipment_id"], successful_status))
+    state = {
+        **state, "eligible_for_test": eligible, "payment_type": order.payment_type,
+        "destination_pincode": str((order.shipping_address.pincode if order.shipping_address else "") or ""),
+        "shipment_evidence": evidence,
+        "blocker": None if eligible else "Order is cancelled, fulfilled, or already has shipment evidence.",
+    }
+    return {"order_number": "324663", "state": state}
 
 
 def _sanitized_persisted_provider_response(value: str | None) -> object | None:
@@ -741,8 +773,8 @@ def _sanitized_persisted_provider_response(value: str | None) -> object | None:
     return ShiprocketService.sanitize_response(parsed)
 
 
-@booking_router.get("/shadowfax-test-324541/shipment-row")
-async def temporary_shadowfax_direct_test_324541_shipment_row(
+@booking_router.get("/shadowfax-test-324663/shipment-row")
+async def temporary_shadowfax_direct_test_324663_shipment_row(
     request: Request, db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Admin-only, read-only inspection of the one canonical shipment row."""
@@ -750,7 +782,13 @@ async def temporary_shadowfax_direct_test_324541_shipment_row(
     if user.role not in {"owner", "admin"}:
         raise HTTPException(status_code=403, detail="Admin access required.")
 
-    shipment = get_shipment(db, "6854925713486")
+    order = next(
+        (item for item in await ShopifyService().get_latest_orders() if item.order_number.lstrip("#") == "324663"),
+        None,
+    )
+    if order is None:
+        raise HTTPException(status_code=404, detail="Shopify order 324663 was not found.")
+    shipment = get_shipment(db, order.order_id)
     values: dict[str, object | None] = {
         "provider": shipment.provider if shipment else None,
         "provider_order_id": shipment.provider_order_id if shipment else None,
@@ -769,7 +807,7 @@ async def temporary_shadowfax_direct_test_324541_shipment_row(
     shadowfax_record = str(values["provider"] or "").casefold() == "shadowfax"
     successful_status = str(values["booking_status"] or "").casefold() in {"booked", "manual_confirmed"}
     stale_client_reference = (
-        values["provider_order_id"] == "324541"
+        values["provider_order_id"] == "324663"
         and str(values["booking_status"] or "").casefold() == "booking_failed"
         and values["shipment_id"] is None and values["awb"] is None and values["booked_at"] is None
     )
@@ -784,8 +822,8 @@ async def temporary_shadowfax_direct_test_324541_shipment_row(
         blocker_fields.append("booked_at")
     blocker_true = shadowfax_record and bool(blocker_fields)
     return {
-        "order_number": "324541",
-        "shopify_order_id": "6854925713486",
+        "order_number": "324663",
+        "shopify_order_id": order.order_id,
         "row_exists": shipment is not None,
         "fields": values,
         "non_null": {field: value is not None for field, value in values.items()},

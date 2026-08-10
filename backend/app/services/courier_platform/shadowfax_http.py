@@ -1,12 +1,26 @@
 from __future__ import annotations
 
+from contextvars import ContextVar, Token
+from copy import deepcopy
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 import httpx
 
 from app.services.courier_platform.base import ProviderConfigurationError, ProviderError
+
+_outbound_observer: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar(
+    "shadowfax_outbound_observer", default=None,
+)
+
+
+def set_shadowfax_outbound_observer(observer: Callable[[dict[str, Any]], None]) -> Token:
+    return _outbound_observer.set(observer)
+
+
+def reset_shadowfax_outbound_observer(token: Token) -> None:
+    _outbound_observer.reset(token)
 
 
 class ShadowfaxHTTPTransport:
@@ -44,6 +58,18 @@ class ShadowfaxHTTPTransport:
         owns_client = self._client is None
         client = self._client or httpx.AsyncClient(timeout=self._timeout, follow_redirects=False)
         try:
+            observer = _outbound_observer.get()
+            if observer is not None and method.upper() == "POST" and path == "/v3/clients/orders/":
+                authorization = str(self._headers.get("Authorization") or "")
+                observer({
+                    "method": method.upper(),
+                    "final_url": f"{self._base_url}{path}",
+                    "request_header_names": sorted(self._headers),
+                    "authorization_scheme": authorization.split(" ", 1)[0] if authorization else None,
+                    "json_body": deepcopy(json),
+                    "order_details_client_name": ((json or {}).get("order_details") or {}).get("client_name") if isinstance((json or {}).get("order_details"), dict) else None,
+                    "captured_at": datetime.now().astimezone().isoformat(),
+                })
             response = await client.request(
                 method, f"{self._base_url}{path}", headers=self._headers, params=params, json=json,
                 timeout=self._timeout,

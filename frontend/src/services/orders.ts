@@ -636,8 +636,8 @@ export async function saveManualShadowfaxShipment(orderId: string, payload: { aw
   return body
 }
 
-export async function testShadowfaxDirect324541(): Promise<{ booking: { provider_order_id?: string; awb?: string; status?: string }; tracking: { status?: string } }> {
-  const response = await apiFetch(`${apiBase}/api/v1/orders/shadowfax-test-324541`, { method: 'POST' })
+export async function testShadowfaxDirect324663(): Promise<{ booking: { provider_order_id?: string; awb?: string; status?: string }; tracking: { status?: string } }> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/shadowfax-test-324663`, { method: 'POST' })
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail?.message || body?.detail || 'Shadowfax direct test failed.')
   return body
@@ -645,23 +645,23 @@ export async function testShadowfaxDirect324541(): Promise<{ booking: { provider
 
 export type ShadowfaxDirectTestState = Record<string, unknown>
 export type ShadowfaxShipmentRowDiagnostic = {
-  order_number: '324541'
-  shopify_order_id: '6854925713486'
+  order_number: '324663'
+  shopify_order_id: string
   row_exists: boolean
   fields: Record<string, unknown>
   non_null: Record<string, boolean>
   reset_blocker: { evaluates_true: boolean; condition: string; true_fields: string[] }
 }
 
-export async function getShadowfaxDirect324541Status(): Promise<ShadowfaxDirectTestState> {
-  const response = await apiFetch(`${apiBase}/api/v1/orders/shadowfax-test-324541/status`)
+export async function getShadowfaxDirect324663Status(): Promise<ShadowfaxDirectTestState> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/shadowfax-test-324663/status`)
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail || 'Could not load Shadowfax test status.')
   return body.state || {}
 }
 
-export async function getShadowfaxShipmentRow324541(): Promise<ShadowfaxShipmentRowDiagnostic> {
-  const response = await apiFetch(`${apiBase}/api/v1/orders/shadowfax-test-324541/shipment-row`)
+export async function getShadowfaxShipmentRow324663(): Promise<ShadowfaxShipmentRowDiagnostic> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/shadowfax-test-324663/shipment-row`)
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail || 'Could not load the canonical shipment row.')
   return body

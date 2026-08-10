@@ -22,7 +22,9 @@ from app.services.courier_platform import (
     ProviderError, ReconciliationStatus, ShadowfaxAdapter, courier_registry,
 )
 from app.services.courier_platform.service import CourierPlatformService
-from app.services.courier_platform.shadowfax_http import ShadowfaxHTTPTransport
+from app.services.courier_platform.shadowfax_http import (
+    ShadowfaxHTTPTransport, reset_shadowfax_outbound_observer, set_shadowfax_outbound_observer,
+)
 from app.services.courier_platform.webhooks import WebhookHandler, process_webhook, webhook_registry
 from app.services.courier_platform.models import TrackingResult
 from app.services.label_printing import LabelPrintError, LabelService, confirm_batch, create_batch, image_label_to_pdf, print_ready_pdf
@@ -183,6 +185,35 @@ async def test_official_shadowfax_http_transport_contract():
         cancellation = await transport.cancel_booking({"awb": "SF-STAGE-1"})
         assert cancellation["cancelled"] is True
     assert [request.method for request in requests] == ["GET", "GET", "POST", "GET", "POST"]
+
+
+@pytest.mark.anyio
+async def test_shadowfax_create_captures_final_sanitized_outbound_request():
+    snapshots = []
+    payload = official_booking_payload()
+    payload["order_details"]["client_name"] = "Mumchies Foods"
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"message": "Failure", "errors": {"order_details": {"client_name": ["invalid"]}}})
+
+    token = set_shadowfax_outbound_observer(snapshots.append)
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            transport = ShadowfaxHTTPTransport(token="must-not-be-persisted", base_url="https://dale.shadowfax.in/api", client=client)
+            with pytest.raises(ProviderError):
+                await transport.create_booking(payload)
+    finally:
+        reset_shadowfax_outbound_observer(token)
+
+    assert len(snapshots) == 1
+    snapshot = snapshots[0]
+    assert snapshot["method"] == "POST"
+    assert snapshot["final_url"] == "https://dale.shadowfax.in/api/v3/clients/orders/"
+    assert snapshot["request_header_names"] == ["Authorization", "Content-Type"]
+    assert snapshot["authorization_scheme"] == "Token"
+    assert snapshot["json_body"] == payload
+    assert snapshot["order_details_client_name"] == "Mumchies Foods"
+    assert "must-not-be-persisted" not in str(snapshot)
 
 
 def test_shadowfax_http_transport_accepts_configured_https_base_url_and_rejects_http():

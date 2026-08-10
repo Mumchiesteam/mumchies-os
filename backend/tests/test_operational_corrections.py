@@ -30,7 +30,7 @@ def admin_request(role="admin"):
 
 
 @pytest.mark.anyio
-async def test_shadowfax_shipment_row_diagnostic_is_read_only_and_reports_exact_blocker(db):
+async def test_shadowfax_shipment_row_diagnostic_is_read_only_and_reports_exact_blocker(db, monkeypatch):
     shipment = ShiprocketShipment(
         order_id="6854925713486", provider="shadowfax", provider_order_id=None,
         shipment_id="stale-id", awb=None, booking_status="booking_failed",
@@ -40,7 +40,12 @@ async def test_shadowfax_shipment_row_diagnostic_is_read_only_and_reports_exact_
     db.add(shipment)
     db.commit()
 
-    result = await couriers.temporary_shadowfax_direct_test_324541_shipment_row(admin_request(), db)
+    async def orders_list(_self):
+        value = raw_order()
+        value.update({"id": 6854925713486, "name": "#324663", "order_number": 324663})
+        return [ShopifyService._to_order(value)]
+    monkeypatch.setattr(couriers.ShopifyService, "get_latest_orders", orders_list)
+    result = await couriers.temporary_shadowfax_direct_test_324663_shipment_row(admin_request(), db)
 
     assert result["fields"]["shipment_id"] == "stale-id"
     assert result["fields"]["raw_provider_response"] == {"token": "[REDACTED]", "status": "rejected"}
@@ -57,7 +62,7 @@ async def test_shadowfax_shipment_row_diagnostic_is_read_only_and_reports_exact_
 @pytest.mark.anyio
 async def test_shadowfax_shipment_row_diagnostic_requires_admin(db):
     with pytest.raises(Exception) as error:
-        await couriers.temporary_shadowfax_direct_test_324541_shipment_row(authenticated_request(), db)
+        await couriers.temporary_shadowfax_direct_test_324663_shipment_row(authenticated_request(), db)
     assert getattr(error.value, "status_code", None) == 403
 
 
