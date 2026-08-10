@@ -35,9 +35,14 @@ def get_shipment(db: Session, order_id: str) -> ShiprocketShipment | None:
     return db.get(ShiprocketShipment, order_id)
 
 
-def get_shipments_by_order_id(db: Session) -> dict[str, ShiprocketShipment]:
+def get_shipments_by_order_id(db: Session, order_ids: list[str] | None = None) -> dict[str, ShiprocketShipment]:
     """Load shipment state once for the orders-list merge."""
-    shipments = db.scalars(select(ShiprocketShipment)).all()
+    query = select(ShiprocketShipment)
+    if order_ids is not None:
+        if not order_ids:
+            return {}
+        query = query.where(ShiprocketShipment.order_id.in_(order_ids))
+    shipments = db.scalars(query).all()
     return {shipment.order_id: shipment for shipment in shipments}
 
 

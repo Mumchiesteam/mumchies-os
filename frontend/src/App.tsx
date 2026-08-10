@@ -209,6 +209,7 @@ function App() {
   const [selectedOrderSnapshot, setSelectedOrderSnapshot] = useState<Order | null>(null)
   const [operations, setOperations] = useState<OrderOperations | null>(null)
   const [loading, setLoading] = useState(true)
+  const [ordersSlow, setOrdersSlow] = useState(false)
   const [error, setError] = useState('')
   const [queue, setQueue] = useState<TabKey>('fresh')
   const [searchDraft, setSearchDraft] = useState('')
@@ -282,6 +283,7 @@ function App() {
   const loadOrders = useCallback(async (signal?: AbortSignal) => {
     try {
       setLoading(true)
+      setOrdersSlow(false)
       setError('')
       if (queue === 'shiprocket_cleanup') {
         const cleanup = await getShiprocketCleanupPending()
@@ -318,16 +320,12 @@ function App() {
         }
       }
       setRepeatIds(repeat)
-      setSelectedOrderSnapshot(current => {
-        if (!selectedOrderId) return null
-        return data.items.find(order => order.internalId === selectedOrderId) || current
-      })
     } catch (err) {
       if ((err as Error).name !== 'AbortError') setError((err as Error).message)
     } finally {
       if (!signal?.aborted) setLoading(false)
     }
-  }, [attemptFilter, page, pageSize, payment, pendingView, queue, risk, search, selectedOrderId, sort])
+  }, [attemptFilter, page, pageSize, payment, pendingView, queue, risk, search, sort])
 
   useEffect(() => {
     const timeout = window.setTimeout(() => { setSearch(searchDraft.trim()); setPage(1) }, 350)
@@ -347,20 +345,22 @@ function App() {
     if (!workspaceLoadsForPage(activePage).orders) return
     const controller = new AbortController()
     const timeout = window.setTimeout(() => void loadOrders(controller.signal), 0)
+    const slowTimeout = window.setTimeout(() => setOrdersSlow(true), 8_000)
     return () => {
       controller.abort()
       window.clearTimeout(timeout)
+      window.clearTimeout(slowTimeout)
     }
   }, [activePage, loadOrders])
 
   useEffect(() => {
     const loads = workspaceLoadsForPage(activePage)
-    if (loads.orders) { refreshLabels(); refreshCleanup() }
+    if (loads.orders) refreshLabels()
     if (loads.reconciliation) {
       const timeout = window.setTimeout(() => refreshReconciliation(false), 0)
       return () => window.clearTimeout(timeout)
     }
-  }, [activePage, reconciliationRetry, refreshCleanup, refreshLabels, refreshReconciliation])
+  }, [activePage, reconciliationRetry, refreshLabels, refreshReconciliation])
 
   useEffect(() => {
     if (activePage !== 'Reconciliation' || !reconciliation?.refreshing) return
@@ -434,7 +434,10 @@ function App() {
       setCourierError((err as Error).message || 'Could not load order operations and courier eligibility.')
     })
     return () => { active = false }
-  }, [selectedOrder])
+    // Drawer refresh is keyed only by identity. Local row updates after a save
+    // must not re-run Shopify-backed drawer reads.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedOrderId])
 
   const openOrder = (orderId: string) => {
     drawerGenerationRef.current += 1
@@ -525,16 +528,22 @@ function App() {
       // order that already has an existing shipment/fulfilment must never be downgraded back to
       // "Ready for Booking" (or any other local state) by a call outcome - see Part 2/3 of the
       // 2026-07-21 shipment-state regression fix.
-      setOrders(prev => prev.map(order => order.internalId === selectedOrder.internalId ? { ...order, latestCallResult: updated.call_logs?.[0]?.result || null, operationalStatus: (hasShipmentEvidence(order) ? order.operationalStatus : (updated.call_logs?.[0]?.result === 'Callback Requested' ? 'Callback Required' : updated.call_logs?.[0]?.result === 'Confirmed' ? (order.payment === 'Prepaid' && !updated.address_verified ? 'Address Verification Pending' : 'Ready for Booking') : updated.call_logs?.[0]?.result === 'Wrong Number' ? 'Needs Review' : updated.call_logs?.[0]?.result === 'Cancelled' ? 'Cancelled' : 'Call Pending')) as OperationalStatus | null, addressVerified: updated.address_verified, addressVerifiedAt: updated.address_verified_at, addressVerifiedBy: updated.address_verified_by, verifiedAddressSnapshot: updated.verified_address_snapshot, correctedAddress: updated.corrected_address, courierSyncStatus: updated.courier_sync_status, courierSyncError: updated.courier_sync_error } : order))
+      setOrders(prev => prev.map(order => order.internalId === selectedOrder.internalId ? { ...order, latestCallResult: updated.call_logs?.[0]?.result || null, operationalStatus: (hasShipmentEvidence(order) ? order.operationalStatus : (updated.call_logs?.[0]?.result === 'Callback Requested' ? 'Callback Required' : updated.call_logs?.[0]?.result === 'Confirmed' ? (order.payment === 'Prepaid' && !updated.address_verified ? 'Address Verification Pending' : 'Ready for Booking') : updated.call_logs?.[0]?.result === 'Wrong Number' ? 'Needs Review' : updated.call_logs?.[0]?.result === 'Cancelled' ? 'Cancelled' : 'Call Pending')) as OperationalStatus | null, addressVerified: updated.address_verified, addressVerifiedAt: updated.address_verified_at, addressVerifiedBy: updated.address_verified_by, verifiedAddressSnapshot: updated.verified_address_snapshot, correctedAddress: updated.corrected_address, courierSyncStatus: updated.courier_sync_status, courierSyncError: updated.courier_sync_error } : order).filter(order => {
+        if (order.internalId !== selectedOrder.internalId) return true
+        if (queue === 'fresh') return false
+        if (queue !== 'previous') return true
+        return pendingView === 'on_hold' ? callResult === 'On Hold' : ['No Answer', 'Busy', 'Switched Off'].includes(callResult)
+      }))
+      setSelectedOrderSnapshot(previous => previous ? {
+        ...previous,
+        latestCallResult: updated.call_logs?.[0]?.result || null,
+        operationalStatus: hasShipmentEvidence(previous) ? previous.operationalStatus : updated.call_logs?.[0]?.result === 'Confirmed' ? 'Ready for Booking' : updated.call_logs?.[0]?.result === 'Cancelled' ? 'Cancelled' : 'Call Pending',
+      } : previous)
       setCallComment('')
-      const [freshOperations, freshEligibility] = await Promise.all([
-        getOrderOperations(selectedOrder.internalId),
-        getBookingEligibility(selectedOrder.internalId),
-      ])
-      setOperations(freshOperations)
-      setBookingEligibility(freshEligibility)
-      await loadOrders()
       setNotice('Call attempt saved')
+      if (callResult === 'Confirmed') {
+        void getBookingEligibility(selectedOrder.internalId).then(setBookingEligibility).catch(() => undefined)
+      }
     } catch (err) {
       setNotice((err as Error).message)
     }
@@ -593,7 +602,6 @@ function App() {
       if (selectedCourierId && !sorted.some(courier => courier.courier_id === selectedCourierId)) {
         setSelectedCourierId(null)
       }
-      await refreshEligibility(orderId)
       setNotice('Courier options loaded')
     } catch (err) {
       if (generation !== drawerGenerationRef.current) return
@@ -838,7 +846,7 @@ function App() {
           {[{ label: 'ORDERS', items: tabItems }, { label: 'DISPATCH', items: dispatchItems }].map(group => <div key={group.label}>
             <p className="mb-2 text-[10px] font-bold tracking-[.14em] text-slate-400">{group.label}</p>
             <div className="flex flex-wrap gap-2">{group.items.map(tab => (
-              <button key={tab.key} onClick={() => { if (tab.key === 'shiprocket_cleanup') { setReconciliationFilter('cleanup_pending'); return } setReconciliationFilter(clearReconciliationFilter()); setQueue(tab.key); setPage(1); if (tab.key === 'labels_to_print') { refreshLabels(); void getActiveLabelBatches().then(batches => { if (batches[0]) { setActiveBatch(batches[0]); setPrintedLabels(new Set(batches[0].order_ids)) } }); setShowLabels(true) } }} className={`rounded-full px-4 py-2 text-sm font-medium ${(queue === tab.key && !reconciliationFilter) || (tab.key === 'shiprocket_cleanup' && reconciliationFilter === 'cleanup_pending') ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'}`}>
+              <button key={tab.key} onClick={() => { if (tab.key === 'shiprocket_cleanup') { refreshCleanup(); setReconciliationFilter('cleanup_pending'); return } setReconciliationFilter(clearReconciliationFilter()); setQueue(tab.key); setPage(1); if (tab.key === 'labels_to_print') { refreshLabels(); void getActiveLabelBatches().then(batches => { if (batches[0]) { setActiveBatch(batches[0]); setPrintedLabels(new Set(batches[0].order_ids)) } }); setShowLabels(true) } }} className={`rounded-full px-4 py-2 text-sm font-medium ${(queue === tab.key && !reconciliationFilter) || (tab.key === 'shiprocket_cleanup' && reconciliationFilter === 'cleanup_pending') ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'}`}>
                 {tab.label}
                 <span className={`ml-2 rounded-full px-2 py-0.5 text-[11px] font-bold ${queue === tab.key ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-500'}`}>{summaryCounts[tab.key]}</span>
               </button>
@@ -866,7 +874,8 @@ function App() {
             <div className="grid min-h-80 place-items-center">
               <div className="text-center">
                 <span className="mx-auto block h-8 w-8 animate-spin rounded-full border-2 border-orange-200 border-t-[#ff6b35]" />
-                <p className="mt-3 text-sm font-medium text-slate-500">Loading Shopify orders…</p>
+                <p className="mt-3 text-sm font-medium text-slate-500">{ordersSlow ? 'Orders are taking longer than usual to load.' : 'Loading Shopify orders…'}</p>
+                {ordersSlow && <button type="button" onClick={() => window.location.reload()} className="mt-3 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600">Retry</button>}
               </div>
             </div>
           ) : error ? (

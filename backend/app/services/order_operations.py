@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +15,7 @@ from app.core.config import settings
 
 OPS_FILE = settings.data_dir / "order_operations.json"
 OPS_FILE.parent.mkdir(parents=True, exist_ok=True)
+LOGGER = logging.getLogger(__name__)
 
 
 class OrderOperationsStore:
@@ -51,8 +54,10 @@ class OrderOperationsStore:
 
     @classmethod
     def _write_all(cls, payload: dict[str, Any]) -> None:
+        started = time.perf_counter()
         with OPS_FILE.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
+        LOGGER.info("order_operations_write duration_ms=%.2f records=%d", (time.perf_counter() - started) * 1000, len(payload))
 
     @classmethod
     def get(cls, order_id: str) -> dict[str, Any]:
@@ -183,6 +188,23 @@ class OrderOperationsStore:
             record = data.get(order_id, deepcopy(cls._default_record))
             record["package_details"] = package_details
             cls._record_action(record, "package_details_saved")
+            data[order_id] = record
+            cls._write_all(data)
+            return record
+
+    @classmethod
+    def save_package_details_with_timeline(cls, order_id: str, package_details: dict[str, Any], operator: str) -> dict[str, Any]:
+        """Persist package state and its audit entry in one locked file write."""
+        with cls._lock:
+            data = cls._read_all()
+            record = data.get(order_id, deepcopy(cls._default_record))
+            occurred_at = datetime.now(timezone.utc).isoformat()
+            record["package_details"] = package_details
+            cls._record_action(record, "package_details_saved", occurred_at, operator)
+            record.setdefault("timeline_events", []).append({
+                "action": "package_details_updated", "timestamp": occurred_at,
+                "operator": operator, "details": {},
+            })
             data[order_id] = record
             cls._write_all(data)
             return record

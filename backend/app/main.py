@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 import hmac
 import logging
 import os
+import time
 
 from app.api.router import api_router
 from app.api.routes.dashboard import _dashboard_key, _dashboard_refresh_tasks, _period, _start_dashboard_refresh
@@ -29,11 +30,16 @@ logging.getLogger(__name__).info(
 
 @app.middleware("http")
 async def require_authentication(request: Request, call_next):
+    request_started = time.perf_counter()
     public_paths = {"/health", f"{settings.api_v1_prefix}/auth/login", f"{settings.api_v1_prefix}/auth/logout"}
     signed_provider_webhook = request.method == "POST" and request.url.path.startswith(f"{settings.api_v1_prefix}/couriers/webhooks/")
     signed_ndr_import = request.method == "POST" and request.url.path == f"{settings.api_v1_prefix}/ndr/import"
     if not settings.auth_enabled or request.method == "OPTIONS" or request.url.path in public_paths or signed_provider_webhook or signed_ndr_import:
-        return await call_next(request)
+        response = await call_next(request)
+        prior = response.headers.get("Server-Timing")
+        total = f"request_total;dur={(time.perf_counter() - request_started) * 1000:.2f}"
+        response.headers["Server-Timing"] = f"{prior}, {total}" if prior else total
+        return response
     if not settings.auth_session_secret:
         return JSONResponse(status_code=503, content={"detail": "Authentication is not configured."})
     session = read_session(
@@ -59,7 +65,11 @@ async def require_authentication(request: Request, call_next):
     request.state.auth_username = session.username
     request.state.auth_user = user
     request.state.csrf_token = session.csrf_token
-    return await call_next(request)
+    response = await call_next(request)
+    prior = response.headers.get("Server-Timing")
+    total = f"request_total;dur={(time.perf_counter() - request_started) * 1000:.2f}"
+    response.headers["Server-Timing"] = f"{prior}, {total}" if prior else total
+    return response
 
 
 app.add_middleware(
@@ -76,18 +86,23 @@ app.include_router(api_router, prefix=settings.api_v1_prefix)
 async def warm_management_report_snapshots() -> None:
     """Refresh persisted report snapshots without delaying service readiness."""
     async def warm_sequentially() -> None:
+        # Give interactive traffic priority after a cold start. Heavy provider
+        # reads are intentionally staggered rather than launched together.
+        await asyncio.sleep(15)
         start_at, end_at, label = _period("today", None, None)
         key = _dashboard_key("today", start_at, end_at)
         _start_dashboard_refresh(key, "today", start_at, end_at, label)
         task = _dashboard_refresh_tasks.get(key)
         if task:
             await task
+        await asyncio.sleep(30)
         analytics_start, analytics_end, analytics_label = _period("last_30_days", None, None)
         analytics_key = _analytics_key("last_30_days", analytics_start, analytics_end, "all", "all")
         start_analytics_refresh(analytics_key, analytics_start, analytics_end, "last_30_days", analytics_label)
         analytics_task = _analytics_tasks.get(analytics_key)
         if analytics_task:
             await analytics_task
+        await asyncio.sleep(30)
         _start_reconciliation_refresh()
 
     asyncio.create_task(warm_sequentially())
@@ -97,7 +112,10 @@ async def warm_management_report_snapshots() -> None:
 async def start_shipment_tracking_poller() -> None:
     """Start one conservative GET-only tracking loop per backend process."""
     if settings.shipment_tracking_poller_enabled:
-        app.state.shipment_tracking_poller_task = asyncio.create_task(tracking_poller_loop(app.state.session_factory))
+        async def deferred_poller() -> None:
+            await asyncio.sleep(60)
+            await tracking_poller_loop(app.state.session_factory)
+        app.state.shipment_tracking_poller_task = asyncio.create_task(deferred_poller())
 
 
 @app.get("/health", tags=["health"])

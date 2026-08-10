@@ -33,7 +33,7 @@ async def test_orders_endpoint_merges_persisted_operations(monkeypatch: pytest.M
         return [sample_order]
 
     monkeypatch.setattr("app.api.routes.orders.ShopifyService.get_latest_orders", fake_get_latest_orders)
-    monkeypatch.setattr("app.api.routes.orders.get_shipments_by_order_id", lambda _db: {})
+    monkeypatch.setattr("app.api.routes.orders.get_shipments_by_order_id", lambda _db, _order_ids=None: {})
     monkeypatch.setattr(
         "app.api.routes.orders.OrderOperationsStore.all",
         lambda: {

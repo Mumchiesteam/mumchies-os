@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict
 from datetime import datetime, timezone
 import json
+import logging
+import time
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -92,11 +95,12 @@ def _activate_new_label_tracking(db: Session, order_id: str, booking_result: dic
 
 
 async def _load_order(order_id: str) -> ShopifyOrder:
-    orders = await ShopifyService().get_latest_orders()
-    for order in orders:
-        if order.order_id == order_id:
-            return order
-    raise HTTPException(status_code=404, detail="Order not found in Shopify.")
+    try:
+        return await ShopifyService().get_order(order_id)
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Order not found in Shopify.") from error
+        raise
 
 
 async def _load_context(order_id: str, db: Session) -> tuple[ShopifyOrder, dict[str, object], dict[str, object] | None]:
@@ -418,8 +422,7 @@ async def shiprocket_health() -> dict[str, object]:
 
 @router.post("/orders/{order_id}/package")
 async def save_package_details(order_id: str, payload: PackageDetailsPayload, request: Request) -> dict[str, object]:
-    record = OrderOperationsStore.save_package_details(order_id, payload.model_dump())
-    OrderOperationsStore.record_timeline_event(order_id, "package_details_updated", operator=current_actor(request))
+    record = OrderOperationsStore.save_package_details_with_timeline(order_id, payload.model_dump(), current_actor(request))
     return {"provider": "shiprocket", "package_details": record.get("package_details")}
 
 
@@ -442,28 +445,58 @@ async def booking_eligibility(order_id: str, db: Session = Depends(get_db)) -> d
 @router.post("/orders/{order_id}/couriers/check")
 async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload, db: Session = Depends(get_db)) -> dict[str, object]:
     provider_warnings: list[str] = []
+    request_started = time.perf_counter()
+    context_started = request_started
     try:
         order, operations, shipment = await _load_context(order_id, db)
+        context_ms = (time.perf_counter() - context_started) * 1000
+        # _load_context returns a detached dictionary snapshot. Release the
+        # read transaction before waiting on provider networks.
+        db.rollback()
         package = PackageDetailsPayload.model_validate(payload.model_dump())
+        # The package was persisted by the explicit package endpoint immediately
+        # before this lookup. Only clear the prior selection here.
         OrderOperationsStore.save_selected_courier(order_id, None)
-        OrderOperationsStore.save_package_details(order_id, package.model_dump())
         operations = {**operations, "selected_courier": None, "package_details": package.model_dump()}
         eligibility = ShiprocketService().evaluate_booking_eligibility(order, operations, shipment)
         if not eligibility.eligible:
             raise HTTPException(status_code=400, detail={"message": "Order is not eligible for courier lookup.", "missing_requirements": eligibility.missing_requirements})
+        pickup_started = time.perf_counter()
         pickup_postcode, delivery_postcode, cod = await _serviceability_query(order, operations, package, payload.courier_payment_mode)
-        quotes = await ShiprocketService().serviceability(pickup_postcode, delivery_postcode, package.weight_kg, cod)
-        normalized_quotes = [asdict(quote) for quote in quotes]
+        pickup_ms = (time.perf_counter() - pickup_started) * 1000
         delhivery = DelhiveryService()
-        try:
-            if delhivery.configured:
-                direct_quotes = await delhivery.serviceability(pickup_postcode, delivery_postcode, package.weight_kg, cod)
-                normalized_quotes.extend(asdict(quote) for quote in direct_quotes)
-            else:
-                provider_warnings.append("Direct Delhivery booking is not configured.")
-        except (DelhiveryError, httpx.HTTPError):
-            # One provider failing must not hide otherwise valid courier options.
+        provider_timings: dict[str, float] = {}
+        async def shiprocket_quotes():
+            started = time.perf_counter()
+            try:
+                return await ShiprocketService().serviceability(pickup_postcode, delivery_postcode, package.weight_kg, cod)
+            finally:
+                provider_timings["shiprocket"] = (time.perf_counter() - started) * 1000
+
+        async def delhivery_quotes():
+            if not delhivery.configured:
+                provider_timings["delhivery"] = 0
+                return None
+            started = time.perf_counter()
+            try:
+                return await delhivery.serviceability(pickup_postcode, delivery_postcode, package.weight_kg, cod)
+            finally:
+                provider_timings["delhivery"] = (time.perf_counter() - started) * 1000
+
+        shiprocket_result, delhivery_result = await asyncio.gather(
+            shiprocket_quotes(), delhivery_quotes(), return_exceptions=True,
+        )
+        normalized_quotes = []
+        if isinstance(shiprocket_result, Exception):
+            provider_warnings.append("Shiprocket is temporarily unavailable.")
+        else:
+            normalized_quotes.extend(asdict(quote) for quote in shiprocket_result)
+        if delhivery_result is None:
+            provider_warnings.append("Direct Delhivery booking is not configured.")
+        elif isinstance(delhivery_result, Exception):
             provider_warnings.append("Direct Delhivery is temporarily unavailable.")
+        else:
+            normalized_quotes.extend(asdict(quote) for quote in delhivery_result)
         normalized_quotes.append({
             "courier_id": "shadowfax:manual", "courier_name": "Shadowfax", "rate": 0,
             "cod_charge": None, "total_estimated_shipping_cost": 0,
@@ -476,6 +509,12 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
         raise HTTPException(status_code=503, detail=str(error)) from error
     except ShiprocketAPIError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
+    logging.getLogger(__name__).info(
+        "courier_lookup total_ms=%.2f order_context_ms=%.2f pickup_ms=%.2f shiprocket_ms=%.2f delhivery_ms=%.2f shiprocket_ok=%s delhivery_ok=%s",
+        (time.perf_counter() - request_started) * 1000, context_ms, pickup_ms,
+        provider_timings.get("shiprocket", 0), provider_timings.get("delhivery", 0),
+        not isinstance(shiprocket_result, Exception), not isinstance(delhivery_result, Exception),
+    )
     return {
         "provider": "multi",
         "pickup_postcode": pickup_postcode,

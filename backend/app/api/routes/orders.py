@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import time
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import re
@@ -153,7 +155,7 @@ async def _load_orders(db: Session, *, force_refresh: bool = False) -> list[Shop
     try:
         orders = await ShopifyService().get_latest_orders(force_refresh=force_refresh)
         operations_map = OrderOperationsStore.all()
-        shipments = get_shipments_by_order_id(db)
+        shipments = get_shipments_by_order_id(db, [order.order_id for order in orders])
         merged_orders: list[ShopifyOrder] = []
         for order in orders:
             shipment = shipments.get(order.order_id)
@@ -400,7 +402,10 @@ async def list_orders(
         raise HTTPException(status_code=422, detail="Unknown attempt filter.")
     if pending_view not in {"follow_up", "on_hold"}:
         raise HTTPException(status_code=422, detail="Unknown previous-pending view.")
+    request_started = time.perf_counter()
+    shopify_started = time.perf_counter()
     orders = await _load_orders(db)
+    shopify_ms = (time.perf_counter() - shopify_started) * 1000
     now = datetime.now(timezone.utc)
     allowed_engage_filters = {"all", "pending", "successful", "cancelled", "disabled", "unknown"}
     if any(value not in allowed_engage_filters for value in (order_confirmation, address_verification, cod_to_prepaid)):
@@ -423,6 +428,11 @@ async def list_orders(
     total_pages = max(1, (total + page_size - 1) // page_size)
     effective_page = min(page, total_pages)
     start = (effective_page - 1) * page_size
+    logging.getLogger(__name__).info(
+        "orders_list total_ms=%.2f shopify_context_ms=%.2f filter_merge_ms=%.2f orders_processed=%d",
+        (time.perf_counter() - request_started) * 1000, shopify_ms,
+        (time.perf_counter() - request_started) * 1000 - shopify_ms, len(orders),
+    )
     return OrdersPage(items=filtered[start:start + page_size], page=effective_page, page_size=page_size, total=total, total_pages=total_pages, counts=counts)
 
 
@@ -430,8 +440,7 @@ async def list_orders(
 async def get_order_operations(order_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
     operations = OrderOperationsStore.get(order_id)
     try:
-        orders = await ShopifyService().get_latest_orders()
-        order = next((value for value in orders if value.order_id == order_id), None)
+        order = await ShopifyService().get_order(order_id)
     except (ShopifyConfigurationError, httpx.HTTPError):
         order = None
     if order is not None:
@@ -728,7 +737,10 @@ async def add_call_log(order_id: str, payload: CallLogPayload, request: Request)
         "operator": current_actor(request),
         "comment": payload.comment,
     }
-    return OrderOperationsStore.append_call_log(order_id, entry)
+    started = time.perf_counter()
+    saved = OrderOperationsStore.append_call_log(order_id, entry)
+    logging.getLogger(__name__).info("cod_call_save persistence_ms=%.2f", (time.perf_counter() - started) * 1000)
+    return saved
 
 
 @router.post("/{order_id}/whatsapp/cod-confirmation-opened")

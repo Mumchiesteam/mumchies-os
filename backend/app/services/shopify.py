@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -13,6 +14,8 @@ import httpx
 
 from app.core.config import settings
 from app.schemas.orders import ExternalTracking, OrderProduct, ShippingAddress, ShopifyOrder
+
+LOGGER = logging.getLogger(__name__)
 
 # Safe, confident tracking-URL templates for a small set of known providers - reuses the exact
 # pattern already used elsewhere in this codebase (see DelhiveryService/normalize_tracking).
@@ -47,7 +50,11 @@ class ShopifyService:
     _token_lock = asyncio.Lock()
     _orders_cache: dict[tuple[str, str], tuple[float, list[ShopifyOrder]]] = {}
     _reporting_orders_cache: dict[tuple[str, str, str, str], tuple[float, list[ShopifyOrder]]] = {}
+    # Operational reads and historical reporting have deliberately separate
+    # coordination. A long Analytics query must never queue an Orders request.
     _orders_lock = asyncio.Lock()
+    _reporting_orders_lock = asyncio.Lock()
+    _repeat_refresh_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
     _orders_cache_ttl_seconds = 300
 
     def __init__(
@@ -370,26 +377,67 @@ class ShopifyService:
         if limit is None and not force_refresh:
             cached = self._orders_cache.get(cache_key)
             if cached and cached[0] > time.monotonic():
+                LOGGER.info("shopify_operational cache=hit orders=%d", len(cached[1]))
                 return list(cached[1])
 
+        lock_started = time.perf_counter()
         async with self._orders_lock:
+            lock_wait_ms = (time.perf_counter() - lock_started) * 1000
             if limit is None and not force_refresh:
                 cached = self._orders_cache.get(cache_key)
                 if cached and cached[0] > time.monotonic():
                     return list(cached[1])
 
+            fetch_started = time.perf_counter()
             orders = await self._fetch_orders(limit)
+            LOGGER.info(
+                "shopify_operational cache=miss lock_wait_ms=%.2f fetch_ms=%.2f orders=%d",
+                lock_wait_ms, (time.perf_counter() - fetch_started) * 1000, len(orders),
+            )
             if limit is None:
                 self._orders_cache[cache_key] = (
                     time.monotonic() + self._orders_cache_ttl_seconds,
                     list(orders),
                 )
+                self._start_repeat_enrichment(cache_key, orders)
             return orders
 
     async def _fetch_orders(self, limit: int | None = None) -> list[ShopifyOrder]:
-        orders = await self._fetch_orders_for_enrichment(limit, include_transactions=True)
-        await self._enrich_repeat_customer_history(orders)
-        return orders
+        # Full customer history is intentionally not on the operational path.
+        # Unresolved repeat status remains None until the background enrichment
+        # updates the cached order objects.
+        return await self._fetch_orders_for_enrichment(limit, include_transactions=True)
+
+    def _start_repeat_enrichment(self, cache_key: tuple[str, str], orders: list[ShopifyOrder]) -> None:
+        task = self._repeat_refresh_tasks.get(cache_key)
+        if task and not task.done():
+            return
+
+        async def enrich() -> None:
+            started = time.perf_counter()
+            try:
+                await self._enrich_repeat_customer_history(orders)
+            finally:
+                LOGGER.info("shopify_repeat_enrichment duration_ms=%.2f orders=%d", (time.perf_counter() - started) * 1000, len(orders))
+                self._repeat_refresh_tasks.pop(cache_key, None)
+
+        self._repeat_refresh_tasks[cache_key] = asyncio.create_task(enrich())
+
+    async def get_order(self, order_id: str) -> ShopifyOrder:
+        """Fetch one current Shopify order without loading the 15-day queue."""
+        access_token = await self._get_access_token()
+        fields = "id,name,status,order_number,created_at,customer,email,phone,shipping_address,line_items,shipping_lines,total_price,current_total_price,total_outstanding,financial_status,fulfillment_status,cancelled_at,tags,payment_gateway_names,fulfillments"
+        url = f"https://{self.store}/admin/api/{self.api_version}/orders/{order_id}.json"
+        headers = {"X-Shopify-Access-Token": access_token}
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.get(url, params={"fields": fields}, headers=headers)
+            response.raise_for_status()
+            raw = response.json().get("order")
+            if not isinstance(raw, dict):
+                raise ShopifySyncError("Shopify returned an invalid order response.")
+            if str(raw.get("financial_status") or "").casefold() == "partially_paid":
+                raw["_transaction_summary"] = await self._transaction_summary(client, str(raw["id"]), headers)
+        return self._to_order(raw)
 
     @staticmethod
     def _repeat_email(value: object) -> str:
@@ -513,7 +561,7 @@ class ShopifyService:
         if cached and cached[0] > time.monotonic():
             return list(cached[1])
 
-        async with self._orders_lock:
+        async with self._reporting_orders_lock:
             cached = self._reporting_orders_cache.get(cache_key)
             if cached and cached[0] > time.monotonic():
                 return list(cached[1])
