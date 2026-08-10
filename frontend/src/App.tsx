@@ -793,7 +793,7 @@ function App() {
           else if (target === 'on_hold') { setQueue('previous'); setPendingView('on_hold') }
           else setQueue('all')
         }} />}
-        {activePage === 'Analytics' && <AnalyticsPage />}
+        {activePage === 'Analytics' && <AnalyticsPage showDiagnostics={['owner', 'admin'].includes(authUser?.role || '')} />}
         {activePage === 'Settings' && authUser?.role === 'owner' && <UsersPage />}
         {activePage === 'NDR' && <NDRPage />}
         {activePage === 'Reconciliation' && <div>

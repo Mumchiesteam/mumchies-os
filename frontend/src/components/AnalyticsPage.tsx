@@ -6,6 +6,7 @@ import {
   type AnalyticsData,
 } from "../services/analytics";
 import { PeriodSelector, type PeriodPreset } from "./PeriodSelector";
+import { TrackingPollerHealth } from "./TrackingPollerHealth";
 import {
   cancellationTone,
   deltaTone,
@@ -35,7 +36,7 @@ const compare = (data: AnalyticsData, key: string) => {
   );
 };
 
-export function AnalyticsPage() {
+export function AnalyticsPage({ showDiagnostics = false }: { showDiagnostics?: boolean }) {
   const today = new Date().toISOString().slice(0, 10);
   const [preset, setPreset] = useState<PeriodPreset>("last_30_days");
   const [start, setStart] = useState(today);
@@ -251,6 +252,7 @@ export function AnalyticsPage() {
           <Trend data={data} />
         </>
       )}
+      {showDiagnostics && <TrackingPollerHealth />}
     </div>
   );
 }
