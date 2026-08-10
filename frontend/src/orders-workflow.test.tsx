@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 
 import { COD_WHATSAPP_MESSAGE, MultilineField, callResultLabel, callResults, codWhatsAppUrl, indianWhatsAppNumber, shouldShowCodWhatsApp } from './App'
+import { selectAllLabelIds, selectAllLabelState } from './utils/labelSelection'
 
 describe('Orders COD workflow', () => {
   it('uses editable, full-width wrapped multiline address fields without horizontal scrolling', () => {
@@ -47,5 +48,32 @@ describe('Orders COD workflow', () => {
 
   it('hides WhatsApp for prepaid orders', () => {
     expect(shouldShowCodWhatsApp('prepaid', 'No Answer')).toBe(false)
+  })
+})
+
+describe('Labels Select All', () => {
+  const all = [
+    { order_id: '1', provider: 'shiprocket' },
+    { order_id: '2', provider: 'shiprocket' },
+    { order_id: '3', provider: 'delhivery' },
+  ]
+
+  it('selects the first displayed provider only when none is selected', () => {
+    expect([...selectAllLabelIds(all, all, new Set(), true)]).toEqual(['1', '2'])
+  })
+
+  it('selects only displayed labels for the current provider', () => {
+    const selected = selectAllLabelIds(all, [all[1], all[2]], new Set(['1']), true)
+    expect([...selected]).toEqual(['1', '2'])
+  })
+
+  it('deselects all displayed labels without changing filtered-out selections', () => {
+    const selected = selectAllLabelIds(all, [all[1], all[2]], new Set(['1', '2', '3']), false)
+    expect([...selected]).toEqual(['1'])
+  })
+
+  it('reports checked and indeterminate state for displayed eligible labels', () => {
+    expect(selectAllLabelState(all, all, new Set(['1']))).toEqual({ checked: false, indeterminate: true, eligible: 2 })
+    expect(selectAllLabelState(all, all, new Set(['1', '2']))).toEqual({ checked: true, indeterminate: false, eligible: 2 })
   })
 })
