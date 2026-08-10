@@ -50,10 +50,11 @@ def _channel_order_key(value: object) -> str:
     return str(value).strip() if value is not None else ""
 
 
-def sync_engage_orders(db: Session, orders_by_number: dict[str, str], upstream_orders: list[dict], synced_at: datetime) -> None:
+def sync_engage_orders(db: Session, orders_by_number: dict[str, str], upstream_orders: list[dict], synced_at: datetime) -> int:
     """Bulk-persist Engage fields already present in a Shiprocket Orders response."""
     upstream_by_number = {_channel_order_key(row.get("channel_order_id")): row for row in upstream_orders if isinstance(row, dict)}
     existing = get_shipments_by_order_id(db)
+    repaired = 0
     for number, order_id in orders_by_number.items():
         normalized_number = _channel_order_key(number)
         upstream = upstream_by_number.get(normalized_number)
@@ -63,19 +64,34 @@ def sync_engage_orders(db: Session, orders_by_number: dict[str, str], upstream_o
         if shipment is None:
             shipment = ShiprocketShipment(order_id=order_id)
             db.add(shipment)
+        elif (
+            shipment.provider is None
+            and shipment.provider_order_id == normalized_number
+            and shipment.shipment_id is None
+            and shipment.awb is None
+            and shipment.booking_status is None
+            and shipment.booking_mode is None
+            and shipment.booking_confidence is None
+            and shipment.reconciliation_status is None
+            and shipment.booked_at is None
+        ):
+            # Legacy Engage synchronization stored the merchant/channel reference
+            # as provider evidence. The authoritative order-number mapping supplied
+            # to this function proves this exact null-evidence row is contaminated.
+            shipment.provider_order_id = None
+            repaired += 1
         engage = upstream.get("engage")
         engage = engage if isinstance(engage, dict) else None
         shipment.shiprocket_order_id = str(upstream.get("id")) if upstream.get("id") is not None else shipment.shiprocket_order_id
-        # The channel order number is a Shiprocket reference only. Never overwrite
-        # another provider's canonical identifier while syncing Engage metadata.
-        if str(shipment.provider or "").casefold() in {"", "shiprocket"}:
-            shipment.provider_order_id = normalized_number
+        # channel_order_id is only the merchant matching key. It must never become
+        # canonical provider booking evidence.
         shipment.engage_order_id = str(engage.get("engage_order_id")) if engage and engage.get("engage_order_id") is not None else None
         for field in ("order_confirmation", "order_confirmation_message", "address_confirmation", "address_confirmation_message", "cod_to_prepaid", "cod_to_prepaid_message"):
             setattr(shipment, field, engage.get(field) if engage else None)
         shipment.engage_raw_status = engage
         shipment.engage_last_synced_at = synced_at
     db.commit()
+    return repaired
 
 
 def snapshot(shipment: ShiprocketShipment | None) -> dict[str, object | None]:

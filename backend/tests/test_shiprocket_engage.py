@@ -32,7 +32,8 @@ def test_engage_response_preserves_numeric_and_string_values(pending, successful
     assert saved["order_confirmation"] == successful
     assert saved["address_confirmation"] == pending
     assert saved["cod_to_prepaid"] == disabled
-    assert stored.provider_order_id == "323444"
+    assert stored.provider_order_id is None
+    assert stored.shiprocket_order_id == "77"
     assert stored.engage_raw_status == engage
     assert "engage_raw_status" not in saved
 
@@ -66,6 +67,59 @@ def test_engage_sync_does_not_overwrite_shadowfax_provider_identifier():
     assert shipment.provider_order_id is None
     assert shipment.provider == "shadowfax"
     assert shipment.shiprocket_order_id == "77"
+
+
+def test_engage_sync_never_overwrites_genuine_provider_identifier():
+    db = session()
+    shipment = ShiprocketShipment(
+        order_id="shopify-2", provider="shiprocket", provider_order_id="genuine-provider-id",
+        shipment_id="shipment-2", awb="awb-2", booking_status="booked",
+        booked_at=datetime.now(timezone.utc),
+    )
+    db.add(shipment)
+    db.commit()
+
+    repaired = sync_engage_orders(
+        db, {"324663": shipment.order_id},
+        [{"id": 88, "channel_order_id": "324663", "engage": {"order_confirmation": 2}}],
+        datetime.now(timezone.utc),
+    )
+
+    db.refresh(shipment)
+    assert repaired == 0
+    assert shipment.provider_order_id == "genuine-provider-id"
+    assert shipment.shiprocket_order_id == "88"
+    assert shipment.order_confirmation == 2
+
+
+def test_engage_sync_repairs_only_matching_null_evidence_channel_reference():
+    db = session()
+    contaminated = ShiprocketShipment(order_id="shopify-324663", provider_order_id="324663")
+    mismatched = ShiprocketShipment(order_id="shopify-other", provider_order_id="not-324664")
+    protected = ShiprocketShipment(order_id="shopify-booked", provider_order_id="324665", booking_status="pending_awb")
+    manual = ShiprocketShipment(order_id="shopify-manual", provider_order_id="324666", booking_mode="manual")
+    db.add_all([contaminated, mismatched, protected, manual])
+    db.commit()
+
+    repaired = sync_engage_orders(
+        db,
+        {"324663": contaminated.order_id, "324664": mismatched.order_id, "324665": protected.order_id, "324666": manual.order_id},
+        [
+            {"id": 101, "channel_order_id": "324663", "engage": {"address_confirmation": 1}},
+            {"id": 102, "channel_order_id": "324664", "engage": {}},
+            {"id": 103, "channel_order_id": "324665", "engage": {}},
+            {"id": 104, "channel_order_id": "324666", "engage": {}},
+        ],
+        datetime.now(timezone.utc),
+    )
+
+    assert repaired == 1
+    assert get_shipment(db, contaminated.order_id).provider_order_id is None
+    assert get_shipment(db, contaminated.order_id).shiprocket_order_id == "101"
+    assert get_shipment(db, contaminated.order_id).address_confirmation == 1
+    assert get_shipment(db, mismatched.order_id).provider_order_id == "not-324664"
+    assert get_shipment(db, protected.order_id).provider_order_id == "324665"
+    assert get_shipment(db, manual.order_id).provider_order_id == "324666"
 
 
 def test_engage_filter_categories_and_summary_counts():
