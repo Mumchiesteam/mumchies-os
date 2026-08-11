@@ -81,18 +81,19 @@ async def test_full_counts_do_not_follow_page_size_or_page(monkeypatch):
     assert len(page_1_20.items) == len(page_2_20.items) == 20
 
 
-def test_untouched_prepaid_from_prior_date_is_previous():
+def test_untouched_prepaid_remains_fresh_regardless_of_age():
     order = queue_order("101", payment_type="prepaid", created_date="2025-01-01T00:00:00+00:00", human_action_count=0)
     now = datetime(2026, 8, 11, 6, tzinfo=timezone.utc)
-    assert routes._is_fresh_order(order, now) is False
-    assert routes._matches_queue(order, "previous", now) is True
+    assert routes._is_fresh_order(order, now) is True
+    assert routes._matches_queue(order, "previous", now) is False
 
 
-def test_current_day_unresolved_calls_remain_fresh_regardless_of_attempt_count():
+def test_failed_contact_is_previous_pending_even_when_created_today():
     no_call = queue_order("102", created_date="2026-08-11T04:30:00Z", payment_type="cod", call_attempt_count=0, latest_call_result=None)
     attempt_one = queue_order("103", created_date="2026-08-11T04:30:00Z", payment_type="cod", call_attempt_count=1, latest_call_result="No Answer", human_action_count=1)
     assert routes._is_fresh_order(no_call, QUEUE_NOW) is True
-    assert routes._is_fresh_order(attempt_one, QUEUE_NOW) is True
+    assert routes._is_fresh_order(attempt_one, QUEUE_NOW) is False
+    assert routes._matches_queue(attempt_one, "previous", QUEUE_NOW, "follow_up") is True
 
 
 def test_cod_attempt_one_is_previous_pending():
@@ -108,20 +109,22 @@ def test_attempt_one_follow_up_outcomes_are_previous_pending(outcome):
 
 
 @pytest.mark.parametrize("outcome", ["Confirmed", "Wrong Number"])
-def test_unresolved_non_follow_up_outcomes_remain_previous_pending(outcome):
+def test_unresolved_non_follow_up_outcomes_use_fresh_fallback(outcome):
     order = queue_order("110", payment_type="cod", call_attempt_count=1, latest_call_result=outcome, human_action_count=1, operational_status="Ready for Booking" if outcome == "Confirmed" else "Needs Review")
-    assert routes._matches_queue(order, "previous", datetime.now(timezone.utc)) is True
+    assert routes._matches_queue(order, "fresh", datetime.now(timezone.utc)) is True
+    assert routes._matches_queue(order, "previous", datetime.now(timezone.utc)) is False
     assert order.call_attempt_count == 1
 
 
 @pytest.mark.anyio
-async def test_confirmed_unbooked_order_is_previous_and_retains_history(monkeypatch):
+async def test_confirmed_unbooked_order_uses_fresh_fallback_and_retains_history(monkeypatch):
     confirmed = queue_order("111", payment_type="cod", call_attempt_count=1, latest_call_result="Confirmed", human_action_count=1, operational_status="Ready for Booking")
     async def load(_db): return [confirmed]
     monkeypatch.setattr(routes, "_load_orders", load)
-    result = await routes.list_orders(queue="previous", db=None)
+    result = await routes.list_orders(queue="fresh", db=None)
     assert [item.order_number for item in result.items] == ["111"]
-    assert result.counts["previous"] == 1
+    assert result.counts["fresh"] == 1
+    assert result.counts["previous"] == 0
     assert confirmed.call_attempt_count == 1
 
 
@@ -203,10 +206,27 @@ def test_today_ready_for_booking_remains_fresh() -> None:
     assert not routes._matches_queue(order, "previous", QUEUE_NOW)
 
 
-def test_prior_day_ready_for_booking_is_previous_pending() -> None:
+def test_prior_day_ready_for_booking_uses_safe_fresh_fallback() -> None:
     order = queue_order("324686", created_date="2026-08-10T04:30:00Z", payment_type="prepaid", human_action_count=2, operational_status="Ready for Booking")
-    assert not routes._matches_queue(order, "fresh", QUEUE_NOW)
-    assert routes._matches_queue(order, "previous", QUEUE_NOW, "follow_up")
+    assert routes._matches_queue(order, "fresh", QUEUE_NOW)
+    assert not routes._matches_queue(order, "previous", QUEUE_NOW, "follow_up")
+
+
+def test_fixture_counts_restore_action_semantics_without_mass_migration() -> None:
+    sample = [
+        queue_order("401", created_date="2026-08-01T04:30:00Z", payment_type="prepaid", human_action_count=0),
+        queue_order("402", created_date="2026-08-01T04:30:00Z", payment_type="cod", call_attempt_count=0),
+        queue_order("403", created_date="2026-08-11T04:30:00Z", payment_type="cod", call_attempt_count=1, latest_call_result="Busy", human_action_count=1),
+        queue_order("404", created_date="2026-08-11T04:30:00Z", payment_type="cod", call_attempt_count=1, latest_call_result="On Hold", human_action_count=1),
+        queue_order("405", created_date="2026-08-10T04:30:00Z", payment_type="prepaid", human_action_count=2, operational_status="Ready for Booking"),
+        queue_order("406", created_date="2026-08-11T04:30:00Z", payment_type="prepaid", human_action_count=2, operational_status="Ready for Booking"),
+    ]
+    fresh = [order.order_number for order in sample if routes._matches_queue(order, "fresh", QUEUE_NOW)]
+    follow_up = [order.order_number for order in sample if routes._matches_queue(order, "previous", QUEUE_NOW, "follow_up")]
+    on_hold = [order.order_number for order in sample if routes._matches_queue(order, "previous", QUEUE_NOW, "on_hold")]
+    assert fresh == ["401", "402", "405", "406"]
+    assert follow_up == ["403"]
+    assert on_hold == ["404"]
 
 
 def test_booked_label_pending_and_printed_today_are_routed_exclusively() -> None:

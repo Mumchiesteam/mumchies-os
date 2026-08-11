@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import re
 from zoneinfo import ZoneInfo
@@ -267,21 +267,21 @@ def _requires_operational_action(order: ShopifyOrder) -> bool:
     return True
 
 
-def _order_local_date(order: ShopifyOrder) -> date | None:
-    try:
-        created = datetime.fromisoformat(str(order.created_date).replace("Z", "+00:00"))
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
-        return created.astimezone(ZoneInfo("Asia/Kolkata")).date()
-    except (TypeError, ValueError):
-        return None
+def _matches_original_fresh_rules(order: ShopifyOrder) -> bool:
+    if order.payment_type == "prepaid":
+        return order.human_action_count == 0
+    if order.payment_type in {"cod", "partial_cod"}:
+        return order.call_attempt_count == 0
+    return order.human_action_count == 0
 
 
 def _is_fresh_order(order: ShopifyOrder, now: datetime | None = None) -> bool:
+    """Apply the historical Fresh rules, then safely catch actionable fallthroughs."""
     if not _requires_operational_action(order):
         return False
-    reference = now or datetime.now(timezone.utc)
-    return _order_local_date(order) == reference.astimezone(ZoneInfo("Asia/Kolkata")).date()
+    if _matches_original_fresh_rules(order):
+        return True
+    return not (_call_outcome_requires_follow_up(order) or _call_outcome_is_on_hold(order))
 
 
 def _call_outcome_requires_follow_up(order: ShopifyOrder) -> bool:
@@ -336,9 +336,9 @@ def _base_filtered_orders(orders: list[ShopifyOrder], search: str, payment: str,
 
 def _full_counts(orders: list[ShopifyOrder], now: datetime, db: Session) -> dict[str, int | float]:
     fresh = [order for order in orders if _matches_queue(order, "fresh", now)]
-    previous = [order for order in orders if _requires_operational_action(order) and not _is_fresh_order(order, now)]
-    follow_up = [order for order in previous if not _call_outcome_is_on_hold(order)]
-    on_hold = [order for order in previous if _call_outcome_is_on_hold(order)]
+    follow_up = [order for order in orders if _matches_queue(order, "previous", now, "follow_up")]
+    on_hold = [order for order in orders if _matches_queue(order, "previous", now, "on_hold")]
+    previous = follow_up + on_hold
     cod = [order for order in orders if order.payment_type in {"cod", "partial_cod"}]
     prepaid = [order for order in orders if order.payment_type == "prepaid"]
     high_risk = [order for order in orders if "high" in " ".join(order.tags).casefold() and not _is_inactive(order)]
@@ -371,9 +371,9 @@ def _matches_queue(order: ShopifyOrder, queue: str, now: datetime, pending_view:
     if queue == "fresh":
         return _is_fresh_order(order, now)
     if queue == "previous":
-        if not _requires_operational_action(order) or _is_fresh_order(order, now):
+        if not _requires_operational_action(order):
             return False
-        return _call_outcome_is_on_hold(order) if pending_view == "on_hold" else not _call_outcome_is_on_hold(order)
+        return _call_outcome_is_on_hold(order) if pending_view == "on_hold" else _call_outcome_requires_follow_up(order)
     if queue == "labels_to_print":
         return shipment.get("booking_status") == "booked" and bool(shipment.get("awb")) and shipment.get("label_print_status") == "not_printed"
     if queue == "awaiting_confirmation":
