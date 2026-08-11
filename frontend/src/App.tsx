@@ -96,7 +96,7 @@ type CourierQuote = {
   rate_note: string
 }
 
-const navItems = ['Dashboard', 'Analytics', 'Orders', 'NDR', 'Reconciliation', 'Settings'] as const
+const navItems = ['Dashboard', 'Orders', 'Analytics', 'NDR', 'Reconciliation', 'Settings'] as const
 export const workspaceLoadsForPage = (page: typeof navItems[number]) => ({
   orders: page === 'Orders',
   reconciliation: page === 'Reconciliation',
