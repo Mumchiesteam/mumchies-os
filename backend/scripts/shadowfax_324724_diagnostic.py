@@ -201,6 +201,9 @@ async def main() -> None:
     _progress(f"Payment type: {order.payment_type}")
     _progress(f"Destination pincode: {order.shipping_address.pincode}")
     _progress(f"Order total: {float(order.order_total):.2f}")
+    if not isinstance(operations.get("package_details"), dict) or not operations.get("package_details"):
+        _progress("Package details missing in OS. Save package weight/dimensions for order 324724 first.")
+        return
 
     _progress("Building payload...")
     payload = deepcopy(await _build_payload(order, operations))
