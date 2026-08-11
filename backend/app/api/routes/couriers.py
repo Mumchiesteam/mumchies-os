@@ -562,8 +562,9 @@ async def save_manual_shadowfax_shipment(order_id: str, payload: ManualShadowfax
         booking_note=str(payload.note or "").strip() or None,
     )
     OrderOperationsStore.record_timeline_event(order_id, "shadowfax_manual_shipment_recorded", operator=actor)
+    cleanup = await _cleanup_unused_shiprocket_order(order_id, order.order_number, actor)
     synchronized = await _sync_shopify_after_booking(db, order) if awb else shipment_snapshot(saved)
-    return {"provider": "shadowfax", "shipment": synchronized or shipment_snapshot(saved)}
+    return {"provider": "shadowfax", "shipment": synchronized or shipment_snapshot(saved), "shiprocket_cleanup": cleanup, "warning": cleanup.get("error")}
 
 
 @booking_router.post("/shadowfax-test-324663")
@@ -971,9 +972,9 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
             )
             OrderOperationsStore.save_selected_courier(order_id, selected)
             _activate_new_label_tracking(db, order_id, result)
+            cleanup = await _cleanup_unused_shiprocket_order(order_id, order.order_number, actor)
             synchronized = await _sync_shopify_after_booking(db, order)
             OrderOperationsStore.record_timeline_event(order_id, "shipment_booked", operator=actor, details={"provider": "delhivery"})
-            cleanup = await _cleanup_unused_shiprocket_order(order_id, order.order_number, actor)
             return {"provider": "delhivery", **result, "shipment": synchronized or result.get("shipment"), "shiprocket_cleanup": cleanup, "warning": cleanup.get("error")}
 
         order_payload = _build_shiprocket_order_payload(order, operations, package)
@@ -1023,14 +1024,23 @@ async def _cleanup_unused_shiprocket_order(order_id: str, channel_order_id: str,
         if not upstream:
             result = {"status": "not_applicable"}
         else:
-            _shipment_id, awb = service._upstream_shipment(upstream)
+            exact_match = str(upstream.get("channel_order_id") or "").strip() == str(channel_order_id).strip()
+            shipment_id, awb = service._upstream_shipment(upstream)
+            shipment_rows = upstream.get("shipments")
+            has_shipment_record = isinstance(shipment_rows, list) and bool(shipment_rows)
             status = str(upstream.get("status") or "").strip().casefold()
-            if awb or status not in {"", "new", "open", "processing"}:
-                result = {"status": "protected", "awb": awb, "shiprocket_status": status, "error": "The Shiprocket order was not cancelled because it is no longer safely unbooked."}
+            if not exact_match:
+                result = {"status": "protected", "shiprocket_status": status, "error": "Shiprocket returned a non-matching channel order; cleanup was blocked."}
+            elif awb or shipment_id or has_shipment_record or status != "new":
+                result = {"status": "protected", "awb": awb, "shipment_id": shipment_id, "shiprocket_status": status, "error": "The Shiprocket order was not cancelled because it is not conclusively an unused New order."}
             else:
-                await service.cancel_unbooked_order(upstream)
-                result = {"status": "cancelled", "cancel_on_channel": False, "shiprocket_order_id": str(upstream.get("id"))}
-    except (ShiprocketAPIError, ShiprocketConfigurationError) as error:
+                cancellation = await service.cancel_unbooked_order(upstream)
+                if cancellation.get("classification") == "accepted":
+                    ShiprocketService._new_orders_cache = None
+                    result = {"status": "cancelled", "cancel_on_channel": False, "shiprocket_order_id": str(upstream.get("id"))}
+                else:
+                    result = {"status": "ambiguous", "cancel_on_channel": False, "error": "Shiprocket did not conclusively accept cleanup; no retry was attempted."}
+    except (ShiprocketAPIError, ShiprocketConfigurationError, httpx.HTTPError) as error:
         result = {"status": "failed", "cancel_on_channel": False, "error": str(error)}
     OrderOperationsStore.record_timeline_event(order_id, "shiprocket_cleanup", operator=operator, details=result)
     return result

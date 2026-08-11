@@ -354,7 +354,7 @@ async def test_cancelled_unfulfilled_order_cannot_create_manual_shadowfax_eviden
 
 @pytest.mark.anyio
 async def test_eligible_order_can_create_manual_shadowfax_evidence(monkeypatch):
-    order = SimpleNamespace(cancelled_at=None, shopify_status="open", fulfillment_status="unfulfilled", tags=[], payment_status="pending")
+    order = SimpleNamespace(order_number="324663", cancelled_at=None, shopify_status="open", fulfillment_status="unfulfilled", tags=[], payment_status="pending")
     operations = {"selected_courier": {"provider": "shadowfax"}}
     async def context(_order_id, _db): return order, operations, None
     saved = {}
@@ -364,17 +364,21 @@ async def test_eligible_order_can_create_manual_shadowfax_evidence(monkeypatch):
     monkeypatch.setattr(couriers, "upsert_shipment", persist)
     monkeypatch.setattr(couriers, "shipment_snapshot", lambda value: dict(value))
     monkeypatch.setattr(OrderOperationsStore, "record_timeline_event", lambda *_args, **_kwargs: {})
+    cleanup_calls = []
+    async def cleanup(order_id, order_number, operator): cleanup_calls.append((order_id, order_number, operator)); return {"status": "not_applicable"}
+    monkeypatch.setattr(couriers, "_cleanup_unused_shiprocket_order", cleanup)
     result = await couriers.save_manual_shadowfax_shipment("1", ManualShadowfaxPayload(provider_id="SFX-1"), authenticated_request(), None)
     assert result["shipment"]["provider"] == "shadowfax"
     assert result["shipment"]["booking_mode"] == "manual"
     assert result["shipment"]["provider_order_id"] == "SFX-1"
+    assert cleanup_calls == [("1", "324663", "Authenticated Operator")]
 
 
 @pytest.mark.anyio
 async def test_delhivery_cleanup_cancels_only_unbooked_and_failure_is_non_destructive(tmp_path, monkeypatch):
     monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
-    async def find(_self, _id): return {"id": 9, "status": "NEW", "shipments": []}
-    async def cancel(_self, _order): return {}
+    async def find(_self, _id): return {"id": 9, "channel_order_id": "323160", "status": "NEW", "shipments": []}
+    async def cancel(_self, _order): return {"classification": "accepted"}
     monkeypatch.setattr(couriers.ShiprocketService, "find_existing_order", find)
     monkeypatch.setattr(couriers.ShiprocketService, "cancel_unbooked_order", cancel)
     result = await couriers._cleanup_unused_shiprocket_order("1", "323160", "Authenticated Operator")
@@ -384,6 +388,44 @@ async def test_delhivery_cleanup_cancels_only_unbooked_and_failure_is_non_destru
     failed = await couriers._cleanup_unused_shiprocket_order("1", "323160", "Authenticated Operator")
     assert failed["status"] == "failed"
     assert OrderOperationsStore.get("1")["timeline_events"][-1]["details"]["status"] == "failed"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("upstream", [
+    {"id": 9, "channel_order_id": "wrong", "status": "NEW", "shipments": []},
+    {"id": 9, "channel_order_id": "323160", "status": "NEW", "shipments": [{"awb": "AWB1"}]},
+    {"id": 9, "channel_order_id": "323160", "status": "NEW", "shipments": [{"id": 77}]},
+    {"id": 9, "channel_order_id": "323160", "status": "NEW", "shipments": [{"status": "MANIFESTED"}]},
+    {"id": 9, "channel_order_id": "323160", "status": "PROCESSING", "shipments": []},
+    {"id": 9, "channel_order_id": "323160", "status": "READY TO SHIP", "shipments": []},
+])
+async def test_unused_shiprocket_cleanup_protects_ambiguous_or_advanced_orders(tmp_path, monkeypatch, upstream):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    async def find(_self, _id): return upstream
+    monkeypatch.setattr(couriers.ShiprocketService, "find_existing_order", find)
+    monkeypatch.setattr(couriers.ShiprocketService, "cancel_unbooked_order", lambda *_args: pytest.fail("provider cancellation must not run"))
+    result = await couriers._cleanup_unused_shiprocket_order("1", "323160", "Operator")
+    assert result["status"] == "protected"
+
+
+@pytest.mark.anyio
+async def test_accepted_cleanup_invalidates_shiprocket_new_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    async def find(_self, _id): return {"id": 9, "channel_order_id": "323160", "status": "NEW", "shipments": []}
+    async def cancel(_self, _order): return {"classification": "accepted"}
+    monkeypatch.setattr(couriers.ShiprocketService, "find_existing_order", find)
+    monkeypatch.setattr(couriers.ShiprocketService, "cancel_unbooked_order", cancel)
+    couriers.ShiprocketService._new_orders_cache = (999999999, [{"id": 9}])
+    result = await couriers._cleanup_unused_shiprocket_order("1", "323160", "Operator")
+    assert result["status"] == "cancelled"
+    assert couriers.ShiprocketService._new_orders_cache is None
+
+
+def test_delhivery_cleanup_precedes_shopify_fulfillment_sync():
+    import inspect
+    source = inspect.getsource(couriers.shiprocket_book_shipment)
+    branch = source[source.index('if provider == "delhivery"'):source.index('order_payload =')]
+    assert branch.index("_cleanup_unused_shiprocket_order") < branch.index("_sync_shopify_after_booking")
 
 
 @pytest.mark.anyio

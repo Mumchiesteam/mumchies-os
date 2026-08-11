@@ -632,7 +632,7 @@ export async function recordCodWhatsAppOpened(orderId: string): Promise<OrderOpe
   return body
 }
 
-export async function saveManualShadowfaxShipment(orderId: string, payload: { awb?: string; provider_id?: string; service_name?: string; booked_at?: string; freight?: number; note?: string }): Promise<{ provider: string; shipment: Order['shipment'] }> {
+export async function saveManualShadowfaxShipment(orderId: string, payload: { awb?: string; provider_id?: string; service_name?: string; booked_at?: string; freight?: number; note?: string }): Promise<{ provider: string; shipment: Order['shipment']; warning?: string; shiprocket_cleanup?: { status: string; error?: string } }> {
   const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/shadowfax/manual`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail || 'Could not save manual Shadowfax shipment.')

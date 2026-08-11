@@ -73,6 +73,7 @@ import { engageCategory } from './utils/engage'
 import { hasShipmentEvidence, listStatus, type OperationalStatus } from './utils/orderStatus'
 import { displayedOrderNumber, orderNumberClipboardValue, stopCopyPropagation } from './utils/orderNumber'
 import { courierSelectionMatches } from './utils/courierSelection'
+import { applyConfirmedBookingState, isConfirmedLabelBooking } from './utils/postBooking'
 
 type IconName = 'grid' | 'bag' | 'alert' | 'users' | 'chart' | 'settings' | 'search' | 'bell' | 'filter' | 'chevron' | 'more' | 'eye' | 'truck' | 'calendar' | 'close' | 'copy' | 'phone' | 'external' | 'repeat' | 'tag' | 'edit' | 'call'
 type TabKey = 'fresh' | 'previous' | 'all' | 'labels_to_print' | 'awaiting_confirmation' | 'printed_today' | 'shiprocket_cleanup'
@@ -398,6 +399,16 @@ function App() {
     setSelectedOrderSnapshot(previous => previous?.internalId === orderId ? update(previous) : previous)
   }
 
+  const applyConfirmedBooking = (orderId: string, shipment: Order['shipment']) => {
+    if (!isConfirmedLabelBooking(shipment)) return false
+    const next = applyConfirmedBookingState(orders, counts, labelQueue, orderId, shipment, queue, pendingView)
+    setOrders(next.orders)
+    setCounts(next.counts)
+    setLabelQueue(next.labels)
+    applyCanonicalShipment(orderId, shipment)
+    return true
+  }
+
   useEffect(() => {
     if (!selectedOrder) return
     let active = true
@@ -654,9 +665,7 @@ function App() {
         courier_id: String(persistedSelection.courier_id),
         ...packageNumbers,
       })
-      setOrders(prev => prev.map(order => order.internalId === selectedOrder.internalId
-        ? { ...order, shipment: result.shipment ?? order.shipment, operationalStatus: 'Booked' }
-        : order))
+      applyConfirmedBooking(selectedOrder.internalId, result.shipment ?? null)
       const reopened = await getOrderOperations(selectedOrder.internalId)
       setOperations(reopened)
       applyCanonicalShipment(selectedOrder.internalId, reopened.shipment ?? result.shipment ?? null)
@@ -675,10 +684,12 @@ function App() {
     setBookingLoading(true); setCourierError('')
     try {
       const result = await saveManualShadowfaxShipment(selectedOrder.internalId, payload)
+      applyConfirmedBooking(selectedOrder.internalId, result.shipment)
       const reopened = await getOrderOperations(selectedOrder.internalId)
       setOperations(reopened)
       applyCanonicalShipment(selectedOrder.internalId, reopened.shipment ?? result.shipment ?? null)
-      setNotice('Shadowfax manual shipment saved')
+      if (result.warning) setCourierError(`Shiprocket cleanup failed: ${result.warning}`)
+      setNotice(result.warning ? 'Shadowfax shipment saved; Shiprocket cleanup needs attention' : 'Shadowfax manual shipment saved')
     } catch (error) { setCourierError((error as Error).message); throw error } finally { setBookingLoading(false) }
   }
 
