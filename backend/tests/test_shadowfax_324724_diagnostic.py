@@ -1,14 +1,15 @@
 import pytest
 
-from scripts.shadowfax_324663_diagnostic import _json_body, _redacted_curl, _sanitize, _validate_payload
+from scripts.shadowfax_324724_diagnostic import ORDER_NUMBER, _json_body, _redacted_curl, _sanitize, _validate_payload
 
 
 def test_diagnostic_serialization_and_curl_redact_credentials():
-    payload = {"order_details": {"client_order_id": "324663", "client_name": "Mumchies Foods"}}
+    payload = {"order_details": {"client_order_id": "324724", "client_name": "Mumchies Foods"}}
     body = _json_body(payload)
     command = _redacted_curl("https://dale.shadowfax.in/api/v3/clients/orders/", body)
 
-    assert body == '{"order_details":{"client_order_id":"324663","client_name":"Mumchies Foods"}}'
+    assert body == '{"order_details":{"client_order_id":"324724","client_name":"Mumchies Foods"}}'
+    assert ORDER_NUMBER == "324724"
     assert "Authorization: Token [REDACTED]" in command
     assert "Mumchies Foods" in command
     assert "client_id" not in body
@@ -24,7 +25,7 @@ def test_diagnostic_payload_validator_accepts_current_schema_and_rejects_client_
     payload = {
         "order_type": "warehouse",
         "order_details": {
-            "client_order_id": "324663", "client_name": "Mumchies Foods", "actual_weight": 500,
+            "client_order_id": "324724", "client_name": "Mumchies Foods", "actual_weight": 500,
             "volumetric_weight": 100, "product_value": 461, "payment_mode": "Prepaid",
             "cod_amount": 0, "total_amount": 461, "order_service": "regular",
         },

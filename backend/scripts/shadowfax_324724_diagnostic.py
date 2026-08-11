@@ -1,4 +1,4 @@
-"""Manually invoked, one-shot Shadowfax diagnostic for Shopify order 324663."""
+"""Manually invoked, one-shot Shadowfax diagnostic for Shopify order 324724."""
 
 from __future__ import annotations
 
@@ -11,11 +11,9 @@ from typing import Any
 import httpx
 
 
-ORDER_NUMBER = "324663"
+ORDER_NUMBER = "324724"
 EXPECTED_PAYMENT = "prepaid"
-EXPECTED_TOTAL = 461.0
-EXPECTED_PINCODE = "492001"
-CONFIRMATION = "BOOK SHADOWFAX 324663 ONCE"
+CONFIRMATION = "BOOK SHADOWFAX 324724 ONCE"
 CREATE_PATH = "/v3/clients/orders/"
 
 
@@ -63,7 +61,7 @@ async def _load_order() -> Any:
     rows = response.json().get("orders") or []
     raw = next((row for row in rows if str(row.get("name") or row.get("order_number") or "").lstrip("#") == ORDER_NUMBER), None)
     if not isinstance(raw, dict):
-        raise ShopifySyncError("Shopify order 324663 was not returned by the bounded name lookup.")
+        raise ShopifySyncError(f"Shopify order {ORDER_NUMBER} was not returned by the bounded name lookup.")
     return service._to_order(raw)
 
 
@@ -71,24 +69,24 @@ def _assert_preflight(order: Any, operations: dict[str, Any], shipment: dict[str
     from app.services.shipment_status import has_existing_shipment_evidence
 
     if order.order_number.lstrip("#") != ORDER_NUMBER:
-        raise RuntimeError("Resolved Shopify order does not match 324663.")
+        raise RuntimeError(f"Resolved Shopify order does not match {ORDER_NUMBER}.")
     if order.cancelled_at or str(order.shopify_status or "").casefold() in {"cancelled", "canceled"}:
-        raise RuntimeError("Order 324663 is cancelled; stopping before Shadowfax.")
+        raise RuntimeError(f"Order {ORDER_NUMBER} is cancelled; stopping before Shadowfax.")
     if str(order.fulfillment_status or "unfulfilled").casefold() != "unfulfilled":
-        raise RuntimeError("Order 324663 is not unfulfilled; stopping before Shadowfax.")
+        raise RuntimeError(f"Order {ORDER_NUMBER} is not unfulfilled; stopping before Shadowfax.")
     if has_existing_shipment_evidence(order, operations, shipment):
-        raise RuntimeError("Order 324663 has existing shipment/fulfilment evidence; stopping before Shadowfax.")
+        raise RuntimeError(f"Order {ORDER_NUMBER} has existing shipment/fulfilment evidence; stopping before Shadowfax.")
     if shipment and any(shipment.get(key) for key in ("awb", "shipment_id", "provider_order_id", "booked_at")):
-        raise RuntimeError("Order 324663 has a persisted shipment identifier; stopping before Shadowfax.")
+        raise RuntimeError(f"Order {ORDER_NUMBER} has a persisted shipment identifier; stopping before Shadowfax.")
     if str((shipment or {}).get("booking_status") or "").casefold() in {"booked", "manual_confirmed"}:
-        raise RuntimeError("Order 324663 already has a confirmed booking state; stopping before Shadowfax.")
+        raise RuntimeError(f"Order {ORDER_NUMBER} already has a confirmed booking state; stopping before Shadowfax.")
     if str(order.payment_type or "").casefold() != EXPECTED_PAYMENT:
         raise RuntimeError(f"Payment changed: expected {EXPECTED_PAYMENT}, got {order.payment_type!r}.")
-    if abs(float(order.order_total) - EXPECTED_TOTAL) > 0.001:
-        raise RuntimeError(f"Order total changed: expected {EXPECTED_TOTAL}, got {order.order_total!r}.")
     pincode = str(order.shipping_address.pincode if order.shipping_address else "")
-    if pincode != EXPECTED_PINCODE:
-        raise RuntimeError(f"Destination changed: expected {EXPECTED_PINCODE}, got {pincode!r}.")
+    if not (pincode.isdigit() and len(pincode) == 6):
+        raise RuntimeError(f"Order {ORDER_NUMBER} does not have a valid six-digit destination pincode.")
+    if float(order.order_total or 0) <= 0:
+        raise RuntimeError(f"Order {ORDER_NUMBER} does not have a valid positive total.")
 
 
 async def _build_payload(order: Any, operations: dict[str, Any]) -> dict[str, Any]:
@@ -189,7 +187,7 @@ async def main() -> None:
         raise RuntimeError("SHADOWFAX_TOKEN and SHADOWFAX_BASE_URL must be configured.")
     _progress("Configuration loaded.")
 
-    _progress("Loading order 324663...")
+    _progress(f"Loading order {ORDER_NUMBER}...")
     order = await _load_order()
     from app.db.session import SessionLocal
     from app.repositories.shiprocket import get_shipment, snapshot as shipment_snapshot
@@ -199,7 +197,10 @@ async def main() -> None:
         stored = get_shipment(db, order.order_id)
         shipment = shipment_snapshot(stored) if stored else None
     _assert_preflight(order, operations, shipment)
-    _progress("Order 324663 loaded and preflight passed.")
+    _progress(f"Order {ORDER_NUMBER} loaded and preflight passed.")
+    _progress(f"Payment type: {order.payment_type}")
+    _progress(f"Destination pincode: {order.shipping_address.pincode}")
+    _progress(f"Order total: {float(order.order_total):.2f}")
 
     _progress("Building payload...")
     payload = deepcopy(await _build_payload(order, operations))
@@ -228,7 +229,7 @@ async def main() -> None:
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=10.0), follow_redirects=False) as client:
         transport = ShadowfaxHTTPTransport(token=token, base_url=base_url, client=client)
-        serviceability = await transport.serviceability({"delivery_pincode": EXPECTED_PINCODE})
+        serviceability = await transport.serviceability({"delivery_pincode": str(payload["customer_details"]["pincode"])})
         print("SERVICEABILITY:")
         print(json.dumps(_sanitize(serviceability), ensure_ascii=False, separators=(",", ":"), default=str))
         if not serviceability.get("serviceable"):
