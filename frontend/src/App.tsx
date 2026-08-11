@@ -1267,7 +1267,7 @@ const OrderDrawer = memo(function OrderDrawer({
             ]} lastSynced={order.engageLastSyncedAt ? formatDateTime(order.engageLastSyncedAt) : 'Not synced'} />
           </Section>
           <Section title="Customer">
-            <div className="grid grid-cols-2 gap-3 text-sm">
+            <div className="grid grid-cols-2 gap-2 text-sm leading-snug">
               <KeyValue label="Customer Name" value={order.customerName} />
               <div><KeyValue label="Mobile" value={order.phone || 'No phone'} />{order.phone && <CopyButton value={order.phone} label="phone number" />}</div>
               <KeyValue label="Email" value={order.email || 'No email'} />
@@ -1275,23 +1275,20 @@ const OrderDrawer = memo(function OrderDrawer({
             </div>
           </Section>
 
-          <Section title="Shipping Address">
-            <div className="mb-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-sm text-slate-600">
-              <p className={`font-medium ${hasVerifiedAddress ? 'text-emerald-700' : 'text-amber-700'}`}>{verificationLine}</p>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
+          <Section title="Shipping Address" subtitle={<span className={hasVerifiedAddress ? 'text-emerald-700' : 'text-amber-700'}>{verificationLine}</span>}>
+            <div className="grid gap-2 sm:grid-cols-2">
               <Field label="Customer Name" value={addressDraft.customer_name} onChange={value => setAddressDraft({ ...addressDraft, customer_name: value })} />
               <Field label="Phone" value={addressDraft.phone} onChange={value => setAddressDraft({ ...addressDraft, phone: value })} />
               <MultilineField label="Address Line 1" value={addressDraft.address_line1} onChange={value => setAddressDraft({ ...addressDraft, address_line1: value })} />
               <MultilineField label="Address Line 2" value={addressDraft.address_line2} onChange={value => setAddressDraft({ ...addressDraft, address_line2: value })} />
               <MultilineField label="Landmark" value={addressDraft.landmark} onChange={value => setAddressDraft({ ...addressDraft, landmark: value })} />
-              <div className="grid gap-3 sm:col-span-2 sm:grid-cols-3">
+              <div className="grid gap-2 sm:col-span-2 sm:grid-cols-3">
                 <Field label="City" value={addressDraft.city} onChange={value => setAddressDraft({ ...addressDraft, city: value })} />
                 <Field label="State" value={addressDraft.state} onChange={value => setAddressDraft({ ...addressDraft, state: value })} />
                 <Field label="PIN Code" value={addressDraft.pincode} onChange={value => setAddressDraft({ ...addressDraft, pincode: value })} />
               </div>
             </div>
-            <div className="mt-4 flex flex-wrap gap-2">
+            <div className="mt-3 flex flex-wrap gap-2">
               <button onClick={() => { setAddressReviewLoading(true); void onSaveAddress().then(result => { if (result) setAddressReview(result.validation) }).finally(() => setAddressReviewLoading(false)) }} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white">{addressReviewLoading ? 'Saving & Verifying…' : 'Save & Verify Address'}</button>
               <button onClick={() => { const query = [addressDraft.address_line1, addressDraft.address_line2, addressDraft.landmark, addressDraft.city, addressDraft.state, addressDraft.pincode, 'India'].filter(Boolean).join(', '); window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`, '_blank', 'noopener,noreferrer') }} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600">Open in Google Maps</button>
             </div>
@@ -1309,9 +1306,9 @@ const OrderDrawer = memo(function OrderDrawer({
           </Section>
 
           <Section title="Products">
-            <div className="space-y-3">
+            <div className="space-y-2">
               {order.products.map(product => (
-                <div key={`${order.internalId}-${product.productName}-${product.sku || 'na'}`} className="rounded-lg border border-slate-100 p-3">
+                <div key={`${order.internalId}-${product.productName}-${product.sku || 'na'}`} className="rounded-lg border border-slate-100 p-2.5">
                   <div className="flex justify-between gap-3">
                     <div>
                       <p className="text-sm font-semibold">{product.productName}</p>
@@ -1377,7 +1374,7 @@ const OrderDrawer = memo(function OrderDrawer({
           </Section>
 
           <Section title="Courier Booking">
-            <div className="space-y-4 text-sm text-slate-600">
+            <div className="space-y-3 text-sm text-slate-600">
               {hasShipmentEvidence(order) && !shipment ? (
                 <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-600">
                   This order already has an existing shipment or fulfilment (see Tracking above). Booking controls are unavailable to prevent a duplicate shipment.
@@ -1403,11 +1400,11 @@ const OrderDrawer = memo(function OrderDrawer({
               {selectedCourier?.provider === 'delhivery' && !selectedCourier.booking_supported && <p className="text-xs text-amber-700">Direct Delhivery booking is unavailable because the provider is not configured or this destination is not serviceable.</p>}
               {courierLoading && <p className="text-sm text-slate-500">Loading courier options…</p>}
               {courierOptions.length > 0 && (
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   {courierOptions.map(option => {
                     const selected = option.courier_id === selectedCourierId
                     return (
-                      <button key={`${option.courier_name}-${option.courier_id}`} onClick={() => void onSelectCourier(option)} className={`w-full rounded-xl border p-3 text-left transition ${selected ? 'border-[#ff6b35] bg-orange-50/60' : 'border-slate-200 bg-white hover:bg-slate-50'}`}>
+                      <button key={`${option.courier_name}-${option.courier_id}`} onClick={() => void onSelectCourier(option)} className={`w-full rounded-xl border p-2.5 text-left transition ${selected ? 'border-[#ff6b35] bg-orange-50/60' : 'border-slate-200 bg-white hover:bg-slate-50'}`}>
                         <div className="flex items-start justify-between gap-3">
                           <div>
                             <div className="flex items-center gap-2">
@@ -1453,7 +1450,7 @@ const OrderDrawer = memo(function OrderDrawer({
                 {!manualShadowfax.awb.trim() && !manualShadowfax.provider_id.trim() && <p className="text-xs text-amber-700">Enter an AWB or Shadowfax shipment/order ID.</p>}
               </div>}
               {shipment && (
-                <div className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
+                <div className="grid gap-x-4 gap-y-1 rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2.5 text-sm leading-snug text-emerald-800 sm:grid-cols-2">
                   <p className="font-semibold">Provider: {shipment.provider || 'Shiprocket'}</p>
                   <p>Booking status: {shipment.booking_status || '—'}</p>
                   <p>Courier: {shipment.courier_name || '—'}</p>
@@ -1467,12 +1464,12 @@ const OrderDrawer = memo(function OrderDrawer({
                   {shipment.booking_operator && <p>Operator: {shipment.booking_operator}</p>}
                   {shipment.booking_note && <p>Note: {shipment.booking_note}</p>}
                   {shipment.provider && shipment.shipment_id && (
-                    <button onClick={onRefreshShipment} disabled={shipmentRefreshLoading} className="mt-2 rounded-md border border-emerald-200 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-800 disabled:opacity-60">
+                    <button onClick={onRefreshShipment} disabled={shipmentRefreshLoading} className="mt-1 rounded-md border border-emerald-200 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-800 disabled:opacity-60 sm:col-span-2 sm:justify-self-start">
                       {shipmentRefreshLoading ? 'Refreshing…' : 'Refresh Shipment Status'}
                     </button>
                   )}
-                  {(shipment.booking_confidence === 'uncertain' || shipment.reconciliation_status === 'pending' || shipment.reconciliation_status === 'manual_review') && <button onClick={onReconcileShipment} disabled={shipmentRefreshLoading} className="ml-2 mt-2 rounded-md border border-amber-200 bg-white px-3 py-1.5 text-xs font-semibold text-amber-800 disabled:opacity-60">Retry Verification</button>}
-                  {shipment.reconciliation_error && <p className="mt-2 text-xs text-rose-700">{shipment.reconciliation_error}</p>}
+                  {(shipment.booking_confidence === 'uncertain' || shipment.reconciliation_status === 'pending' || shipment.reconciliation_status === 'manual_review') && <button onClick={onReconcileShipment} disabled={shipmentRefreshLoading} className="mt-1 rounded-md border border-amber-200 bg-white px-3 py-1.5 text-xs font-semibold text-amber-800 disabled:opacity-60 sm:justify-self-start">Retry Verification</button>}
+                  {shipment.reconciliation_error && <p className="text-xs text-rose-700 sm:col-span-2">{shipment.reconciliation_error}</p>}
                 </div>
               )}
               {courierOptions.length === 0 && !courierLoading && !courierError && <p className="text-xs text-slate-500">{courierSyncMessage || (canCheckCouriers ? 'No courier options are available.' : 'Complete the requirements above to load courier options automatically.')}</p>}
@@ -1577,14 +1574,14 @@ function Field({ label, value, onChange, testId }: { label: string; value: strin
 }
 
 export function MultilineField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
-  return <label className="block sm:col-span-2"><span className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-slate-400">{label}</span><textarea rows={2} value={value} onChange={event => onChange(event.target.value)} className="w-full resize-y overflow-x-hidden whitespace-pre-wrap break-words rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-orange-300 focus:ring-2 focus:ring-orange-100" /></label>
+  return <label className="block sm:col-span-2"><span className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-slate-400">{label}</span><textarea rows={1} value={value} onChange={event => onChange(event.target.value)} className="min-h-[42px] w-full resize-y overflow-x-hidden whitespace-pre-wrap break-words rounded-lg border border-slate-200 px-3 py-2 text-sm leading-snug outline-none focus:border-orange-300 focus:ring-2 focus:ring-orange-100" /></label>
 }
 
 function KeyValue({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg bg-slate-50 px-3 py-2">
+    <div className="rounded-lg bg-slate-50 px-3 py-1.5 leading-snug">
       <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">{label}</p>
-      <p className="mt-1 text-sm font-semibold text-slate-700">{value}</p>
+      <p className="mt-0.5 text-sm font-semibold text-slate-700">{value}</p>
     </div>
   )
 }
@@ -1593,8 +1590,8 @@ function Line({ label, value }: { label: string; value: string }) {
   return <div className="flex justify-between text-slate-600"><span>{label}</span><span className="font-medium">{value}</span></div>
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
-  return <section className="border-b border-slate-100 px-5 py-5"><h3 className="mb-4 text-sm font-bold text-slate-800">{title}</h3>{children}</section>
+function Section({ title, subtitle, children }: { title: string; subtitle?: ReactNode; children: ReactNode }) {
+  return <section className="border-b border-slate-100 px-5 py-4"><div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5"><h3 className="text-sm font-bold text-slate-800">{title}</h3>{subtitle && <p className="text-xs font-medium">{subtitle}</p>}</div>{children}</section>
 }
 
 export default App
