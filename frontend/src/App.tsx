@@ -144,7 +144,7 @@ const reconciliationRecordToOrder = (record: ReconciliationRecord): Order => {
     addressVerified: false, addressVerifiedAt: null, addressVerifiedBy: null, verifiedAddressSnapshot: null, correctedAddress: null,
     courierSyncStatus: null, courierSyncError: null, addressSyncResults: null, packageDetails: null, selectedCourier: null, shipment: null, externalTracking: null,
     engageOrderId: null, orderConfirmation: null, orderConfirmationMessage: null, addressConfirmation: null,
-    addressConfirmationMessage: null, codToPrepaid: null, codToPrepaidMessage: null, engageLastSyncedAt: null,
+    addressConfirmationMessage: null, codToPrepaid: null, codToPrepaidMessage: null, engageLastSyncedAt: null, customerCancellationRequested: false,
   }
 }
 const riskStyle: Record<RiskLevel, string> = { High: 'bg-rose-50 text-rose-700 ring-rose-100', Medium: 'bg-amber-50 text-amber-700 ring-amber-100', Low: 'bg-emerald-50 text-emerald-700 ring-emerald-100' }
@@ -1215,6 +1215,7 @@ const OrderDrawer = memo(function OrderDrawer({
     'package breadth': 'Package breadth missing',
     'package height': 'Package height missing',
     'operational status must be Ready for Booking': 'Order status must be Ready for Booking',
+    'customer requested cancellation': 'Customer requested cancellation',
   }
   const visibleMissing = [
     ...nonPackageMissing.map(requirement => requirementLabels[requirement] || requirement),
@@ -1248,7 +1249,7 @@ const OrderDrawer = memo(function OrderDrawer({
             <h2 className="mt-0.5 flex items-center gap-1 text-lg font-bold">Order {displayedOrderNumber(order.orderNumber)}<CopyButton value={orderNumberClipboardValue(order.orderNumber)} label="order number" /></h2>
             <div className="mt-2 flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-600">
                 <span className="rounded-full bg-amber-50 px-2.5 py-1 text-amber-700">{order.payment}</span>
-                <span className={`rounded-full px-2.5 py-1 ${status === 'Booked' ? 'bg-emerald-50 text-emerald-700' : status === 'Cancelled' ? 'bg-rose-50 text-rose-700' : 'bg-slate-100 text-slate-700'}`}>{status}</span>
+                <span className={`rounded-full px-2.5 py-1 ${status === 'Booked' ? 'bg-emerald-50 text-emerald-700' : status === 'Cancelled' ? 'bg-rose-50 text-rose-700' : status === 'Customer Requested Cancellation' ? 'bg-amber-100 text-amber-900 ring-1 ring-amber-300' : 'bg-slate-100 text-slate-700'}`}>{status}</span>
                 <span className={`rounded-full px-2.5 py-1 ${riskStyle[order.risk]}`}>{order.risk} Risk</span>
                 <span className="rounded-full bg-slate-100 px-2.5 py-1 text-slate-700">{formatDate(order.createdAt)}</span>
               <span className="rounded-full bg-slate-100 px-2.5 py-1 text-slate-700">{formatMoney(order.amount)}</span>
@@ -1265,6 +1266,7 @@ const OrderDrawer = memo(function OrderDrawer({
               { abbreviation: 'AV', name: 'Address Verification', value: order.addressConfirmation, message: order.addressConfirmationMessage },
               { abbreviation: 'CP', name: 'COD → Prepaid', value: order.codToPrepaid, message: order.codToPrepaidMessage },
             ]} lastSynced={order.engageLastSyncedAt ? formatDateTime(order.engageLastSyncedAt) : 'Not synced'} />
+            {order.customerCancellationRequested && <p role="alert" className="mt-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-bold text-amber-900">Customer Requested Cancellation</p>}
           </Section>
           <Section title="Customer">
             <div className="grid grid-cols-2 gap-2 text-sm leading-snug">

@@ -17,6 +17,7 @@ from typing import Any
 # operational states (Ready for Booking, Address Verification Pending, Call Pending, ...) and,
 # once reached, block courier eligibility and booking.
 SHIPMENT_BACKED_STATUSES = {"Booked", "Shipped", "In Transit", "Out for Delivery", "Delivered", "NDR"}
+CUSTOMER_CANCELLATION_STATUS = "Customer Requested Cancellation"
 
 _SHIPPED_KEYWORDS = ("shipped", "dispatched", "picked up", "in transit", "in_transit", "out for delivery")
 _CONFIRMED_BOOKING_STATUSES = {"booked", "complete", "completed", "awb_assigned"}
@@ -29,6 +30,30 @@ def _text(value: Any) -> str:
 
 def _tags_text(order: Any) -> str:
     return " ".join(str(tag) for tag in (getattr(order, "tags", None) or [])).casefold()
+
+
+def has_customer_cancellation_request(order: Any, shipment: dict[str, Any] | None = None) -> bool:
+    """Engage order-confirmation value 3 is a request, not Shopify cancellation evidence."""
+    value = getattr(order, "order_confirmation", None)
+    if value is None:
+        value = (shipment or {}).get("order_confirmation")
+    return str(value).strip() == "3"
+
+
+def customer_cancellation_requires_action(order: Any, shipment: dict[str, Any] | None = None) -> bool:
+    if not has_customer_cancellation_request(order, shipment):
+        return False
+    if getattr(order, "cancelled_at", None) or _text(getattr(order, "shopify_status", None)) in {"cancelled", "canceled"}:
+        return False
+    fulfillment = _text(getattr(order, "fulfillment_status", None))
+    provider_status = " ".join(filter(None, [
+        _text((shipment or {}).get("normalized_status")),
+        _text((shipment or {}).get("latest_status")),
+        _text(getattr(getattr(order, "external_tracking", None), "status", None)),
+    ]))
+    impossible = ("fulfilled", "shipped", "partial", "partially_fulfilled", "delivered")
+    lifecycle = ("picked up", "picked_up", "in transit", "in_transit", "out for delivery", "out_for_delivery", "delivered", "rto")
+    return fulfillment not in impossible and not any(value in provider_status for value in lifecycle)
 
 
 def has_persisted_provider_booking_evidence(shipment: dict[str, Any] | None) -> bool:
@@ -93,6 +118,8 @@ def derive_operational_status(order: Any, operations: dict[str, Any] | None, shi
         or any(keyword in shipment_status for keyword in _SHIPPED_KEYWORDS)
     ):
         return "Shipped"
+    if customer_cancellation_requires_action(order, shipment):
+        return CUSTOMER_CANCELLATION_STATUS
     # A Shiprocket order ID only proves that an order exists upstream. Engage sync stores that
     # ID before courier assignment, so booking evidence requires an actual shipment/AWB.
     if has_persisted_provider_booking_evidence(shipment):

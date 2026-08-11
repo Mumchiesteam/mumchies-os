@@ -185,6 +185,7 @@ export interface Order {
   codToPrepaid: unknown
   codToPrepaidMessage: string | null
   engageLastSyncedAt: string | null
+  customerCancellationRequested?: boolean
 }
 
 interface ApiOrder {
@@ -288,6 +289,7 @@ interface ApiOrder {
   cod_to_prepaid: unknown
   cod_to_prepaid_message: string | null
   engage_last_synced_at: string | null
+  customer_cancellation_requested: boolean
 }
 
 export interface OrderOperations {
@@ -434,6 +436,7 @@ export const mapApiOrder = (item: ApiOrder): Order => {
     engageOrderId: item.engage_order_id, orderConfirmation: item.order_confirmation, orderConfirmationMessage: item.order_confirmation_message,
     addressConfirmation: item.address_confirmation, addressConfirmationMessage: item.address_confirmation_message,
     codToPrepaid: item.cod_to_prepaid, codToPrepaidMessage: item.cod_to_prepaid_message, engageLastSyncedAt: item.engage_last_synced_at,
+    customerCancellationRequested: item.customer_cancellation_requested,
   }
 }
 

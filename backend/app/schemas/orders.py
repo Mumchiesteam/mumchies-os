@@ -86,3 +86,4 @@ class ShopifyOrder(BaseModel):
     cod_to_prepaid: object | None = None
     cod_to_prepaid_message: str | None = None
     engage_last_synced_at: str | None = None
+    customer_cancellation_requested: bool = False

@@ -22,7 +22,7 @@ from app.repositories.shiprocket import get_shipment, get_shipments_by_order_id,
 from app.services.order_operations import OrderOperationsStore
 from app.services.report_snapshots import ReportSnapshotStore
 from app.services.delhivery import DelhiveryError, DelhiveryService
-from app.services.shipment_status import derive_operational_status, has_existing_shipment_evidence, has_persisted_provider_booking_evidence, merge_shopify_fulfillment_evidence
+from app.services.shipment_status import customer_cancellation_requires_action, derive_operational_status, has_existing_shipment_evidence, has_persisted_provider_booking_evidence, merge_shopify_fulfillment_evidence
 from app.services.shiprocket import ShiprocketAPIError, ShiprocketConfigurationError, ShiprocketService
 from app.services.shopify import ShopifyConfigurationError, ShopifyService, ShopifySyncError
 from app.services.shopify_fulfillment import ShopifyFulfillmentSynchronizer, ShopifyFulfillmentSyncError
@@ -121,6 +121,7 @@ def _merged_operational_state(order: ShopifyOrder, operations: dict[str, object]
     # fulfilment-backed states (Cancelled, Delivered, Shipped, Booked, NDR) always outrank
     # locally-derived operational states, so call logs/address edits can never downgrade them.
     operational_status = derive_operational_status(order, operations, operations.get("shipment"))
+    cancellation_requested = customer_cancellation_requires_action(order, operations.get("shipment"))
     latest_call = call_logs[0]["result"] if call_logs else None
 
     return order.model_copy(update={
@@ -148,6 +149,7 @@ def _merged_operational_state(order: ShopifyOrder, operations: dict[str, object]
         "cod_to_prepaid": (operations.get("shipment") or {}).get("cod_to_prepaid"),
         "cod_to_prepaid_message": (operations.get("shipment") or {}).get("cod_to_prepaid_message"),
         "engage_last_synced_at": (operations.get("shipment") or {}).get("engage_last_synced_at"),
+        "customer_cancellation_requested": cancellation_requested,
     })
 
 
@@ -236,11 +238,17 @@ def _requires_reconciliation_action(order: ShopifyOrder) -> bool:
 
 
 def _is_inactive(order: ShopifyOrder) -> bool:
-    text = " ".join(filter(None, [
-        order.fulfillment_status, order.shopify_status, order.cancelled_at,
-        " ".join(order.tags), str(order.external_tracking.status if order.external_tracking else ""),
-    ])).casefold()
-    return bool(order.cancelled_at) or str(order.operational_status or "").casefold() in {"cancelled", "shipped", "delivered"} or any(value in text for value in ("cancel", "fulfilled", "shipped", "picked up", "dispatched", "in transit", "out for delivery", "delivered"))
+    request_requires_action = customer_cancellation_requires_action(order, order.shipment)
+    fulfillment = str(order.fulfillment_status or "").strip().casefold()
+    shopify_status = str(order.shopify_status or "").strip().casefold()
+    tracking_status = str(order.external_tracking.status if order.external_tracking else "").casefold()
+    tags = " ".join(order.tags).casefold()
+    shipped_words = ("shipped", "picked up", "dispatched", "in transit", "out for delivery", "delivered")
+    actually_cancelled = bool(order.cancelled_at) or shopify_status in {"cancelled", "canceled"}
+    actually_fulfilled = fulfillment in {"fulfilled", "shipped", "partial", "partially_fulfilled", "delivered"}
+    lifecycle_inactive = any(value in f"{tracking_status} {tags}" for value in shipped_words)
+    tag_cancelled = "cancel" in tags and not request_requires_action
+    return actually_cancelled or actually_fulfilled or str(order.operational_status or "").casefold() in {"cancelled", "shipped", "delivered"} or lifecycle_inactive or tag_cancelled
 
 
 def _has_pending_exception(order: ShopifyOrder) -> bool:
@@ -262,7 +270,7 @@ def _requires_operational_action(order: ShopifyOrder) -> bool:
         return False
     shipment = order.shipment or {}
     successfully_booked = str(shipment.get("booking_status") or "").casefold() in {"booked", "complete", "completed", "awb_assigned"} and bool(shipment.get("awb"))
-    if successfully_booked and not _has_pending_exception(order):
+    if successfully_booked and not _has_pending_exception(order) and not customer_cancellation_requires_action(order, shipment):
         return False
     return True
 

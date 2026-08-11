@@ -74,6 +74,17 @@ def test_existing_local_awb_prevents_eligibility():
     assert any("shipment or fulfilment already exists" in item for item in result.missing_requirements)
 
 
+def test_engage_customer_cancellation_request_blocks_booking() -> None:
+    service = ShiprocketService(email="a@b.com", password="x", pickup_location="Mumchies Factory")
+    result = service.evaluate_booking_eligibility(
+        order(fulfillment_status="unfulfilled"), confirmed_call_ops(),
+        shipment={"order_confirmation": 3},
+    )
+    assert result.eligible is False
+    assert result.operational_status == "Customer Requested Cancellation"
+    assert "customer requested cancellation" in result.missing_requirements
+
+
 # 3. COD call-log update (Confirmed) does not downgrade Shipped to Ready for Booking.
 def test_confirmed_call_log_does_not_downgrade_shipped_status():
     shipped_order = order(fulfillment_status="fulfilled", payment_status="pending")

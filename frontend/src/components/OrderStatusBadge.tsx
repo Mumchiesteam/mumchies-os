@@ -7,6 +7,8 @@ export function OrderStatusBadge({ order }: { order: Order }) {
     ? 'bg-emerald-50 text-emerald-700'
     : status === 'Cancelled' || status === 'Needs Review'
       ? 'bg-rose-50 text-rose-700'
+      : status === 'Customer Requested Cancellation'
+        ? 'bg-amber-100 text-amber-900 ring-1 ring-amber-300'
       : status === 'NDR'
         ? 'bg-violet-50 text-violet-700'
         : status === 'Address Verification Pending' || status === 'Call Pending' || status === 'Callback Required'

@@ -229,6 +229,31 @@ def test_fixture_counts_restore_action_semantics_without_mass_migration() -> Non
     assert on_hold == ["404"]
 
 
+def test_engage_cancellation_request_remains_actionable_and_uses_fresh_fallback() -> None:
+    source = queue_order(
+        "324547", fulfillment_status="unfulfilled", cancelled_at=None,
+        shopify_status="open", tags=["Customer requested cancellation"],
+    )
+    order = routes._merged_operational_state(source, {"shipment": {"order_confirmation": 3}})
+    assert order.customer_cancellation_requested is True
+    assert order.operational_status == "Customer Requested Cancellation"
+    assert routes._requires_operational_action(order) is True
+    assert routes._matches_queue(order, "fresh", QUEUE_NOW) is True
+    assert routes._matches_queue(order, "previous", QUEUE_NOW, "follow_up") is False
+    assert routes._matches_queue(order, "previous", QUEUE_NOW, "on_hold") is False
+
+
+def test_actual_shopify_cancellation_still_excludes_engage_request() -> None:
+    source = queue_order(
+        "324552", fulfillment_status="unfulfilled", cancelled_at="2026-08-11T05:00:00Z",
+        shopify_status="cancelled", tags=["Customer requested cancellation"],
+    )
+    order = routes._merged_operational_state(source, {"shipment": {"order_confirmation": 3}})
+    assert order.customer_cancellation_requested is False
+    assert order.operational_status == "Cancelled"
+    assert routes._requires_operational_action(order) is False
+
+
 def test_booked_label_pending_and_printed_today_are_routed_exclusively() -> None:
     pending = queue_order("324680", shipment={"booking_status": "booked", "awb": "AWB-1", "label_print_status": "not_printed"}, operational_status="Booked")
     printed = queue_order("324681", shipment={"booking_status": "booked", "awb": "AWB-2", "label_print_status": "printed", "label_last_printed_at": "2026-08-11T09:00:00Z"}, operational_status="Booked")

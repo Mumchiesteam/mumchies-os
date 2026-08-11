@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.repositories.shiprocket import get_shipment, snapshot, upsert_shipment
-from app.services.shipment_status import derive_operational_status, has_existing_shipment_evidence, has_persisted_provider_booking_evidence
+from app.services.shipment_status import customer_cancellation_requires_action, derive_operational_status, has_existing_shipment_evidence, has_persisted_provider_booking_evidence
 from app.services.courier_platform.models import TrackingResult
 from app.services.courier_platform.status import is_terminal, normalize_status
 from app.services.shipment_events import append_tracking_events
@@ -364,6 +364,8 @@ class ShiprocketService:
         shipment_status = shipment.get("booking_status") if shipment else None
 
         missing: list[str] = []
+        if customer_cancellation_requires_action(order, shipment):
+            missing.append("customer requested cancellation")
         if has_existing_shipment_evidence(order, operations, shipment):
             missing.append("an active shipment or fulfilment already exists for this order")
         delivery_postcode = self.delivery_postcode(order, operations)
