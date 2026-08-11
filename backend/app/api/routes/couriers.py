@@ -906,6 +906,20 @@ async def reset_temporary_shadowfax_direct_test_324541(request: Request, db: Ses
     return {"order_number": "324541", "reset": True, "state": {"final_test_state": "not_attempted"}}
 
 
+def _booking_selection_matches(selected: object, payload: BookingPayload) -> bool:
+    if not isinstance(selected, dict):
+        return False
+    if str(selected.get("courier_id") or "") != str(payload.courier_id):
+        return False
+    stored_provider = str(selected.get("provider") or "shiprocket").strip().casefold()
+    if payload.provider and payload.provider.strip().casefold() != stored_provider:
+        return False
+    stored_name = str(selected.get("courier_name") or "").strip().casefold()
+    if payload.courier_name and payload.courier_name.strip().casefold() != stored_name:
+        return False
+    return bool(stored_provider and stored_name)
+
+
 async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: Session, operator: str = "Mumchies OS") -> dict[str, object]:
     actor = operator
     try:
@@ -930,7 +944,7 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
         if not eligibility.eligible:
             raise HTTPException(status_code=400, detail={"message": "Order is not eligible for booking.", "missing_requirements": eligibility.missing_requirements})
         selected = operations.get("selected_courier")
-        if not isinstance(selected, dict) or str(selected.get("courier_id") or "") != str(payload.courier_id):
+        if not _booking_selection_matches(selected, payload):
             raise HTTPException(status_code=400, detail="Selected courier does not match the stored courier selection.")
 
         provider = str(selected.get("provider") or "shiprocket").lower()
@@ -1071,12 +1085,16 @@ async def cancel_provider_shipment(order_id: str, payload: ProviderActionPayload
 @router.post("/orders/{order_id}/couriers/select")
 async def select_courier(order_id: str, payload: dict[str, object], request: Request) -> dict[str, object]:
     provider = str(payload.get("provider") or "shiprocket").lower()
+    courier_id = str(payload.get("courier_id") or "").strip()
+    courier_name = str(payload.get("courier_name") or "").strip()
+    if provider not in {"shiprocket", "delhivery", "shadowfax"} or not courier_id or not courier_name:
+        raise HTTPException(status_code=422, detail="A canonical provider, courier ID and courier name are required.")
     selected = {
         "provider": provider,
         "booking_supported": provider in {"shiprocket", "delhivery", "shadowfax"} and bool(payload.get("booking_supported", True)),
         "rate_note": str(payload.get("rate_note") or ""),
-        "courier_id": str(payload.get("courier_id") or ""),
-        "courier_name": str(payload.get("courier_name") or ""),
+        "courier_id": courier_id,
+        "courier_name": courier_name,
         "rate": payload.get("rate"),
         "cod_charge": payload.get("cod_charge"),
         "total_estimated_shipping_cost": payload.get("total_estimated_shipping_cost"),

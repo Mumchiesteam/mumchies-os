@@ -72,6 +72,7 @@ import { selectAllLabelIds, selectAllLabelState } from './utils/labelSelection'
 import { engageCategory } from './utils/engage'
 import { hasShipmentEvidence, listStatus, type OperationalStatus } from './utils/orderStatus'
 import { displayedOrderNumber, orderNumberClipboardValue, stopCopyPropagation } from './utils/orderNumber'
+import { courierSelectionMatches } from './utils/courierSelection'
 
 type IconName = 'grid' | 'bag' | 'alert' | 'users' | 'chart' | 'settings' | 'search' | 'bell' | 'filter' | 'chevron' | 'more' | 'eye' | 'truck' | 'calendar' | 'close' | 'copy' | 'phone' | 'external' | 'repeat' | 'tag' | 'edit' | 'call'
 type TabKey = 'fresh' | 'previous' | 'all' | 'labels_to_print' | 'awaiting_confirmation' | 'printed_today' | 'shiprocket_cleanup'
@@ -256,6 +257,7 @@ function App() {
   const [shadowfaxShipmentRow, setShadowfaxShipmentRow] = useState<ShadowfaxShipmentRowDiagnostic | null>(null)
   const bookingRequestInFlight = useRef(false)
   const courierRequestOrderRef = useRef<string | null>(null)
+  const courierSelectionInFlight = useRef(false)
   const drawerGenerationRef = useRef(0)
   const [shipmentRefreshLoading, setShipmentRefreshLoading] = useState(false)
   const [shopifySyncLoading, setShopifySyncLoading] = useState(false)
@@ -503,11 +505,6 @@ function App() {
     ? `Address Verified by ${operations.address_verified_by || 'operator'} on ${operations.address_verified_at ? formatDateTime(operations.address_verified_at) : 'unknown time'}`
     : 'Address Verification Pending'
 
-  const refreshEligibility = async (orderId: string) => {
-    const eligibility = await getBookingEligibility(orderId)
-    setBookingEligibility(eligibility)
-  }
-
   const saveCallLog = async () => {
     if (!selectedOrder) return
     if (callResult === 'On Hold' && callComment.trim().length < 3) {
@@ -595,6 +592,10 @@ function App() {
     setCourierError('')
     setCourierWarnings([])
     setCourierOptions([])
+    // Every lookup invalidates the previous persisted quote. Mirror that locally before the
+    // backend clears it so a refreshed quote with the same courier ID cannot appear selected.
+    setSelectedCourierId(null)
+    setOperations(previous => previous ? { ...previous, selected_courier: null } : previous)
     try {
       await saveOrderPackage(orderId, packageNumbers)
       const result = await checkShiprocketCouriers(orderId, {
@@ -606,9 +607,6 @@ function App() {
       setCourierOptions(sorted)
       setCourierWarnings(result.provider_warnings ?? [])
       if (sorted.length === 0) setCourierError('No courier services are currently available. Check the package and address, then retry.')
-      if (selectedCourierId && !sorted.some(courier => courier.courier_id === selectedCourierId)) {
-        setSelectedCourierId(null)
-      }
       setNotice('Courier options loaded')
     } catch (err) {
       if (generation !== drawerGenerationRef.current) return
@@ -620,31 +618,40 @@ function App() {
   }
 
   const selectCourier = async (courier: CourierQuote) => {
-    if (!selectedOrder || !courier.courier_id) return
+    if (!selectedOrder || !courier.courier_id || courierSelectionInFlight.current) return
+    courierSelectionInFlight.current = true
     setCourierError('')
+    setSelectedCourierId(null)
+    setOperations(previous => previous ? { ...previous, selected_courier: null } : previous)
     try {
       const result = await selectShiprocketCourier(selectedOrder.internalId, { ...courier, courier_id: courier.courier_id })
-      setSelectedCourierId(result.selected_courier?.courier_id ?? courier.courier_id)
+      if (!courierSelectionMatches(result.selected_courier, courier)) throw new Error('The courier selection could not be persisted consistently. Select it again.')
       setOperations(prev => prev ? { ...prev, selected_courier: result.selected_courier } : prev)
-      await refreshEligibility(selectedOrder.internalId)
+      setSelectedCourierId(result.selected_courier?.courier_id ?? null)
     } catch (err) {
       setCourierError((err as Error).message)
+    } finally {
+      courierSelectionInFlight.current = false
     }
   }
 
   const bookShipment = async (packageNumbers: { weight_kg: number; length_cm: number | null; breadth_cm: number | null; height_cm: number | null }) => {
     if (!selectedOrder || !selectedCourierId || !bookingEligibility?.eligible || bookingRequestInFlight.current) return
     const selectedQuote = courierOptions.find(option => option.courier_id === selectedCourierId)
-    if (!selectedQuote?.booking_supported) return
+    const persistedSelection = operations?.selected_courier
+    if (!selectedQuote?.booking_supported || !persistedSelection || !courierSelectionMatches(persistedSelection, selectedQuote)) {
+      setCourierError('Select and save a courier before booking.')
+      return
+    }
     if (!window.confirm(`Book ${selectedQuote.courier_name} shipment for order #${selectedOrder.orderNumber}?`)) return
     bookingRequestInFlight.current = true
     setBookingLoading(true)
     setCourierError('')
     try {
       const result = await bookShiprocketShipment(selectedOrder.internalId, {
-        provider: selectedQuote.provider,
-        courier_name: selectedQuote.courier_name,
-        courier_id: selectedCourierId,
+        provider: String(persistedSelection.provider),
+        courier_name: String(persistedSelection.courier_name),
+        courier_id: String(persistedSelection.courier_id),
         ...packageNumbers,
       })
       setOrders(prev => prev.map(order => order.internalId === selectedOrder.internalId
@@ -930,6 +937,7 @@ function App() {
           courierError={courierError}
           courierWarnings={courierWarnings}
           selectedCourierId={selectedCourierId}
+          persistedCourierSelection={operations?.selected_courier ?? null}
           onCheckCouriers={checkCouriers}
           onSelectCourier={courier => void selectCourier(courier)}
           onBookShipment={bookShipment}
@@ -1054,6 +1062,7 @@ const OrderDrawer = memo(function OrderDrawer({
   courierError,
   courierWarnings,
   selectedCourierId,
+  persistedCourierSelection,
   onCheckCouriers,
   onSelectCourier,
   onBookShipment,
@@ -1125,6 +1134,7 @@ const OrderDrawer = memo(function OrderDrawer({
   courierError: string
   courierWarnings: string[]
   selectedCourierId: string | null
+  persistedCourierSelection: OrderOperations['selected_courier']
   onCheckCouriers: (packageNumbers: {
     weight_kg: number
     length_cm: number | null
@@ -1184,10 +1194,12 @@ const OrderDrawer = memo(function OrderDrawer({
   const nonPackageMissing = missing.filter(requirement => !packageRequirementNames.has(requirement.toLowerCase()))
   const canCheckCouriers = bookingEligibility !== null && packageValid && nonPackageMissing.length === 0
   const selectedCourier = courierOptions.find(option => option.courier_id === selectedCourierId)
+  const selectedCourierPersisted = courierSelectionMatches(persistedCourierSelection, selectedCourier)
   const canBookShipment = bookingEligibility !== null
     && nonPackageMissing.length === 0
     && packageValid
     && Boolean(selectedCourierId)
+    && selectedCourierPersisted
     && Boolean(selectedCourier?.booking_supported)
     && !bookingEligibility.shipment_exists
     && !bookingLoading
@@ -1216,6 +1228,7 @@ const OrderDrawer = memo(function OrderDrawer({
     : visibleMissing[0]
       || (!selectedCourierId ? 'Select a courier service'
         : !selectedCourier ? 'Selected courier response is incomplete'
+          : !selectedCourierPersisted ? 'Select and save a courier service'
           : !selectedCourier.booking_supported ? (selectedCourier.provider === 'delhivery' ? 'Direct booking is unavailable for this rate' : 'Selected courier does not support booking')
             : null)
   const autoLookupKey = `${order.internalId}:${packageNumbers.weight_kg}:${packageNumbers.length_cm}:${packageNumbers.breadth_cm}:${packageNumbers.height_cm}:${bookingEligibility?.eligible}:${addressDraft.pincode}:${addressDraft.phone}`

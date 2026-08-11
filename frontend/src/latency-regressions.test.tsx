@@ -23,4 +23,23 @@ describe('Orders latency regressions', () => {
     const flow = source.slice(source.indexOf('const checkCouriers'), source.indexOf('const selectCourier'))
     expect(flow).not.toContain('refreshEligibility(orderId)')
   })
+
+  it('clears stale frontend selection whenever lookup clears backend persistence', () => {
+    const flow = source.slice(source.indexOf('const checkCouriers'), source.indexOf('const selectCourier'))
+    expect(flow).toContain('setSelectedCourierId(null)')
+    expect(flow).toContain('selected_courier: null')
+    expect(flow).not.toContain('!sorted.some')
+  })
+
+  it('does not wait for eligibility after persisting a courier selection', () => {
+    const flow = source.slice(source.indexOf('const selectCourier'), source.indexOf('const bookShipment'))
+    expect(flow).not.toContain('refreshEligibility(')
+    expect(flow).toContain('courierSelectionMatches')
+  })
+
+  it('keeps Book Shipment disabled without a matching persisted selection', () => {
+    expect(source).toContain('const selectedCourierPersisted = courierSelectionMatches')
+    const guard = source.slice(source.indexOf('const canBookShipment'), source.indexOf('const requirementLabels'))
+    expect(guard).toContain('selectedCourierPersisted')
+  })
 })

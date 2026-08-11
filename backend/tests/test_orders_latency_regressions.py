@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from datetime import datetime, timezone
 
 import pytest
 
 from app.api.routes import couriers
+from app.api.routes.couriers import BookingPayload, _booking_selection_matches
 from app.schemas.orders import ShopifyOrder
 from app.services.shopify import ShopifyService
 
@@ -78,3 +80,18 @@ async def test_operational_fetch_returns_before_repeat_enrichment(monkeypatch: p
     assert orders[0].customer_orders_count is None
     repeat_release.set()
     await next(iter(ShopifyService._repeat_refresh_tasks.values()))
+
+
+def test_booking_requires_the_same_persisted_canonical_courier() -> None:
+    selected = {"provider": "shiprocket", "courier_id": "43", "courier_name": "Delhivery Surface", "mode": "surface"}
+    payload = BookingPayload(weight_kg=0.5, courier_id="43", provider="shiprocket", courier_name="Delhivery Surface")
+    assert _booking_selection_matches(selected, payload)
+    assert not _booking_selection_matches(None, payload)
+    assert not _booking_selection_matches({**selected, "provider": "delhivery"}, payload)
+    assert not _booking_selection_matches({**selected, "courier_id": "44"}, payload)
+    assert not _booking_selection_matches({**selected, "courier_name": "Different Service"}, payload)
+
+
+def test_courier_lookup_clears_stored_selection_before_returning_quotes() -> None:
+    source = inspect.getsource(couriers.shiprocket_serviceability)
+    assert "save_selected_courier(order_id, None)" in source
