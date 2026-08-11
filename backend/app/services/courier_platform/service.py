@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -15,7 +15,12 @@ from app.services.shipment_events import append_tracking_events, extract_trackin
 
 
 def _json(value: Any) -> str | None:
-    return json.dumps(value, separators=(",", ":"), ensure_ascii=True) if value is not None else None
+    def encode(item: Any) -> str:
+        if isinstance(item, (datetime, date)):
+            return item.isoformat()
+        raise TypeError(f"Object of type {type(item).__name__} is not JSON serializable")
+
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=True, default=encode) if value is not None else None
 
 
 class CourierPlatformService:

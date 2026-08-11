@@ -9,7 +9,7 @@ from app.db.base import Base
 from app.models.shipment_event import ShipmentEvent
 from app.repositories.shiprocket import get_shipment, upsert_shipment
 from app.services.courier_platform.models import NormalizedShipmentStatus, TrackingResult
-from app.services.courier_platform.service import CourierPlatformService
+from app.services.courier_platform.service import CourierPlatformService, _json
 from app.api.routes.courier_platform import courier_shipment_events
 from app.services.shipment_events import append_tracking_events, normalize_event_status, shipment_event_history
 
@@ -92,6 +92,11 @@ def test_missing_provider_timestamp_remains_null_and_raw_pii_is_sanitized(db):
     assert history[0]["recorded_at"] is not None
     assert history[0]["raw_provider_event"]["customer_name"] == "[REDACTED]"
     assert history[0]["raw_provider_event"]["token"] == "[REDACTED]"
+
+
+def test_provider_response_json_converts_only_dates_and_datetimes():
+    value = {"delivered_at": __import__("datetime").datetime(2026, 8, 4, 9, 0), "service_date": __import__("datetime").date(2026, 8, 4), "nested": [1, True, None, {"status": "Delivered"}]}
+    assert _json(value) == '{"delivered_at":"2026-08-04T09:00:00","service_date":"2026-08-04","nested":[1,true,null,{"status":"Delivered"}]}'
 
 
 @pytest.mark.anyio

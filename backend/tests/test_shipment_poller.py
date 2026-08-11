@@ -120,7 +120,7 @@ class DeliveredAdapter:
     async def track_shipment(self, shipment):
         return TrackingResult(
             provider="delhivery", status=NormalizedShipmentStatus.DELIVERED, provider_status="Delivered",
-            terminal=True, raw_response={"raw": {"ShipmentData": [{"Shipment": {"Scans": [
+            terminal=True, raw_response={"delivered_at": datetime(2026, 8, 4, 9, 0, tzinfo=timezone.utc), "raw": {"ShipmentData": [{"Shipment": {"Scans": [
                 {"ScanDetail": {"Scan": "Delivered", "ScanDateTime": "2026-08-04T09:00:00Z"}},
             ]}}]}},
         )
@@ -135,11 +135,19 @@ async def test_terminal_result_stops_future_polling_and_health_counts(sessions, 
         assert eligible_shipments(db, batch_size=20) == []
     second = await run_tracking_poll(sessions, sleep=lambda _: _done())
     assert first["new_events_persisted"] == 1
+    assert first["shipments_succeeded"] == 1 and first["shipments_failed"] == 0
     assert second["shipments_attempted"] == 0
     status = poller_status()
     assert status["shipments_attempted"] == 0
     assert status["providers"]["shadowfax"] is False
     assert status["last_poll_started"] and status["last_poll_completed"]
+    with sessions() as db:
+        shipment = get_shipment(db, "delivered-next")
+        assert shipment.normalized_status == "delivered" and shipment.terminal_status == "delivered"
+        assert '"delivered_at":"2026-08-04T09:00:00+00:00"' in shipment.raw_provider_response
+        assert len(db.scalars(select(ShipmentEvent).where(ShipmentEvent.order_id == "delivered-next")).all()) == 1
+        attempts = db.scalars(select(ShipmentPollAttempt).where(ShipmentPollAttempt.order_id == "delivered-next")).all()
+        assert len(attempts) == 1 and attempts[0].result == "success" and attempts[0].error_category is None
 
 
 @pytest.mark.anyio
@@ -160,6 +168,10 @@ async def test_overlapping_run_is_prevented(sessions):
 def test_provider_http_error_categories(status, category, retryable):
     error = ProviderError("safe", provider="shiprocket", operation="tracking", http_status=status)
     assert _error_category(error) == (category, retryable)
+
+
+def test_genuine_malformed_response_is_still_classified():
+    assert _error_category(TypeError("provider payload is not a mapping")) == ("malformed_response", False)
 
 
 def test_retention_keeps_latest_100_runs_and_historical_runs_remain_queryable(sessions):
