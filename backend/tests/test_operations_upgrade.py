@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
@@ -249,7 +250,7 @@ async def test_full_export_has_required_tabs_and_payment_columns(db, monkeypatch
 
 @pytest.mark.anyio
 async def test_full_export_fresh_tab_uses_canonical_fresh_classification(db, monkeypatch):
-    fresh = ShopifyService._to_order(raw_order()).model_copy(update={"order_id": "1", "order_number": "1"})
+    fresh = ShopifyService._to_order({**raw_order(), "created_at": datetime.now(timezone.utc).isoformat()}).model_copy(update={"order_id": "1", "order_number": "1"})
     cancelled = ShopifyService._to_order({**raw_order(), "id": 2, "name": "#2", "cancelled_at": "2026-08-08T10:00:00Z"}).model_copy(update={"order_id": "2", "order_number": "2"})
     async def fake_orders(_db): return [fresh, cancelled]
     monkeypatch.setattr(orders_routes, "_load_orders", fake_orders)

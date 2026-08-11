@@ -81,16 +81,18 @@ async def test_full_counts_do_not_follow_page_size_or_page(monkeypatch):
     assert len(page_1_20.items) == len(page_2_20.items) == 20
 
 
-def test_untouched_prepaid_is_fresh_regardless_of_age():
+def test_untouched_prepaid_from_prior_date_is_previous():
     order = queue_order("101", payment_type="prepaid", created_date="2025-01-01T00:00:00+00:00", human_action_count=0)
-    assert routes._is_fresh_order(order) is True
+    now = datetime(2026, 8, 11, 6, tzinfo=timezone.utc)
+    assert routes._is_fresh_order(order, now) is False
+    assert routes._matches_queue(order, "previous", now) is True
 
 
-def test_fresh_contains_only_zero_completed_attempts():
-    no_call = queue_order("102", payment_type="cod", call_attempt_count=0, latest_call_result=None)
-    attempt_one = queue_order("103", payment_type="cod", call_attempt_count=1, latest_call_result="No Answer", human_action_count=1)
-    assert routes._is_fresh_order(no_call) is True
-    assert routes._is_fresh_order(attempt_one) is False
+def test_current_day_unresolved_calls_remain_fresh_regardless_of_attempt_count():
+    no_call = queue_order("102", created_date="2026-08-11T04:30:00Z", payment_type="cod", call_attempt_count=0, latest_call_result=None)
+    attempt_one = queue_order("103", created_date="2026-08-11T04:30:00Z", payment_type="cod", call_attempt_count=1, latest_call_result="No Answer", human_action_count=1)
+    assert routes._is_fresh_order(no_call, QUEUE_NOW) is True
+    assert routes._is_fresh_order(attempt_one, QUEUE_NOW) is True
 
 
 def test_cod_attempt_one_is_previous_pending():
@@ -105,23 +107,22 @@ def test_attempt_one_follow_up_outcomes_are_previous_pending(outcome):
     assert routes._matches_queue(order, "previous", datetime.now(timezone.utc)) is True
 
 
-@pytest.mark.parametrize("outcome", ["Confirmed", "Cancelled", "Wrong Number"])
-def test_non_follow_up_outcomes_are_not_previous_pending(outcome):
-    order = queue_order("110", payment_type="cod", call_attempt_count=1, latest_call_result=outcome, human_action_count=1, operational_status="Ready for Booking" if outcome == "Confirmed" else None)
-    assert routes._matches_queue(order, "previous", datetime.now(timezone.utc)) is False
+@pytest.mark.parametrize("outcome", ["Confirmed", "Wrong Number"])
+def test_unresolved_non_follow_up_outcomes_remain_previous_pending(outcome):
+    order = queue_order("110", payment_type="cod", call_attempt_count=1, latest_call_result=outcome, human_action_count=1, operational_status="Ready for Booking" if outcome == "Confirmed" else "Needs Review")
+    assert routes._matches_queue(order, "previous", datetime.now(timezone.utc)) is True
     assert order.call_attempt_count == 1
 
 
 @pytest.mark.anyio
-async def test_confirmed_unbooked_order_is_not_previous_and_retains_history(monkeypatch):
+async def test_confirmed_unbooked_order_is_previous_and_retains_history(monkeypatch):
     confirmed = queue_order("111", payment_type="cod", call_attempt_count=1, latest_call_result="Confirmed", human_action_count=1, operational_status="Ready for Booking")
     async def load(_db): return [confirmed]
     monkeypatch.setattr(routes, "_load_orders", load)
     result = await routes.list_orders(queue="previous", db=None)
-    assert result.items == []
-    assert result.counts["previous"] == 0
+    assert [item.order_number for item in result.items] == ["111"]
+    assert result.counts["previous"] == 1
     assert confirmed.call_attempt_count == 1
-    assert "pending_booking" not in result.counts
 
 
 @pytest.mark.anyio
@@ -191,6 +192,61 @@ async def test_operations_always_equals_fresh_plus_previous(monkeypatch):
     monkeypatch.setattr(routes, "_load_orders", load)
     result = await routes.list_orders(db=None)
     assert result.counts["operations"] == result.counts["fresh"] + result.counts["previous"] == 2
+
+
+QUEUE_NOW = datetime(2026, 8, 11, 12, tzinfo=timezone.utc)
+
+
+def test_today_ready_for_booking_remains_fresh() -> None:
+    order = queue_order("324687", created_date="2026-08-11T04:30:00Z", payment_type="prepaid", human_action_count=2, operational_status="Ready for Booking")
+    assert routes._matches_queue(order, "fresh", QUEUE_NOW)
+    assert not routes._matches_queue(order, "previous", QUEUE_NOW)
+
+
+def test_prior_day_ready_for_booking_is_previous_pending() -> None:
+    order = queue_order("324686", created_date="2026-08-10T04:30:00Z", payment_type="prepaid", human_action_count=2, operational_status="Ready for Booking")
+    assert not routes._matches_queue(order, "fresh", QUEUE_NOW)
+    assert routes._matches_queue(order, "previous", QUEUE_NOW, "follow_up")
+
+
+def test_booked_label_pending_and_printed_today_are_routed_exclusively() -> None:
+    pending = queue_order("324680", shipment={"booking_status": "booked", "awb": "AWB-1", "label_print_status": "not_printed"}, operational_status="Booked")
+    printed = queue_order("324681", shipment={"booking_status": "booked", "awb": "AWB-2", "label_print_status": "printed", "label_last_printed_at": "2026-08-11T09:00:00Z"}, operational_status="Booked")
+    assert routes._matches_queue(pending, "labels_to_print", QUEUE_NOW)
+    assert not routes._matches_queue(pending, "printed_today", QUEUE_NOW)
+    assert routes._matches_queue(printed, "printed_today", QUEUE_NOW)
+    assert not routes._matches_queue(printed, "labels_to_print", QUEUE_NOW)
+
+
+@pytest.mark.parametrize(("status", "payment", "result"), [
+    ("Call Pending", "cod", None),
+    ("Address Verification Pending", "prepaid", None),
+    ("Ready for Booking", "prepaid", None),
+    ("Needs Review", "cod", "Wrong Number"),
+    ("Call Pending", "cod", "Busy"),
+    ("Call Pending", "cod", "On Hold"),
+])
+def test_every_unresolved_order_has_exactly_one_primary_operational_queue(status, payment, result) -> None:
+    order = queue_order("324682", created_date="2026-08-10T04:30:00Z", payment_type=payment, latest_call_result=result, call_attempt_count=1 if result else 0, human_action_count=1, operational_status=status)
+    membership = [routes._matches_queue(order, "fresh", QUEUE_NOW), routes._matches_queue(order, "previous", QUEUE_NOW, "follow_up"), routes._matches_queue(order, "previous", QUEUE_NOW, "on_hold")]
+    assert sum(membership) == 1
+
+
+def test_primary_actionable_queues_are_mutually_exclusive() -> None:
+    orders = [
+        queue_order("324683", created_date="2026-08-11T04:30:00Z", operational_status="Ready for Booking"),
+        queue_order("324684", created_date="2026-08-10T04:30:00Z", operational_status="Ready for Booking"),
+        queue_order("324685", shipment={"booking_status": "booked", "awb": "AWB-3", "label_print_status": "not_printed"}, operational_status="Booked"),
+        queue_order("324688", shipment={"booking_status": "booked", "awb": "AWB-4", "label_print_status": "printed", "label_last_printed_at": "2026-08-11T09:00:00Z"}, operational_status="Booked"),
+    ]
+    for order in orders:
+        membership = [
+            routes._matches_queue(order, "fresh", QUEUE_NOW),
+            routes._matches_queue(order, "previous", QUEUE_NOW, "follow_up") or routes._matches_queue(order, "previous", QUEUE_NOW, "on_hold"),
+            routes._matches_queue(order, "labels_to_print", QUEUE_NOW),
+            routes._matches_queue(order, "printed_today", QUEUE_NOW),
+        ]
+        assert sum(membership) == 1
 
 
 @pytest.mark.anyio
