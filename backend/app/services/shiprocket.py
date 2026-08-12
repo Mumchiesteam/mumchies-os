@@ -452,6 +452,20 @@ class ShiprocketService:
             return None
         return next((row for row in rows if str(row.get("channel_order_id") or "") == channel_order_id), None)
 
+    async def order_details(self, order_id: str | int) -> dict[str, Any]:
+        """Fetch one uncached Shiprocket order snapshot for a destructive-action guard."""
+        response = await self._get(f"https://apiv2.shiprocket.in/v1/external/orders/show/{order_id}")
+        if response.status_code >= 400:
+            raise self._api_error(response, "order_details")
+        payload = response.json()
+        details = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(details, dict):
+            raise ShiprocketAPIError(
+                "Shiprocket returned an ambiguous order detail response; cleanup was blocked.",
+                safe_details={"operation": "order_details", "protected": True},
+            )
+        return details
+
     async def list_new_orders(self, *, force_refresh: bool = False) -> list[dict[str, Any]]:
         cached = self._new_orders_cache
         if not force_refresh and cached and cached[0] > time.monotonic():

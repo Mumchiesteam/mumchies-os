@@ -1017,22 +1017,70 @@ async def provider_book_shipment(order_id: str, payload: BookingPayload, request
     return await shiprocket_book_shipment(order_id, payload, db, current_actor(request))
 
 
+def _shiprocket_cleanup_usage_evidence(order: dict[str, object]) -> tuple[list[str], bool]:
+    """Return concrete usage evidence and whether the fresh state is ambiguous."""
+    shipment_value = order.get("shipments")
+    if shipment_value in (None, [], {}):
+        shipments: list[dict[str, object]] = []
+    elif isinstance(shipment_value, dict):
+        shipments = [shipment_value]
+    elif isinstance(shipment_value, list) and all(isinstance(item, dict) for item in shipment_value):
+        shipments = shipment_value
+    else:
+        return [], True
+
+    evidence: list[str] = []
+    ambiguous = False
+    for shipment in shipments:
+        if any(str(shipment.get(key) or "").strip() for key in ("awb", "awb_code", "last_mile_awb", "rto_awb", "return_awb", "code")):
+            evidence.append("awb")
+        if any(str(shipment.get(key) or "").strip() for key in ("courier", "courier_id", "sr_courier_name")):
+            evidence.append("courier")
+        if any(str(shipment.get(key) or "").strip() for key in ("manifest_id", "manifest_url")):
+            evidence.append("manifest")
+        pickup_values = [shipment.get(key) for key in ("pickup_id", "pickup_token_number", "pickedup_timestamp", "pickup_generated_date")]
+        scheduled = str(shipment.get("pickup_scheduled_date") or "").strip()
+        if any(value not in (None, "", 0, "0") for value in pickup_values) or (scheduled and not scheduled.startswith("0000-00-00")):
+            evidence.append("pickup")
+        progress_dates = [str(shipment.get(key) or "").strip() for key in ("awb_assign_date", "shipped_date", "delivered_date", "rto_initiated_date", "rto_delivered_date")]
+        if any(value and not value.startswith("0000-00-00") for value in progress_dates):
+            evidence.append("shipment_progress")
+        shipment_status = shipment.get("status")
+        if shipment_status not in (None, ""):
+            if isinstance(shipment_status, str) and shipment_status.strip().casefold() in {"new", "canceled", "cancelled"}:
+                pass
+            elif isinstance(shipment_status, str) and shipment_status.strip().casefold() in {
+                "processing", "ready to ship", "pickup scheduled", "manifested", "shipped",
+                "in transit", "out for delivery", "delivered", "rto", "returned",
+            }:
+                evidence.append("shipment_status")
+            else:
+                ambiguous = True
+    return sorted(set(evidence)), ambiguous
+
+
 async def _cleanup_unused_shiprocket_order(order_id: str, channel_order_id: str, operator: str) -> dict[str, object]:
     try:
         service = ShiprocketService()
-        upstream = await service.find_existing_order(channel_order_id)
-        if not upstream:
+        matched = await service.find_existing_order(channel_order_id)
+        if not matched:
             result = {"status": "not_applicable"}
         else:
+            shiprocket_order_id = matched.get("id")
+            if shiprocket_order_id is None:
+                raise ShiprocketAPIError("Shiprocket returned an ambiguous order without an ID; cleanup was blocked.")
+            upstream = await service.order_details(shiprocket_order_id)
             exact_match = str(upstream.get("channel_order_id") or "").strip() == str(channel_order_id).strip()
             shipment_id, awb = service._upstream_shipment(upstream)
-            shipment_rows = upstream.get("shipments")
-            has_shipment_record = isinstance(shipment_rows, list) and bool(shipment_rows)
             status = str(upstream.get("status") or "").strip().casefold()
+            usage_evidence, ambiguous = _shiprocket_cleanup_usage_evidence(upstream)
             if not exact_match:
                 result = {"status": "protected", "shiprocket_status": status, "error": "Shiprocket returned a non-matching channel order; cleanup was blocked."}
-            elif awb or shipment_id or has_shipment_record or status != "new":
-                result = {"status": "protected", "awb": awb, "shipment_id": shipment_id, "shiprocket_status": status, "error": "The Shiprocket order was not cancelled because it is not conclusively an unused New order."}
+            elif status in {"canceled", "cancelled"}:
+                ShiprocketService._new_orders_cache = None
+                result = {"status": "resolved", "cancel_on_channel": False, "shiprocket_order_id": str(shiprocket_order_id), "shiprocket_status": status, "already_cancelled": True}
+            elif status != "new" or awb or usage_evidence or ambiguous:
+                result = {"status": "protected", "awb": awb, "shipment_id": shipment_id, "shiprocket_status": status, "usage_evidence": usage_evidence, "ambiguous": ambiguous, "error": "The Shiprocket order was not cancelled because it is not conclusively an unused New order."}
             else:
                 cancellation = await service.cancel_unbooked_order(upstream)
                 if cancellation.get("classification") == "accepted":
