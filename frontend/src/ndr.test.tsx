@@ -13,6 +13,11 @@ describe('NDR operations module', () => {
     for (const text of ['NDR Dashboard','Refresh Data','Last successful import','Search order, AWB, customer or phone','Priority','Order Number','AWB','Product','Customer','Phone','Courier','Current Status','Failure Reason','Recommended Action','Ageing','Last Update','Actions']) expect(html).toContain(text)
     expect(html).not.toContain('Assigned To')
     expect(html).not.toContain('Sync Now')
+    expect(html).toContain('aria-label="NDR views"')
+    expect(html).toContain('aria-selected="true"')
+    expect(html.match(/Active NDR/g)?.length).toBe(1)
+    expect(html.match(/Resolution Analytics/g)?.length).toBe(1)
+    expect(html).not.toContain('Analytics period')
   })
   it('loads the resolution analytics period without unrelated endpoints', async()=>{
     const fetchMock=vi.spyOn(globalThis,'fetch').mockResolvedValue(new Response('{}',{status:200,headers:{'Content-Type':'application/json'}}))

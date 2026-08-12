@@ -17,6 +17,7 @@ const kpiCards: { key:NDRKpi; label:string; summaryKey:keyof Pick<NDRSummary,'ac
 export const copyVisibleOrderNumber=(order:string,write:(value:string)=>Promise<void>)=>write(order.replace(/^#/,''))
 
 export function NDRPage() {
+  const [tab,setTab]=useState<'active'|'analytics'>('active')
   const [summary,setSummary]=useState<NDRSummary|null>(null), [cases,setCases]=useState<NDRCase[]>([]), [operators,setOperators]=useState<NDROperator[]>([])
   const [analytics,setAnalytics]=useState<NDRAnalytics|null>(null),[analyticsPeriod,setAnalyticsPeriod]=useState('30d')
   const [filters,setFilters]=useState<NDRFilters>({}), [selected,setSelected]=useState<NDRCase|null>(null), [loading,setLoading]=useState(true), [refreshing,setRefreshing]=useState(false), [notice,setNotice]=useState('')
@@ -29,12 +30,8 @@ export function NDRPage() {
   return <div className="w-full">
     <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><div className="flex flex-wrap items-baseline gap-x-3 gap-y-1"><h2 className="text-xl font-bold">NDR Dashboard</h2><p className="text-xs text-slate-500">Last successful import: {summary?.last_successful_import_at?format(summary.last_successful_import_at):'Awaiting first import'}</p></div><button disabled={refreshing} onClick={()=>{setRefreshing(true);void load().then(ok=>{if(ok)setNotice('Imported data refreshed.')}).finally(()=>setRefreshing(false))}} className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">{refreshing?'Refreshing…':'Refresh Data'}</button></div>
     {notice&&<p role="status" className="mb-2 rounded-lg bg-slate-100 px-3 py-1.5 text-xs">{notice}</p>}
-    {summary&&<SourceHealthBanner summary={summary}/>}
-    <section className="mb-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">{summary&&kpiCards.map(card=>{const active=filters.kpi===card.key;return <button key={card.key} type="button" aria-pressed={active} onClick={()=>selectKpi(card.key)} className={kpiButtonClass(active)}><span className={`block text-[11px] font-semibold ${active?'text-orange-700':'text-slate-500'}`}>{card.label}</span><span className="mt-0.5 block text-xl font-bold leading-none">{summary[card.summaryKey]}</span></button>})}</section>
-    {analytics&&<><ResolutionAnalytics data={analytics} period={analyticsPeriod} setPeriod={setAnalyticsPeriod}/><ResolutionBreakdowns data={analytics}/></>}
-    <Filters filters={filters} setFilters={setFilters} operators={operators}/>
-    <NDRTable cases={cases} loading={loading} open={open} copyOrder={copyOrder}/>
-    {selected&&<NDRDrawer item={{...selected,whatsapp_url:selected.whatsapp_url||'',shopify_order_url:selected.shopify_order_url||''}} operators={operators} close={()=>setSelected(null)} action={action} copyOrder={copyOrder}/>}
+    <nav aria-label="NDR views" className="mb-2 flex gap-1 border-b"><button aria-selected={tab==='active'} onClick={()=>setTab('active')} className={`border-b-2 px-3 py-2 text-sm font-semibold ${tab==='active'?'border-orange-500 text-orange-700':'border-transparent text-slate-500'}`}>Active NDR</button><button aria-selected={tab==='analytics'} onClick={()=>setTab('analytics')} className={`border-b-2 px-3 py-2 text-sm font-semibold ${tab==='analytics'?'border-orange-500 text-orange-700':'border-transparent text-slate-500'}`}>Resolution Analytics</button></nav>
+    {tab==='active'?<>{summary&&<SourceHealthBanner summary={summary}/>}<section className="mb-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">{summary&&kpiCards.map(card=>{const active=filters.kpi===card.key;return <button key={card.key} type="button" aria-pressed={active} onClick={()=>selectKpi(card.key)} className={kpiButtonClass(active)}><span className={`block text-[11px] font-semibold ${active?'text-orange-700':'text-slate-500'}`}>{card.label}</span><span className="mt-0.5 block text-xl font-bold leading-none">{summary[card.summaryKey]}</span></button>})}</section><Filters filters={filters} setFilters={setFilters} operators={operators}/><NDRTable cases={cases} loading={loading} open={open} copyOrder={copyOrder}/>{selected&&<NDRDrawer item={{...selected,whatsapp_url:selected.whatsapp_url||'',shopify_order_url:selected.shopify_order_url||''}} operators={operators} close={()=>setSelected(null)} action={action} copyOrder={copyOrder}/>}</>:analytics&&<><ResolutionAnalytics data={analytics} period={analyticsPeriod} setPeriod={setAnalyticsPeriod}/><ResolutionBreakdowns data={analytics}/></>}
   </div>
 }
 
