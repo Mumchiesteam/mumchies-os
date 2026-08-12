@@ -96,7 +96,7 @@ async def warm_management_report_snapshots() -> None:
         # never call Shopify themselves.
         try:
             recent = await ShopifyService().get_orders_created_between(
-                datetime.now(timezone.utc) - timedelta(days=45), datetime.now(timezone.utc)
+                datetime.now(timezone.utc) - timedelta(days=90), datetime.now(timezone.utc)
             )
             with SessionLocal() as db:
                 cache_orders(db, recent)

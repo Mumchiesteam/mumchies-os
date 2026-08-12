@@ -96,7 +96,9 @@ def list_cases(search: str = "", courier: str = "", failure_reason: str = "", ag
     resolve_active_terminal_cases(db)
     query = select(NDRCase)
     now = datetime.now(timezone.utc)
-    if kpi == "active": query = query.where(NDRCase.source_lifecycle == "active", NDRCase.current_status != "resolved")
+    if kpi is None and not status:
+        query = query.where(NDRCase.source_lifecycle == "active", NDRCase.current_status != "resolved")
+    elif kpi == "active": query = query.where(NDRCase.source_lifecycle == "active", NDRCase.current_status != "resolved")
     elif kpi == "new_today": query = query.where(NDRCase.first_ndr_at >= datetime.combine(now.date(), datetime.min.time(), tzinfo=timezone.utc))
     elif kpi == "awaiting_customer": query = query.where(NDRCase.source_lifecycle == "active", NDRCase.current_status == "awaiting_customer")
     elif kpi == "courier_pending": query = query.where(NDRCase.source_lifecycle == "active", NDRCase.current_status == "courier_pending")

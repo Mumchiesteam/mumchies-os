@@ -41,11 +41,11 @@ def normalize_event_status(value: object) -> str:
     text = str(value or "").strip().casefold().replace("_", " ").replace("-", " ")
     if not text:
         return "unknown"
-    if any(marker in text for marker in ("rto delivered", "returned to seller", "return delivered")):
+    if any(marker in text for marker in ("rto delivered", "returned to seller", "return delivered", "return completed", "rto completed")):
         return "rto_delivered"
     if any(marker in text for marker in ("rto in transit", "return in transit", "returning to origin")):
         return "rto_in_transit"
-    if "rto" in text or "return to origin" in text or "return initiated" in text:
+    if "rto" in text or "return to origin" in text or "return initiated" in text or "return started" in text:
         return "rto_initiated"
     if "reattempt" in text or "re attempt" in text:
         return "reattempt"
@@ -142,8 +142,10 @@ def _shadowfax_events(raw: Any) -> list[dict[str, Any]]:
     activities = payload.get("tracking_details") or []
     return [
         {
-            "code": item.get("status_id") or item.get("status"),
-            "status": item.get("status_id") or item.get("status"),
+            # status_id is an opaque Shadowfax identifier.  The human status is
+            # the lifecycle value (for example Delivered / RTO Delivered).
+            "code": item.get("status_id") or item.get("status_code"),
+            "status": item.get("status") or item.get("status_display") or item.get("status_label") or item.get("remarks") or item.get("status_id"),
             "timestamp": item.get("created"),
             "location": item.get("location"),
             "message": item.get("remarks") or item.get("status"),

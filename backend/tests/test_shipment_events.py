@@ -34,6 +34,18 @@ def test_event_status_normalization(provider_status, expected):
     assert normalize_event_status(provider_status) == expected
 
 
+def test_shadowfax_opaque_status_id_uses_human_terminal_status(db):
+    result = TrackingResult(
+        provider="shadowfax", status=NormalizedShipmentStatus.DELIVERED,
+        provider_status="Delivered",
+        raw_response={"provider_response":{"tracking_details":[
+            {"status_id":"opaque-123", "status":"Delivered", "created":"2026-08-10T12:00:00Z"}
+        ]}},
+    )
+    inserted=append_tracking_events(db,order_id="shopify-323027",order_number="323027",shipment={"provider":"shadowfax","awb":"SF36981898586"},result=result,source="api_poll")
+    assert [(event.provider_status_code,event.normalized_status) for event in inserted]==[("opaque-123","delivered")]
+
+
 def test_shiprocket_multiple_events_are_append_only_and_deduplicated(db):
     shipment = upsert_shipment(
         db, "order-1", provider="shiprocket", provider_order_id="1001",

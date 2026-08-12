@@ -145,6 +145,7 @@ def test_kpi_filters_apply_server_side_and_combine_with_search(db):
         NDRCase(id="courier", source_identity="awb:D", awb="D", provider="delhivery", order_number="323503", source_lifecycle="active", current_status="courier_pending", priority="medium", delivery_attempts=1, first_ndr_at=now-timedelta(hours=80), last_synced_at=now, products=[], cod_amount=0),
     ]
     db.add_all(rows); db.commit()
+    assert {item["id"] for item in list_cases(page=1, page_size=50, db=db)["items"]} == {"active", "awaiting", "courier"}
     assert {item["id"] for item in list_cases(kpi="active", page=1, page_size=50, db=db)["items"]} == {"active", "awaiting", "courier"}
     assert {item["id"] for item in list_cases(kpi="new_today", page=1, page_size=50, db=db)["items"]} == {"active", "awaiting", "resolved"}
     assert [item["id"] for item in list_cases(kpi="awaiting_customer", search="323501", page=1, page_size=50, db=db)["items"]] == ["awaiting"]
@@ -210,4 +211,12 @@ def test_stale_active_322264_resolves_from_canonical_rto_event_and_enriches_prod
     now=datetime.now(timezone.utc);case=NDRCase(id="322264",source_identity="awb:4829510010776",awb="4829510010776",provider="delhivery",order_number="322264",source_lifecycle="active",current_status="new",priority="high",delivery_attempts=1,first_ndr_at=now,last_synced_at=now,products=[],cod_amount=0)
     db.add_all([case,ShipmentEvent(id="rto",order_id="6819",order_number="322264",provider="delhivery",awb="4829510010776",normalized_status="rto_delivered",recorded_at=now,source="poll",deduplication_key="rto"),OrderReadModel(order_id="6819",order_number="322264",customer_name="Customer",payment_type="cod",order_value=999,products=[{"product_name":"Roasted Makhana","quantity":1,"price":999}],updated_at=now)]);db.commit()
     assert list_cases(kpi="active",page=1,page_size=50,db=db)["items"]==[]
+    db.refresh(case);assert case.current_status=="resolved"
+
+@pytest.mark.parametrize("status", ["Delivered", "RTO Initiated", "RTO In Transit", "RTO Delivered", "Returned to Seller", "Return Completed"])
+def test_shadowfax_terminal_labels_resolve_exact_awb_at_active_read(status, db):
+    now=datetime.now(timezone.utc); awb=f"SF-{status}"
+    case=NDRCase(id=awb,source_identity=f"awb:{awb}",awb=awb,provider="shadowfax",order_number="323027",source_lifecycle="active",current_status="courier_pending",priority="medium",delivery_attempts=2,first_ndr_at=now,last_synced_at=now,products=[],cod_amount=0)
+    db.add_all([case,ShipmentEvent(id=f"event-{status}",order_id="shopify-323027",order_number="323027",provider="shadowfax",awb=awb,provider_status_code="opaque-status-id",normalized_status=status,recorded_at=now,source="api_poll",deduplication_key=f"key-{status}")]);db.commit()
+    assert list_cases(page=1,page_size=50,db=db)["items"]==[]
     db.refresh(case);assert case.current_status=="resolved"
