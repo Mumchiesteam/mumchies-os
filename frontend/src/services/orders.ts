@@ -157,6 +157,9 @@ export interface Order {
     shopify_tracking_url: string | null
     shopify_customer_notified: boolean | null
     label_print_status: 'not_printed' | 'awaiting_confirmation' | 'printed' | null
+    dispatch_status: 'ready_to_ship' | 'manifested' | null
+    manifested_at: string | null
+    manifested_by: string | null
     label_first_printed_at: string | null
     label_last_printed_at: string | null
     label_last_printed_by: string | null
@@ -375,9 +378,8 @@ export interface OrderCounts {
   follow_up: number
   on_hold: number
   all: number
-  labels_to_print: number
-  awaiting_confirmation: number
-  printed_today: number
+  ready_to_ship: number
+  manifested: number
   new_orders: number
   cod: number
   prepaid: number
@@ -393,7 +395,7 @@ export interface OrderCounts {
 export interface OrdersQuery {
   page?: number
   pageSize?: 20 | 50 | 100
-  queue?: 'fresh' | 'previous' | 'all' | 'labels_to_print' | 'awaiting_confirmation' | 'printed_today'
+  queue?: 'fresh' | 'previous' | 'all' | 'printed_today'
   search?: string
   payment?: string
   risk?: string
@@ -934,10 +936,18 @@ export async function exportOrders(mode: 'current' | 'full', orderIds: string[])
   URL.revokeObjectURL(url)
 }
 
-export async function getLabelQueue(): Promise<{ labels_to_print: NonNullable<Order['shipment']>[]; awaiting_confirmation: NonNullable<Order['shipment']>[]; printed_today: NonNullable<Order['shipment']>[] }> {
+export type DispatchQueue = { ready_to_ship: NonNullable<Order['shipment']>[]; manifested: NonNullable<Order['shipment']>[] }
+export async function getLabelQueue(): Promise<DispatchQueue> {
   const response = await apiFetch(`${apiBase}/api/v1/labels/queue`)
   if (!response.ok) throw new Error('Could not load label queue.')
   return response.json()
+}
+
+export async function changeDispatchStage(orderIds:string[], stage:'manifest'|'ready'):Promise<{items:NonNullable<Order['shipment']>[];ready_to_ship_delta:number;manifested_delta:number}>{
+  const response=await apiFetch(`${apiBase}/api/v1/labels/dispatch/${stage}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_ids:orderIds,confirmed:true})})
+  const body=await response.json().catch(()=>null)
+  if(!response.ok)throw new Error(body?.detail||'Could not update dispatch stage.')
+  return body
 }
 
 export async function createLabelBatch(orderIds: string[]): Promise<{ id: string; provider: string; status: string; order_ids: string[] }> {

@@ -13,11 +13,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.routes.orders import (
-    _call_outcome_is_on_hold, _call_outcome_requires_follow_up, _is_fresh_order,
-    _load_orders,
+    _load_orders, _operational_queue_partition,
 )
 from app.db.session import SessionLocal, get_db
 from app.models.ndr import NDRCase, NDREvent
+from app.services.ndr_delivery import resolve_active_terminal_cases
 from app.services.order_operations import OrderOperationsStore
 from app.services.report_snapshots import ReportSnapshotStore
 from app.services.shopify import ShopifyService
@@ -132,6 +132,7 @@ async def _build_dashboard(preset: str, start_at: datetime, end_at: datetime, la
     ndr_events = db.scalars(select(NDREvent).where(NDREvent.created_at >= start_at, NDREvent.created_at < end_at)).all()
     ndr_activity = _ndr_activity(list(ndr_events), start_at, end_at)
     operational = await _load_orders(db)
+    queues = _operational_queue_partition(operational)
     # Today, yesterday and last-seven-day views are already fully covered by the canonical
     # 15-day operational read. Reuse it instead of issuing a second Shopify request.
     if start_at >= datetime.now(timezone.utc) - timedelta(days=14):
@@ -140,14 +141,16 @@ async def _build_dashboard(preset: str, start_at: datetime, end_at: datetime, la
         business_orders = await ShopifyService().get_orders_created_between(start_at, end_at)
     business = _business_metrics(business_orders, _all_actioned_order_ids(operations))
 
+    resolve_active_terminal_cases(db)
     ndr_cases = db.scalars(select(NDRCase)).all()
     now = datetime.now(timezone.utc)
     active_ndr = [case for case in ndr_cases if case.source_lifecycle == "active" and case.current_status != "resolved"]
     needs = {
-        "fresh": sum(_is_fresh_order(order) for order in operational),
-        "follow_up": sum(_call_outcome_requires_follow_up(order) for order in operational),
-        "on_hold": sum(_call_outcome_is_on_hold(order) for order in operational),
-        "ready_booking": sum(str(order.operational_status or "").casefold() == "ready for booking" for order in operational),
+        "fresh": len(queues["fresh"]),
+        "follow_up": len(queues["follow_up"]),
+        "on_hold": len(queues["on_hold"]),
+        # A labelled subset of the canonical Operations population, not an additive queue.
+        "ready_booking": sum(str(order.operational_status or "").casefold() == "ready for booking" for order in queues["operations"]),
         "active_ndr": len(active_ndr),
         "ndr_over_sla": sum((now - (_at(case.first_ndr_at) or now)).total_seconds() > 172800 for case in active_ndr),
         # The canonical reconciliation endpoint performs historical Shopify and Shiprocket

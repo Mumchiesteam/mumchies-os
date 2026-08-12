@@ -7,7 +7,7 @@ const response = (pageSize: number, total = 0) => new Response(JSON.stringify({
   page_size: pageSize,
   total,
   total_pages: Math.max(1, Math.ceil(total / pageSize)),
-  counts: { operations: 64, fresh: 64, previous: 12, all: 100, labels_to_print: 4, awaiting_confirmation: 2, printed_today: 7, new_orders: 64, cod: 30, prepaid: 70, high_risk: 5, repeat_customers: 9, cod_collectable: 1000, prepaid_value: 2000, awaiting_order_confirmation: 3, awaiting_address_verification: 4, cod_conversion_pending: 5 },
+  counts: { operations: 64, fresh: 64, previous: 12, all: 100, ready_to_ship: 4, manifested: 7, new_orders: 64, cod: 30, prepaid: 70, high_risk: 5, repeat_customers: 9, cod_collectable: 1000, prepaid_value: 2000, awaiting_order_confirmation: 3, awaiting_address_verification: 4, cod_conversion_pending: 5 },
 }), { status: 200, headers: { 'Content-Type': 'application/json' } })
 
 afterEach(() => vi.restoreAllMocks())
@@ -36,13 +36,6 @@ describe('orders pagination client', () => {
     const url = new URL(String(fetchMock.mock.calls[0][0]))
     expect(url.searchParams.get('page')).toBe('2')
     expect(url.searchParams.get('page_size')).toBe(String(pageSize))
-  })
-
-  it('sends Printed Today as a clickable queue selection', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(response(20))
-    await getOrders({ queue: 'printed_today', page: 1 })
-    const url = new URL(String(fetchMock.mock.calls[0][0]))
-    expect(url.searchParams.get('queue')).toBe('printed_today')
   })
 
   it('sends all three Engage filters without additional requests', async () => {

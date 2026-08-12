@@ -205,7 +205,7 @@ def test_legacy_booked_shipment_remains_untracked(db):
 
 
 @pytest.mark.anyio
-async def test_printed_today_uses_current_india_date(db):
+async def test_print_history_does_not_remove_booked_shipments_from_ready_to_ship(db):
     from datetime import datetime, timedelta, timezone
 
     now = datetime.now(timezone.utc)
@@ -215,8 +215,8 @@ async def test_printed_today_uses_current_india_date(db):
     ])
     db.commit()
     result = await label_queue(db)
-    assert [item["order_id"] for item in result["printed_today"]] == ["today"]
-    assert result["printed_today"][0]["label_last_printed_by"] == "Operator"
+    assert {item["order_id"] for item in result["ready_to_ship"]} == {"today", "old"}
+    assert result["manifested"] == []
 
 
 async def response_bytes(response) -> bytes:

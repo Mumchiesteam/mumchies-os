@@ -7,7 +7,7 @@ import { displayedOrderNumber, orderNumberClipboardValue, stopCopyPropagation } 
 describe('operations-first Orders layout', () => {
   it('renders only the required top navigation and daily operation menus', () => {
     const html = renderToStaticMarkup(<App />)
-    for (const item of ['Dashboard', 'Orders', 'NDR', 'Reconciliation', 'Fresh Orders', 'Previous Pending Orders', 'Labels to Print', 'Printed Today']) {
+    for (const item of ['Dashboard', 'Orders', 'NDR', 'Reconciliation', 'Fresh Orders', 'Previous Pending Orders', 'Ready to Ship', 'Manifested']) {
       expect(html).toContain(item)
     }
     for (const removed of ['Customers', 'Reports', 'Settings', 'All Orders', 'Awaiting Confirmation', 'Shiprocket Cleanup Pending']) {
@@ -34,7 +34,7 @@ describe('operations-first Orders layout', () => {
     for (const card of ['New Orders', 'High Risk', 'Repeat Customers']) expect(html).not.toContain(card)
     expect(html.match(/>COD</g)).toHaveLength(1)
     expect(html.match(/>Prepaid</g)).toHaveLength(1)
-    for (const queue of ['Fresh Orders', 'Previous Pending Orders', 'Labels to Print', 'Printed Today']) expect(html).toContain(queue)
+    for (const queue of ['Fresh Orders', 'Previous Pending Orders', 'Ready to Ship', 'Manifested']) expect(html).toContain(queue)
     for (const filter of ['Payment Type', 'Risk', 'Sort']) expect(html).toContain(`aria-label="${filter}"`)
     const table = renderToStaticMarkup(<OrdersTable orders={[]} repeatIds={new Set()} onOpen={() => undefined} emptyMessage="No orders" />)
     expect(table).toContain('Order No')

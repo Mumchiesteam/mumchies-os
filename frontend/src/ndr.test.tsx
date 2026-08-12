@@ -9,7 +9,8 @@ afterEach(() => vi.restoreAllMocks())
 describe('NDR operations module', () => {
   it('renders dashboard, filters, grid columns and import-only refresh', () => {
     const html = renderToStaticMarkup(<NDRPage />)
-    for (const text of ['NDR Dashboard','Refresh Data','Last successful import','Search order, AWB, customer or phone','Priority','Order Number','AWB','Customer','Phone','Courier','Current Status','Failure Reason','Recommended Action','Ageing','Assigned To','Last Update','Actions']) expect(html).toContain(text)
+    for (const text of ['NDR Dashboard','Refresh Data','Last successful import','Search order, AWB, customer or phone','Priority','Order Number','AWB','Product','Customer','Phone','Courier','Current Status','Failure Reason','Recommended Action','Ageing','Last Update','Actions']) expect(html).toContain(text)
+    expect(html).not.toContain('Assigned To')
     expect(html).not.toContain('Sync Now')
   })
   it('uses only the persisted action endpoint', async () => {

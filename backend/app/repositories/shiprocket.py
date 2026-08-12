@@ -26,6 +26,8 @@ def upsert_shipment(db: Session, order_id: str, **fields) -> ShiprocketShipment:
         shipment.label_print_status = "not_printed"
         shipment.label_print_count = 0
         shipment.label_tracking_activated_at = datetime.now().astimezone()
+    if fields.get("booking_status") == "booked" and fields.get("awb") and not shipment.dispatch_status:
+        shipment.dispatch_status = "ready_to_ship"
     db.commit()
     db.refresh(shipment)
     return shipment
@@ -143,6 +145,9 @@ def snapshot(shipment: ShiprocketShipment | None) -> dict[str, object | None]:
             "label_print_count": 0,
             "last_print_batch_id": None,
             "label_tracking_activated_at": None,
+            "dispatch_status": None,
+            "manifested_at": None,
+            "manifested_by": None,
             "raw_provider_response": None,
             "booking_confidence": None,
             "reconciliation_status": None,
@@ -214,6 +219,9 @@ def snapshot(shipment: ShiprocketShipment | None) -> dict[str, object | None]:
         "label_print_count": shipment.label_print_count,
         "last_print_batch_id": shipment.last_print_batch_id,
         "label_tracking_activated_at": shipment.label_tracking_activated_at.isoformat() if shipment.label_tracking_activated_at else None,
+        "dispatch_status": shipment.dispatch_status or ("ready_to_ship" if shipment.booking_status == "booked" and shipment.awb else None),
+        "manifested_at": shipment.manifested_at.isoformat() if shipment.manifested_at else None,
+        "manifested_by": shipment.manifested_by,
         "raw_provider_response": shipment.raw_provider_response,
         "booking_confidence": shipment.booking_confidence,
         "reconciliation_status": shipment.reconciliation_status,

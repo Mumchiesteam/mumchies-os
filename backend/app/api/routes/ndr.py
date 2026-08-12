@@ -12,7 +12,7 @@ from app.models.ndr import NDRCase, NDREvent, NDRImportRun
 from app.models.user import User
 from app.services.ndr import add_event, serialize_case
 from app.services.ndr_import import import_ndr, serialize_import_run
-from app.services.ndr_delivery import resolve_active_delivered_cases
+from app.services.ndr_delivery import resolve_active_terminal_cases
 from app.core.config import settings
 import hmac
 
@@ -80,7 +80,7 @@ def operators(db: Session = Depends(get_db)) -> list[dict]:
 
 @router.get("/summary")
 def summary(db: Session = Depends(get_db)) -> dict:
-    resolve_active_delivered_cases(db)
+    resolve_active_terminal_cases(db)
     now = datetime.now(timezone.utc); today = now.date()
     cases = db.scalars(select(NDRCase)).all()
     aware = lambda value: value if not value or value.tzinfo else value.replace(tzinfo=timezone.utc)
@@ -92,8 +92,7 @@ def summary(db: Session = Depends(get_db)) -> dict:
 
 @router.get("/cases")
 def list_cases(search: str = "", courier: str = "", failure_reason: str = "", ageing: str = "", assigned_to: int | None = None, status: str = "", priority: str = "", kpi: Literal["active", "new_today", "awaiting_customer", "courier_pending", "resolved_today", "over_sla"] | None = None, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)) -> dict:
-    if kpi in {"active", "awaiting_customer", "courier_pending", "over_sla"}:
-        resolve_active_delivered_cases(db)
+    resolve_active_terminal_cases(db)
     query = select(NDRCase)
     now = datetime.now(timezone.utc)
     if kpi == "active": query = query.where(NDRCase.source_lifecycle == "active", NDRCase.current_status != "resolved")

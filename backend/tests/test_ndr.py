@@ -193,3 +193,13 @@ def test_shopify_fulfilled_alone_does_not_resolve_ndr_and_unresolved_case_stays_
     case = db.scalar(select(NDRCase).where(NDRCase.source_identity == "awb:SR123"))
     assert (case.current_status, case.source_lifecycle) == ("new", "active")
     assert [item["id"] for item in list_cases(kpi="active", page=1, page_size=50, db=db)["items"]] == [case.id]
+
+
+@pytest.mark.parametrize("status", ["RTO In Transit", "RTO Delivered", "RTO Initiated", "Cancelled"])
+def test_confirmed_terminal_outcome_resolves_ndr_and_preserves_history(db, status):
+    now = datetime.now(timezone.utc)
+    case = NDRCase(id=f"terminal-{status}", source_identity=f"awb:{status}", awb=status, provider="delhivery", order_number="322264", source_lifecycle="active", current_status="new", priority="high", delivery_attempts=1, first_ndr_at=now, last_synced_at=now, products=[], cod_amount=0)
+    db.add_all([case, NDREvent(id=f"history-{status}", case_id=case.id, event_type="operator_action", description="Preserved", actor_name="Operator"), ShiprocketShipment(order_id=f"shipment-{status}", provider="delhivery", provider_order_id="322264", awb=status, latest_status=status, terminal_status=status)])
+    db.commit()
+    assert list_cases(kpi="active", page=1, page_size=50, db=db)["items"] == []
+    assert {event.event_type for event in db.scalars(select(NDREvent).where(NDREvent.case_id == case.id)).all()} == {"operator_action", "terminal_shipment_resolution"}

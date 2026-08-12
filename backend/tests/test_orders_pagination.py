@@ -306,7 +306,7 @@ async def test_reconciliation_sets_and_mismatch_classification(monkeypatch):
             {"id": 3, "channel_order_id": "203", "status": "NEW", "products": [{"status": "CANCELED"}]},
         ]
     async def find(_self, number): return None if number == "201" else {"channel_order_id": number, "status": "NEW"}
-    monkeypatch.setattr(routes, "_load_reconciliation_orders", load)
+    monkeypatch.setattr(routes, "_load_orders", load)
     monkeypatch.setattr(routes.ShiprocketService, "list_new_orders", new)
     monkeypatch.setattr(routes.ShiprocketService, "find_existing_order", find)
     result = await routes._build_reconciliation_summary(db=None)
@@ -345,7 +345,7 @@ async def test_reconciliation_summary_counts_only_actionable_unfulfilled_orders(
     async def load(_db): return [old, recent, fulfilled, cancelled, booked, placeholder]
     async def new(_self, force_refresh=False): return []
     async def find(_self, number): return None
-    monkeypatch.setattr(routes, "_load_reconciliation_orders", load)
+    monkeypatch.setattr(routes, "_load_orders", load)
     monkeypatch.setattr(routes.ShiprocketService, "list_new_orders", new)
     monkeypatch.setattr(routes.ShiprocketService, "find_existing_order", find)
 

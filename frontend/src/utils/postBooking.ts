@@ -1,9 +1,8 @@
 import type { Order, OrderCounts } from '../services/orders'
 
 export type LabelQueueState = {
-  labels_to_print: NonNullable<Order['shipment']>[]
-  awaiting_confirmation: NonNullable<Order['shipment']>[]
-  printed_today: NonNullable<Order['shipment']>[]
+  ready_to_ship: NonNullable<Order['shipment']>[]
+  manifested: NonNullable<Order['shipment']>[]
 }
 
 export const isConfirmedLabelBooking = (shipment: Order['shipment']): shipment is NonNullable<Order['shipment']> =>
@@ -23,9 +22,9 @@ export function applyConfirmedBookingState(
 ) {
   if (!isConfirmedLabelBooking(shipment)) return { orders, counts, labels, moved: false }
   const wasDisplayed = orders.some(order => order.internalId === orderId)
-  const alreadyQueued = labels.labels_to_print.some(value => value.order_id === orderId)
+  const alreadyQueued = labels.ready_to_ship.some(value => value.order_id === orderId)
   const decrement = (value: number) => Math.max(0, value - (wasDisplayed ? 1 : 0))
-  const nextCounts = { ...counts, labels_to_print: counts.labels_to_print + (alreadyQueued ? 0 : 1) }
+  const nextCounts = { ...counts, ready_to_ship: counts.ready_to_ship + (alreadyQueued ? 0 : 1) }
   if (queue === 'fresh') {
     nextCounts.fresh = decrement(counts.fresh)
     nextCounts.new_orders = decrement(counts.new_orders)
@@ -39,7 +38,7 @@ export function applyConfirmedBookingState(
   return {
     orders: orders.filter(order => order.internalId !== orderId),
     counts: nextCounts,
-    labels: alreadyQueued ? labels : { ...labels, labels_to_print: [shipment, ...labels.labels_to_print] },
+    labels: alreadyQueued ? labels : { ...labels, ready_to_ship: [{...shipment,dispatch_status:'ready_to_ship' as const}, ...labels.ready_to_ship] },
     moved: true,
   }
 }

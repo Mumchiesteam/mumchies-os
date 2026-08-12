@@ -75,9 +75,10 @@ import { displayedOrderNumber, orderNumberClipboardValue, stopCopyPropagation } 
 import { courierSelectionMatches } from './utils/courierSelection'
 import { applyConfirmedBookingState, isConfirmedLabelBooking, mergeCanonicalShipment } from './utils/postBooking'
 import { CourierIssuesPage } from './components/CourierIssuesPage'
+import { DispatchQueueModal } from './components/DispatchQueueModal'
 
 type IconName = 'grid' | 'bag' | 'alert' | 'users' | 'chart' | 'settings' | 'search' | 'bell' | 'filter' | 'chevron' | 'more' | 'eye' | 'truck' | 'calendar' | 'close' | 'copy' | 'phone' | 'external' | 'repeat' | 'tag' | 'edit' | 'call'
-type TabKey = 'fresh' | 'previous' | 'all' | 'labels_to_print' | 'awaiting_confirmation' | 'printed_today' | 'shiprocket_cleanup'
+type TabKey = 'fresh' | 'previous' | 'all' | 'ready_to_ship' | 'manifested' | 'printed_today' | 'shiprocket_cleanup'
 export type CallResult = 'No Answer' | 'Busy' | 'Switched Off' | 'On Hold' | 'Confirmed' | 'Cancelled'
 type CourierQuote = {
   courier_id: string | null
@@ -106,8 +107,8 @@ const tabItems: { key: TabKey; label: string }[] = [
   { key: 'previous', label: 'Previous Pending Orders' },
 ]
 const dispatchItems: { key: TabKey; label: string }[] = [
-  { key: 'labels_to_print', label: 'Labels to Print' },
-  { key: 'printed_today', label: 'Printed Today' },
+  { key: 'ready_to_ship', label: 'Ready to Ship' },
+  { key: 'manifested', label: 'Manifested' },
 ]
 export const callResults: CallResult[] = ['Confirmed', 'No Answer', 'Busy', 'Switched Off', 'On Hold', 'Cancelled']
 export const callResultLabel = (result: CallResult) => result === 'Cancelled' ? 'Cancel' : result
@@ -226,7 +227,7 @@ function App() {
   const [pageSize, setPageSize] = useState<20 | 50 | 100>(20)
   const [total, setTotal] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
-  const [counts, setCounts] = useState<OrderCounts>({ operations: 0, fresh: 0, previous: 0, follow_up: 0, on_hold: 0, all: 0, labels_to_print: 0, awaiting_confirmation: 0, printed_today: 0, new_orders: 0, cod: 0, prepaid: 0, high_risk: 0, repeat_customers: 0, cod_collectable: 0, prepaid_value: 0, awaiting_order_confirmation: 0, awaiting_address_verification: 0, cod_conversion_pending: 0 })
+  const [counts, setCounts] = useState<OrderCounts>({ operations: 0, fresh: 0, previous: 0, follow_up: 0, on_hold: 0, all: 0, ready_to_ship: 0, manifested: 0, new_orders: 0, cod: 0, prepaid: 0, high_risk: 0, repeat_customers: 0, cod_collectable: 0, prepaid_value: 0, awaiting_order_confirmation: 0, awaiting_address_verification: 0, cod_conversion_pending: 0 })
   const [cleanupRecords, setCleanupRecords] = useState<ShiprocketCleanupRecord[]>([])
   const [cleanupResults, setCleanupResults] = useState<Record<string, ShiprocketCancellationResult>>({})
   const [reconciliation, setReconciliation] = useState<OrdersReconciliationSummary | null>(null)
@@ -275,20 +276,26 @@ function App() {
     state: '',
     pincode: '',
   })
-  const [labelQueue, setLabelQueue] = useState<{ labels_to_print: NonNullable<Order['shipment']>[]; awaiting_confirmation: NonNullable<Order['shipment']>[]; printed_today: NonNullable<Order['shipment']>[] }>({ labels_to_print: [], awaiting_confirmation: [], printed_today: [] })
+  const [labelQueue, setLabelQueue] = useState<{ ready_to_ship: NonNullable<Order['shipment']>[]; manifested: NonNullable<Order['shipment']>[]; printed_today: NonNullable<Order['shipment']>[] }>({ ready_to_ship: [], manifested: [], printed_today: [] })
   const [showLabels, setShowLabels] = useState(false)
+  const [showDispatch, setShowDispatch] = useState(false)
   const [labelSearch, setLabelSearch] = useState('')
   const labelSearchRef = useRef<HTMLInputElement>(null)
   const [selectedLabels, setSelectedLabels] = useState<Set<string>>(new Set())
   const [activeBatch, setActiveBatch] = useState<{ id: string; order_ids: string[] } | null>(null)
   const [printedLabels, setPrintedLabels] = useState<Set<string>>(new Set())
-  const refreshLabels = useCallback(() => void getLabelQueue().then(setLabelQueue).catch(() => undefined), [])
+  const refreshLabels = useCallback(() => void getLabelQueue().then(value=>setLabelQueue({...value,printed_today:[]})).catch(() => undefined), [])
   const refreshCleanup = useCallback(() => void getShiprocketCleanupPending().then(result => setCleanupRecords(result.items)).catch(() => undefined), [])
   const loadOrders = useCallback(async (signal?: AbortSignal) => {
     try {
       setLoading(true)
       setOrdersSlow(false)
       setError('')
+      if (queue === 'ready_to_ship' || queue === 'manifested') {
+        await getLabelQueue().then(value=>setLabelQueue({...value,printed_today:[]}))
+        setOrders([]); setTotal(0); setTotalPages(1)
+        return
+      }
       if (queue === 'shiprocket_cleanup') {
         const cleanup = await getShiprocketCleanupPending()
         setCleanupRecords(cleanup.items)
@@ -384,6 +391,12 @@ function App() {
     return () => window.clearTimeout(timeout)
   }, [notice])
 
+  useEffect(() => {
+    if (queue !== 'ready_to_ship' && queue !== 'manifested') return
+    const timeout=window.setTimeout(()=>setShowDispatch(true),0)
+    return ()=>window.clearTimeout(timeout)
+  }, [queue])
+
   const reconciliationRows = useMemo(() => reconciliationDataset(reconciliation, reconciliationFilter), [reconciliation, reconciliationFilter])
   const reconciliationOrders = useMemo(() => reconciliationRows.map(reconciliationRecordToOrder), [reconciliationRows])
   const selectedOrder = useMemo(() => [...orders, ...reconciliationOrders].find(order => order.internalId === selectedOrderId) || (selectedOrderSnapshot?.internalId === selectedOrderId ? selectedOrderSnapshot : null), [orders, reconciliationOrders, selectedOrderId, selectedOrderSnapshot])
@@ -406,7 +419,7 @@ function App() {
     const next = applyConfirmedBookingState(orders, counts, labelQueue, orderId, shipment, queue, pendingView)
     setOrders(next.orders)
     setCounts(next.counts)
-    setLabelQueue(next.labels)
+    setLabelQueue(current=>({...current,...next.labels}))
     applyCanonicalShipment(orderId, shipment)
     return true
   }
@@ -495,22 +508,22 @@ function App() {
   }
 
   const displayedOrders = orders
-  const displayedLabelShipments = useMemo(() => labelQueue.labels_to_print.filter(shipment => {
+  const displayedLabelShipments = useMemo(() => (queue==='manifested'?labelQueue.manifested:labelQueue.ready_to_ship).filter(shipment => {
     const order = orders.find(value => value.internalId === shipment.order_id)
     return `${order?.orderNumber || ''} ${order?.customerName || ''} ${shipment.awb || ''}`.toLowerCase().includes(labelSearch.toLowerCase())
-  }), [labelQueue.labels_to_print, labelSearch, orders])
+  }), [labelQueue.manifested, labelQueue.ready_to_ship, labelSearch, orders, queue])
   const labelSelectAllState = useMemo(
-    () => selectAllLabelState(labelQueue.labels_to_print, displayedLabelShipments, selectedLabels),
-    [displayedLabelShipments, labelQueue.labels_to_print, selectedLabels],
+    () => selectAllLabelState(labelQueue.ready_to_ship, displayedLabelShipments, selectedLabels),
+    [displayedLabelShipments, labelQueue.ready_to_ship, selectedLabels],
   )
 
   const summaryCounts = useMemo(() => ({
     fresh: counts.fresh,
     previous: counts.previous,
     all: counts.all,
-    labels_to_print: counts.labels_to_print,
-    awaiting_confirmation: counts.awaiting_confirmation,
-    printed_today: counts.printed_today,
+    ready_to_ship: counts.ready_to_ship,
+    manifested: counts.manifested,
+    printed_today: 0,
     shiprocket_cleanup: cleanupRecords.length,
   }), [cleanupRecords.length, counts])
 
@@ -863,7 +876,7 @@ function App() {
           {[{ label: 'ORDERS', items: tabItems }, { label: 'DISPATCH', items: dispatchItems }].map(group => <div key={group.label}>
             <p className="mb-2 text-[10px] font-bold tracking-[.14em] text-slate-400">{group.label}</p>
             <div className="flex flex-wrap gap-2">{group.items.map(tab => (
-              <button key={tab.key} onClick={() => { if (tab.key === 'shiprocket_cleanup') { refreshCleanup(); setReconciliationFilter('cleanup_pending'); return } setReconciliationFilter(clearReconciliationFilter()); setQueue(tab.key); setPage(1); if (tab.key === 'labels_to_print') { refreshLabels(); void getActiveLabelBatches().then(batches => { if (batches[0]) { setActiveBatch(batches[0]); setPrintedLabels(new Set(batches[0].order_ids)) } }); setShowLabels(true) } }} className={`rounded-full px-4 py-2 text-sm font-medium ${(queue === tab.key && !reconciliationFilter) || (tab.key === 'shiprocket_cleanup' && reconciliationFilter === 'cleanup_pending') ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'}`}>
+              <button key={tab.key} onClick={() => { if (tab.key === 'shiprocket_cleanup') { refreshCleanup(); setReconciliationFilter('cleanup_pending'); return } setReconciliationFilter(clearReconciliationFilter()); setQueue(tab.key); setPage(1); if (tab.key === 'ready_to_ship') { refreshLabels(); void getActiveLabelBatches().then(batches => { if (batches[0]) { setActiveBatch(batches[0]); setPrintedLabels(new Set(batches[0].order_ids)) } }) } }} className={`rounded-full px-4 py-2 text-sm font-medium ${(queue === tab.key && !reconciliationFilter) || (tab.key === 'shiprocket_cleanup' && reconciliationFilter === 'cleanup_pending') ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'}`}>
                 {tab.label}
                 <span className={`ml-2 rounded-full px-2 py-0.5 text-[11px] font-bold ${queue === tab.key ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-500'}`}>{summaryCounts[tab.key]}</span>
               </button>
@@ -986,13 +999,14 @@ function App() {
 
       {notice && <div className="fixed bottom-5 right-5 z-[60] rounded-lg bg-slate-900 px-4 py-3 text-sm font-medium text-white shadow-xl">{notice}</div>}
       {showLabels && <div className="fixed inset-0 z-[70] grid place-items-center bg-slate-950/40 p-4"><div className="max-h-[85vh] w-full max-w-3xl overflow-y-auto rounded-xl bg-white p-5 shadow-2xl">
-        <div className="flex items-center justify-between"><div><h2 className="text-lg font-bold">Labels to Print</h2><p className="text-xs text-slate-500">One provider per batch · generating a PDF does not mark labels printed.</p></div><button onClick={() => setShowLabels(false)} className="text-slate-500">Close</button></div>
+        <div className="flex items-center justify-between"><div><h2 className="text-lg font-bold">{queue==='manifested'?'Manifested':'Ready to Ship'}</h2><p className="text-xs text-slate-500">Internal Mumchies dispatch stage · no courier manifest API is called.</p></div><button onClick={() => setShowLabels(false)} className="text-slate-500">Close</button></div>
         <div className="relative mt-4"><input ref={labelSearchRef} value={labelSearch} onChange={event => setLabelSearch(event.target.value)} placeholder="Search order, AWB or customer" className="w-full rounded-lg border border-slate-200 px-3 py-2 pr-9 text-sm" />{labelSearch && <button onClick={() => { setLabelSearch(''); labelSearchRef.current?.focus() }} className="absolute right-3 top-1.5 text-lg text-slate-400">×</button>}</div>
-        <label className="mt-3 flex items-center gap-2 border-b border-slate-100 pb-3 text-sm font-semibold text-slate-700"><input type="checkbox" aria-label="Select all displayed labels" checked={labelSelectAllState.checked} ref={input => { if (input) input.indeterminate = labelSelectAllState.indeterminate }} disabled={!labelSelectAllState.eligible} onChange={event => setSelectedLabels(previous => selectAllLabelIds(labelQueue.labels_to_print, displayedLabelShipments, previous, event.target.checked))} />Select All</label>
+        <label className="mt-3 flex items-center gap-2 border-b border-slate-100 pb-3 text-sm font-semibold text-slate-700"><input type="checkbox" aria-label="Select all displayed shipments" checked={labelSelectAllState.checked} ref={input => { if (input) input.indeterminate = labelSelectAllState.indeterminate }} disabled={!labelSelectAllState.eligible} onChange={event => setSelectedLabels(previous => selectAllLabelIds(labelQueue.ready_to_ship, displayedLabelShipments, previous, event.target.checked))} />Select All filtered</label>
         <div className="mt-3 space-y-2">{displayedLabelShipments.map(shipment => { const order = orders.find(value => value.internalId === shipment.order_id); const checked = selectedLabels.has(String(shipment.order_id)); return <label key={shipment.order_id} className="flex items-center gap-3 rounded-lg border border-slate-200 p-3 text-sm"><input type="checkbox" checked={checked} onChange={() => setSelectedLabels(previous => { const next = new Set(previous); if (checked) next.delete(String(shipment.order_id)); else next.add(String(shipment.order_id)); return next })} /><span className="font-semibold">#{order?.orderNumber || shipment.order_id}</span><span>{order?.customerName || 'Customer'}</span><span className="ml-auto text-xs text-slate-500">{shipment.provider} · {shipment.awb}</span></label>})}</div>
         {labelQueue.printed_today.length > 0 && <details className="mt-4"><summary className="cursor-pointer text-sm font-semibold text-slate-600">Previously printed</summary><div className="mt-2 space-y-2">{labelQueue.printed_today.map(shipment => <div key={shipment.order_id} className="flex items-center gap-2 rounded-lg bg-slate-50 p-2 text-xs"><span>#{orders.find(order => order.internalId === shipment.order_id)?.orderNumber || shipment.order_id}</span><span>Printed {shipment.label_last_printed_at ? formatDateTime(shipment.label_last_printed_at) : ''}</span><button onClick={() => { if (window.confirm('Print this label again?')) void requestLabelReprint(String(shipment.order_id)).then(refreshLabels).catch(error => setNotice(error.message)) }} className="ml-auto font-semibold text-slate-700">Print again?</button></div>)}</div></details>}
         {!activeBatch ? <button disabled={!selectedLabels.size} onClick={() => void createLabelBatch([...selectedLabels]).then(batch => { setActiveBatch(batch); setPrintedLabels(new Set(batch.order_ids)); window.open(labelBatchPdfUrl(batch.id), '_blank', 'noopener,noreferrer'); refreshLabels() }).catch(error => setNotice(error.message))} className="mt-4 rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-40">Print Selected</button> : <div className="mt-5 rounded-lg bg-amber-50 p-4"><p className="font-semibold text-amber-900">Were all labels printed successfully?</p><p className="mt-1 text-xs text-amber-700">Uncheck failed labels before confirming partial success.</p><div className="mt-3 space-y-1">{activeBatch.order_ids.map(id => <label key={id} className="flex gap-2 text-sm"><input type="checkbox" checked={printedLabels.has(id)} onChange={() => setPrintedLabels(previous => { const next = new Set(previous); if (next.has(id)) next.delete(id); else next.add(id); return next })} />#{orders.find(order => order.internalId === id)?.orderNumber || id}</label>)}</div><div className="mt-3 flex flex-wrap gap-2"><button onClick={() => void confirmLabelBatch(activeBatch.id, activeBatch.order_ids).then(() => { setActiveBatch(null); setSelectedLabels(new Set()); refreshLabels() })} className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white">Mark all printed</button><button onClick={() => void confirmLabelBatch(activeBatch.id, [...printedLabels]).then(() => { setActiveBatch(null); setSelectedLabels(new Set()); refreshLabels() })} className="rounded-lg border border-amber-300 px-3 py-2 text-sm font-semibold">Confirm selected only</button><button onClick={() => void confirmLabelBatch(activeBatch.id, []).then(() => { setActiveBatch(null); setSelectedLabels(new Set()); refreshLabels() })} className="rounded-lg px-3 py-2 text-sm">Return all to queue</button><button onClick={() => window.open(labelBatchPdfUrl(activeBatch.id), '_blank', 'noopener,noreferrer')} className="rounded-lg px-3 py-2 text-sm">Reopen PDF</button></div></div>}
       </div></div>}
+      {showDispatch && (queue==='ready_to_ship'||queue==='manifested') && <DispatchQueueModal stage={queue} queue={labelQueue} orders={orders} canCorrect={['owner','admin'].includes(authUser?.role||'')} close={()=>setShowDispatch(false)} notice={setNotice} changed={(next,readyDelta,manifestedDelta)=>{setLabelQueue({...next,printed_today:[]});setCounts(current=>({...current,ready_to_ship:Math.max(0,current.ready_to_ship+readyDelta),manifested:Math.max(0,current.manifested+manifestedDelta)}))}}/>}
     </div>
   )
 }

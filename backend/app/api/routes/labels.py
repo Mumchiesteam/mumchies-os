@@ -1,6 +1,5 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -9,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.core.identity import current_actor
+from app.core.identity import current_actor, current_user
 from app.models.shiprocket import LabelPrintBatch, LabelPrintBatchItem, ShiprocketShipment
 from app.repositories.shiprocket import snapshot
 from app.services.label_printing import LabelPrintError, confirm_batch, create_batch
@@ -31,15 +30,50 @@ class ReprintPayload(BaseModel):
     confirmed: bool
 
 
+class DispatchPayload(BaseModel):
+    order_ids: list[str]
+    confirmed: bool
+
+
 @router.get("/queue")
 async def label_queue(db: Session = Depends(get_db)) -> dict[str, object]:
-    shipments = db.scalars(select(ShiprocketShipment).where(ShiprocketShipment.label_print_status.in_(["not_printed", "awaiting_confirmation", "printed"]))).all()
-    local_today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+    shipments = db.scalars(select(ShiprocketShipment).where(ShiprocketShipment.booking_status == "booked", ShiprocketShipment.awb.is_not(None))).all()
+    ready = [value for value in shipments if (value.dispatch_status or "ready_to_ship") == "ready_to_ship"]
+    manifested = [value for value in shipments if value.dispatch_status == "manifested"]
     return {
-        "labels_to_print": [snapshot(value) for value in shipments if value.label_print_status == "not_printed" and value.booking_status == "booked" and value.awb],
-        "awaiting_confirmation": [snapshot(value) for value in shipments if value.label_print_status == "awaiting_confirmation"],
-        "printed_today": [snapshot(value) for value in shipments if value.label_print_status == "printed" and value.label_last_printed_at and (value.label_last_printed_at if value.label_last_printed_at.tzinfo else value.label_last_printed_at.replace(tzinfo=ZoneInfo("UTC"))).astimezone(ZoneInfo("Asia/Kolkata")).date() == local_today],
+        "ready_to_ship": [snapshot(value) for value in ready],
+        "manifested": [snapshot(value) for value in manifested],
     }
+
+
+@router.post("/dispatch/manifest")
+def manifest_dispatch(payload: DispatchPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
+    if not payload.confirmed or not payload.order_ids:
+        raise HTTPException(status_code=400, detail="Explicit confirmation and at least one shipment are required.")
+    actor = current_actor(request); now = datetime.now(timezone.utc)
+    rows = db.scalars(select(ShiprocketShipment).where(ShiprocketShipment.order_id.in_(set(payload.order_ids)))).all()
+    if len(rows) != len(set(payload.order_ids)) or any(row.booking_status != "booked" or not row.awb or (row.dispatch_status or "ready_to_ship") != "ready_to_ship" for row in rows):
+        raise HTTPException(status_code=409, detail="Every selected shipment must be a confirmed Ready to Ship booking.")
+    for row in rows:
+        row.dispatch_status = "manifested"; row.manifested_at = now; row.manifested_by = actor
+    db.commit()
+    return {"items": [snapshot(row) for row in rows], "ready_to_ship_delta": -len(rows), "manifested_delta": len(rows)}
+
+
+@router.post("/dispatch/ready")
+def return_dispatch_to_ready(payload: DispatchPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
+    user = current_user(request)
+    if user.role not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="Owner or Admin access required.")
+    if not payload.confirmed or not payload.order_ids:
+        raise HTTPException(status_code=400, detail="Explicit confirmation and at least one shipment are required.")
+    rows = db.scalars(select(ShiprocketShipment).where(ShiprocketShipment.order_id.in_(set(payload.order_ids)))).all()
+    if len(rows) != len(set(payload.order_ids)) or any(row.dispatch_status != "manifested" for row in rows):
+        raise HTTPException(status_code=409, detail="Every selected shipment must currently be Manifested.")
+    for row in rows:
+        row.dispatch_status = "ready_to_ship"; row.manifested_at = None; row.manifested_by = None
+    db.commit()
+    return {"items": [snapshot(row) for row in rows], "ready_to_ship_delta": len(rows), "manifested_delta": -len(rows)}
 
 
 @router.get("/batches/active")

@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.ndr import NDRCase, NDREvent, NDRImportRun
-from app.services.ndr_delivery import resolve_if_canonically_delivered
+from app.services.ndr_delivery import resolve_if_canonically_terminal
 
 
 COURIER_FIELDS = (
@@ -74,7 +74,7 @@ def import_ndr(db: Session, payload: Any) -> NDRImportRun:
             db.add(NDREvent(id=str(uuid4()), case_id=case.id, event_type="case_created",
                 description=f"Imported from {source.title()}.", actor_name="GitHub NDR Import",
                 event_data={"run_id": payload.run_id}))
-            resolve_if_canonically_delivered(db, case, now=now)
+            resolve_if_canonically_terminal(db, case, now=now)
             created += 1
         else:
             changed = any(not _equal(getattr(case, key), value) for key, value in values.items())
@@ -82,7 +82,7 @@ def import_ndr(db: Session, payload: Any) -> NDRImportRun:
             case.awb = awb or None; case.last_synced_at = now
             if case.current_status == "resolved": case.source_lifecycle = "resolved"
             else: case.source_lifecycle = "active"
-            resolve_if_canonically_delivered(db, case, now=now)
+            resolve_if_canonically_terminal(db, case, now=now)
             if changed:
                 db.add(NDREvent(id=str(uuid4()), case_id=case.id, event_type="import_update",
                     description=f"Courier data refreshed from {source.title()}.", actor_name="GitHub NDR Import",

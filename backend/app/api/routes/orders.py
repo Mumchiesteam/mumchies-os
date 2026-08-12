@@ -269,7 +269,7 @@ def _requires_operational_action(order: ShopifyOrder) -> bool:
     if _is_inactive(order) or str(order.latest_call_result or "").casefold() == "cancelled":
         return False
     shipment = order.shipment or {}
-    successfully_booked = str(shipment.get("booking_status") or "").casefold() in {"booked", "complete", "completed", "awb_assigned"} and bool(shipment.get("awb"))
+    successfully_booked = has_persisted_provider_booking_evidence(shipment)
     if successfully_booked and not _has_pending_exception(order) and not customer_cancellation_requires_action(order, shipment):
         return False
     return True
@@ -305,6 +305,15 @@ def _call_outcome_requires_follow_up(order: ShopifyOrder) -> bool:
 
 def _call_outcome_is_on_hold(order: ShopifyOrder) -> bool:
     return order.payment_type in {"cod", "partial_cod"} and str(order.latest_call_result or "").strip() == "On Hold"
+
+
+def _operational_queue_partition(orders: list[ShopifyOrder], now: datetime | None = None) -> dict[str, list[ShopifyOrder]]:
+    """One canonical, mutually-exclusive Operations population used by every surface."""
+    current = now or datetime.now(timezone.utc)
+    fresh = [order for order in orders if _is_fresh_order(order, current)]
+    follow_up = [order for order in orders if _matches_queue(order, "previous", current, "follow_up")]
+    on_hold = [order for order in orders if _matches_queue(order, "previous", current, "on_hold")]
+    return {"fresh": fresh, "follow_up": follow_up, "on_hold": on_hold, "previous": follow_up + on_hold, "operations": fresh + follow_up + on_hold}
 
 
 def _engage_category(value: object) -> str:
@@ -343,10 +352,8 @@ def _base_filtered_orders(orders: list[ShopifyOrder], search: str, payment: str,
 
 
 def _full_counts(orders: list[ShopifyOrder], now: datetime, db: Session) -> dict[str, int | float]:
-    fresh = [order for order in orders if _matches_queue(order, "fresh", now)]
-    follow_up = [order for order in orders if _matches_queue(order, "previous", now, "follow_up")]
-    on_hold = [order for order in orders if _matches_queue(order, "previous", now, "on_hold")]
-    previous = follow_up + on_hold
+    queues = _operational_queue_partition(orders, now)
+    fresh, follow_up, on_hold, previous = queues["fresh"], queues["follow_up"], queues["on_hold"], queues["previous"]
     cod = [order for order in orders if order.payment_type in {"cod", "partial_cod"}]
     prepaid = [order for order in orders if order.payment_type == "prepaid"]
     high_risk = [order for order in orders if "high" in " ".join(order.tags).casefold() and not _is_inactive(order)]
@@ -356,15 +363,13 @@ def _full_counts(orders: list[ShopifyOrder], now: datetime, db: Session) -> dict
             customer_counts[order.customer_id] = customer_counts.get(order.customer_id, 0) + 1
     repeat = [order for order in orders if (order.customer_orders_count or 0) > 1 or bool(order.customer_id and customer_counts.get(order.customer_id, 0) > 1)]
     from app.models.shiprocket import ShiprocketShipment
-    local_today = now.astimezone(ZoneInfo("Asia/Kolkata")).date()
-    shipments = db.scalars(select(ShiprocketShipment).where(ShiprocketShipment.label_print_status.in_(["not_printed", "awaiting_confirmation", "printed"]))).all() if hasattr(db, "scalars") else []
-    printed_today = [value for value in shipments if value.label_print_status == "printed" and value.label_last_printed_at and (value.label_last_printed_at if value.label_last_printed_at.tzinfo else value.label_last_printed_at.replace(tzinfo=timezone.utc)).astimezone(ZoneInfo("Asia/Kolkata")).date() == local_today]
+    shipments = db.scalars(select(ShiprocketShipment).where(ShiprocketShipment.booking_status == "booked", ShiprocketShipment.awb.is_not(None))).all() if hasattr(db, "scalars") else []
+    ready = [value for value in shipments if (value.dispatch_status or "ready_to_ship") == "ready_to_ship"]
+    manifested = [value for value in shipments if value.dispatch_status == "manifested"]
     return {
-        "operations": len(fresh) + len(previous), "fresh": len(fresh), "previous": len(previous),
+        "operations": len(queues["operations"]), "fresh": len(fresh), "previous": len(previous),
         "follow_up": len(follow_up), "on_hold": len(on_hold), "all": len(orders),
-        "labels_to_print": sum(1 for value in shipments if value.label_print_status == "not_printed" and value.booking_status == "booked" and value.awb),
-        "awaiting_confirmation": sum(1 for value in shipments if value.label_print_status == "awaiting_confirmation"),
-        "printed_today": len(printed_today), "new_orders": len(fresh),
+        "ready_to_ship": len(ready), "manifested": len(manifested), "new_orders": len(fresh),
         "cod": len(cod), "prepaid": len(prepaid), "high_risk": len(high_risk), "repeat_customers": len(repeat),
         "cod_collectable": sum(float(order.cod_collectable_amount) for order in cod),
         "prepaid_value": sum(float(order.order_total) for order in prepaid),
@@ -971,8 +976,11 @@ def _reconciliation_record(
 
 async def _build_reconciliation_summary(db: Session) -> dict[str, object]:
     """Compare active OS work with Shiprocket New without implying the sets must be equal."""
-    os_orders = await _load_reconciliation_orders(db)
-    operations = [order for order in os_orders if _requires_reconciliation_action(order)]
+    # Reconciliation's Operations metric is the exact same canonical population
+    # as Orders; historical/provider-only populations have separately named metrics.
+    os_orders = await _load_orders(db)
+    queues = _operational_queue_partition(os_orders)
+    operations = queues["operations"]
     service = ShiprocketService()
     try:
         shiprocket_new = await service.list_new_orders(force_refresh=True)
@@ -1036,8 +1044,8 @@ async def _build_reconciliation_summary(db: Session) -> dict[str, object]:
     }
     return {
         "operations_queue": len(operations),
-        "fresh_orders": sum(1 for order in operations if _is_fresh_order(order)),
-        "previous_pending": sum(1 for order in operations if not _is_fresh_order(order)),
+        "fresh_orders": len(queues["fresh"]),
+        "previous_pending": len(queues["previous"]),
         "shiprocket_new": len(shiprocket_new),
         "present_in_both": len(both),
         "cleanup_pending": cleanup_pending,
