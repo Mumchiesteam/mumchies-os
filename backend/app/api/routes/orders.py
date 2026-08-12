@@ -26,6 +26,7 @@ from app.services.shipment_status import customer_cancellation_requires_action, 
 from app.services.shiprocket import ShiprocketAPIError, ShiprocketConfigurationError, ShiprocketService
 from app.services.shopify import ShopifyConfigurationError, ShopifyService, ShopifySyncError
 from app.services.shopify_fulfillment import ShopifyFulfillmentSynchronizer, ShopifyFulfillmentSyncError
+from app.services.order_read_models import cache_orders
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 RECONCILIATION_SNAPSHOT_KEY = "reconciliation"
@@ -156,6 +157,7 @@ def _merged_operational_state(order: ShopifyOrder, operations: dict[str, object]
 async def _load_orders(db: Session, *, force_refresh: bool = False) -> list[ShopifyOrder]:
     try:
         orders = await ShopifyService().get_latest_orders(force_refresh=force_refresh)
+        cache_orders(db, orders)
         operations_map = OrderOperationsStore.all()
         shipments = get_shipments_by_order_id(db, [order.order_id for order in orders])
         merged_orders: list[ShopifyOrder] = []

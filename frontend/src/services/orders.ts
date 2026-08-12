@@ -936,7 +936,8 @@ export async function exportOrders(mode: 'current' | 'full', orderIds: string[])
   URL.revokeObjectURL(url)
 }
 
-export type DispatchQueue = { ready_to_ship: NonNullable<Order['shipment']>[]; manifested: NonNullable<Order['shipment']>[] }
+export type DispatchRow = NonNullable<Order['shipment']> & { order_number?: string | null; customer_name?: string | null; payment_type?: string | null; order_value?: number | null }
+export type DispatchQueue = { ready_to_ship: DispatchRow[]; manifested: DispatchRow[] }
 export async function getLabelQueue(): Promise<DispatchQueue> {
   const response = await apiFetch(`${apiBase}/api/v1/labels/queue`)
   if (!response.ok) throw new Error('Could not load label queue.')

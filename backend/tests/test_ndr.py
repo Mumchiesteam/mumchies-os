@@ -11,6 +11,8 @@ from app.core.config import settings
 from app.db.base import Base
 from app.models.ndr import NDRCase, NDREvent, NDRImportRun
 from app.models.shiprocket import ShiprocketShipment
+from app.models.shipment_event import ShipmentEvent
+from app.models.order_read_model import OrderReadModel
 from app.models.user import User
 from app.services.ndr_import import import_ndr
 
@@ -203,3 +205,9 @@ def test_confirmed_terminal_outcome_resolves_ndr_and_preserves_history(db, statu
     db.commit()
     assert list_cases(kpi="active", page=1, page_size=50, db=db)["items"] == []
     assert {event.event_type for event in db.scalars(select(NDREvent).where(NDREvent.case_id == case.id)).all()} == {"operator_action", "terminal_shipment_resolution"}
+
+def test_stale_active_322264_resolves_from_canonical_rto_event_and_enriches_product(db):
+    now=datetime.now(timezone.utc);case=NDRCase(id="322264",source_identity="awb:4829510010776",awb="4829510010776",provider="delhivery",order_number="322264",source_lifecycle="active",current_status="new",priority="high",delivery_attempts=1,first_ndr_at=now,last_synced_at=now,products=[],cod_amount=0)
+    db.add_all([case,ShipmentEvent(id="rto",order_id="6819",order_number="322264",provider="delhivery",awb="4829510010776",normalized_status="rto_delivered",recorded_at=now,source="poll",deduplication_key="rto"),OrderReadModel(order_id="6819",order_number="322264",customer_name="Customer",payment_type="cod",order_value=999,products=[{"product_name":"Roasted Makhana","quantity":1,"price":999}],updated_at=now)]);db.commit()
+    assert list_cases(kpi="active",page=1,page_size=50,db=db)["items"]==[]
+    db.refresh(case);assert case.current_status=="resolved"

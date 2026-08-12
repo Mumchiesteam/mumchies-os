@@ -12,6 +12,7 @@ from app.core.identity import current_actor, current_user
 from app.models.shiprocket import LabelPrintBatch, LabelPrintBatchItem, ShiprocketShipment
 from app.repositories.shiprocket import snapshot
 from app.services.label_printing import LabelPrintError, confirm_batch, create_batch
+from app.models.order_read_model import OrderReadModel
 
 router = APIRouter(prefix="/labels", tags=["labels"])
 
@@ -40,10 +41,12 @@ async def label_queue(db: Session = Depends(get_db)) -> dict[str, object]:
     shipments = db.scalars(select(ShiprocketShipment).where(ShiprocketShipment.booking_status == "booked", ShiprocketShipment.awb.is_not(None))).all()
     ready = [value for value in shipments if (value.dispatch_status or "ready_to_ship") == "ready_to_ship"]
     manifested = [value for value in shipments if value.dispatch_status == "manifested"]
-    return {
-        "ready_to_ship": [snapshot(value) for value in ready],
-        "manifested": [snapshot(value) for value in manifested],
-    }
+    order_rows = {row.order_id: row for row in db.scalars(select(OrderReadModel).where(OrderReadModel.order_id.in_([value.order_id for value in shipments]))).all()}
+    def item(value: ShiprocketShipment) -> dict[str, object]:
+        result = snapshot(value); order = order_rows.get(value.order_id)
+        result.update({"order_number": order.order_number if order else None, "customer_name": order.customer_name if order else None, "payment_type": order.payment_type if order else None, "order_value": order.order_value if order else None})
+        return result
+    return {"ready_to_ship": [item(value) for value in ready], "manifested": [item(value) for value in manifested]}
 
 
 @router.post("/dispatch/manifest")

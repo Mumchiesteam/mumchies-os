@@ -13,6 +13,7 @@ from app.models.user import User
 from app.services.ndr import add_event, serialize_case
 from app.services.ndr_import import import_ndr, serialize_import_run
 from app.services.ndr_delivery import resolve_active_terminal_cases
+from app.services.order_read_models import by_order_number
 from app.core.config import settings
 import hmac
 
@@ -114,6 +115,13 @@ def list_cases(search: str = "", courier: str = "", failure_reason: str = "", ag
     count = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     priority_rank = sql_case((NDRCase.priority == "high", 0), (NDRCase.priority == "medium", 1), else_=2)
     rows = db.scalars(query.order_by(NDRCase.resolved_at.is_not(None), priority_rank, NDRCase.first_ndr_at.asc()).offset((page - 1) * page_size).limit(page_size)).all()
+    cached = by_order_number(db, {str(row.order_number or row.order_id or "").lstrip("#") for row in rows})
+    changed = False
+    for row in rows:
+        order = cached.get(str(row.order_number or row.order_id or "").lstrip("#"))
+        if order and order.products and row.products != order.products:
+            row.products = order.products; changed = True
+    if changed: db.commit()
     return {"items": [serialize_case(c) for c in rows], "total": count, "page": page, "page_size": page_size}
 
 

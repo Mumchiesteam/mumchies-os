@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +18,8 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.services.report_snapshots import ReportSnapshotStore
+from app.services.order_read_models import cache_orders
+from app.services.shopify import ShopifyService
 from app.services.shipment_poller import poller_status, tracking_poller_loop
 from sqlalchemy import select
 
@@ -89,6 +92,16 @@ async def warm_management_report_snapshots() -> None:
         # Give interactive traffic priority after a cold start. Heavy provider
         # reads are intentionally staggered rather than launched together.
         await asyncio.sleep(15)
+        # Populate the local canonical read model once per deploy. Dispatch/NDR reads
+        # never call Shopify themselves.
+        try:
+            recent = await ShopifyService().get_orders_created_between(
+                datetime.now(timezone.utc) - timedelta(days=45), datetime.now(timezone.utc)
+            )
+            with SessionLocal() as db:
+                cache_orders(db, recent)
+        except Exception:
+            logging.getLogger(__name__).exception("Canonical order read-model warmup failed.")
         start_at, end_at, label = _period("today", None, None)
         key = _dashboard_key("today", start_at, end_at)
         _start_dashboard_refresh(key, "today", start_at, end_at, label)

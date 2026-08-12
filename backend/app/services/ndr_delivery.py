@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models.ndr import NDRCase, NDREvent
 from app.models.shiprocket import ShiprocketShipment
+from app.models.shipment_event import ShipmentEvent
 
 
 def _terminal_outcome(shipment: ShiprocketShipment) -> str | None:
@@ -17,6 +18,16 @@ def _terminal_outcome(shipment: ShiprocketShipment) -> str | None:
     if values & {"rto in transit", "return in transit", "rto initiated", "return initiated", "rto"}: return "rto_underway"
     if values & {"cancelled", "canceled"}: return "cancelled"
     return None
+
+
+def _event_terminal_outcome(db: Session, case: NDRCase) -> tuple[str | None, ShipmentEvent | None]:
+    awb = str(case.awb or "").strip(); order_number = str(case.order_number or case.order_id or "").strip().lstrip("#")
+    predicates = ([ShipmentEvent.awb == awb] if awb else []) + ([ShipmentEvent.order_number == order_number] if order_number else [])
+    if not predicates: return None, None
+    terminal = {"delivered":"delivered", "rto_initiated":"rto_underway", "rto_in_transit":"rto_underway", "rto_delivered":"rto_delivered", "cancelled":"cancelled"}
+    events = db.scalars(select(ShipmentEvent).where(or_(*predicates)).order_by(ShipmentEvent.provider_event_at.desc(), ShipmentEvent.recorded_at.desc())).all()
+    event = next((value for value in events if value.normalized_status in terminal), None)
+    return (terminal.get(event.normalized_status), event) if event else (None, None)
 
 
 def canonical_shipment_for_case(db: Session, case: NDRCase) -> ShiprocketShipment | None:
@@ -37,7 +48,9 @@ def canonical_shipment_for_case(db: Session, case: NDRCase) -> ShiprocketShipmen
 def resolve_if_canonically_terminal(db: Session, case: NDRCase, *, now: datetime | None = None) -> bool:
     shipment = canonical_shipment_for_case(db, case)
     outcome = _terminal_outcome(shipment) if shipment else None
-    if shipment is None or outcome is None:
+    event = None
+    if outcome is None: outcome, event = _event_terminal_outcome(db, case)
+    if outcome is None:
         return False
     if case.current_status == "resolved" and case.source_lifecycle == "resolved":
         return True
@@ -48,7 +61,7 @@ def resolve_if_canonically_terminal(db: Session, case: NDRCase, *, now: datetime
     label = outcome.replace("_", " ").title()
     case.resolution_note = case.resolution_note or f"Resolved automatically after canonical shipment outcome {label} was confirmed."
     event_type = "delivered_resolution" if outcome == "delivered" else "terminal_shipment_resolution"
-    db.add(NDREvent(id=str(uuid4()), case_id=case.id, event_type=event_type, description=f"NDR closed after canonical shipment outcome {label} was confirmed.", actor_name="Mumchies OS", event_data={"shipment_order_id": shipment.order_id, "awb": shipment.awb, "outcome": outcome}))
+    db.add(NDREvent(id=str(uuid4()), case_id=case.id, event_type=event_type, description=f"NDR closed after canonical shipment outcome {label} was confirmed.", actor_name="Mumchies OS", event_data={"shipment_order_id": shipment.order_id if shipment else event.order_id, "awb": shipment.awb if shipment else event.awb, "outcome": outcome, "evidence": "shipment_row" if shipment and _terminal_outcome(shipment) else "shipment_event"}))
     return True
 
 

@@ -10,6 +10,7 @@ from app.api.routes.labels import DispatchPayload, label_queue, manifest_dispatc
 from app.db.base import Base
 from app.models.user import User
 from app.repositories.shiprocket import upsert_shipment
+from app.models.order_read_model import OrderReadModel
 
 
 @pytest.fixture
@@ -31,6 +32,14 @@ async def test_confirmed_booking_derives_ready_and_failed_booking_does_not(db):
     result=await label_queue(db)
     assert [row["order_id"] for row in result["ready_to_ship"]]==["booked"]
     assert result["manifested"]==[]
+
+@pytest.mark.anyio
+async def test_dispatch_returns_visible_order_customer_payment_and_value_without_provider_fallback(db):
+    now=datetime.now(timezone.utc);upsert_shipment(db,"6819259416654",provider="delhivery",provider_order_id="PROVIDER",shipment_id="SHIP",booking_status="booked",awb="AWB1",booked_at=now)
+    db.add(OrderReadModel(order_id="6819259416654",order_number="324900",customer_name="Dispatch Customer",payment_type="cod",order_value=1250,products=[],updated_at=now));db.commit()
+    row=(await label_queue(db))["ready_to_ship"][0]
+    assert (row["order_number"],row["customer_name"],row["payment_type"],row["order_value"])==("324900","Dispatch Customer","cod",1250)
+    assert row["order_number"] not in {row["order_id"],row["provider_order_id"],row["shipment_id"],row["awb"]}
 
 
 @pytest.mark.anyio
