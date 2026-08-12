@@ -1,8 +1,17 @@
-from types import SimpleNamespace
-
 import pytest
 
 from scripts import shadowfax_batch_diagnostic as script
+
+
+def test_direct_transport_uses_exact_token_authorization_header_without_request():
+    from app.services.courier_platform.shadowfax_http import ShadowfaxHTTPTransport
+
+    transport = ShadowfaxHTTPTransport(token=" 99e4085c73c49e5d684944d15a54f09f048d69c7 ", base_url="https://api.shadowfax.example")
+
+    assert transport._headers == {
+        "Authorization": "Token 99e4085c73c49e5d684944d15a54f09f048d69c7",
+        "Content-Type": "application/json",
+    }
 
 
 def valid_payload(number="324823"):
@@ -31,7 +40,7 @@ async def test_first_create_failure_stops_batch_without_second_post(monkeypatch)
     calls = []
     rows = [script.Preflight(number=n, payment="COD", amount=400, pincode="411001", package_ok=True, serviceable=True, ready=True, service="regular", payload=valid_payload(n)) for n in script.ORDER_NUMBERS[:2]]
 
-    class Adapter:
+    class Transport:
         def __init__(self, **_kwargs): pass
         async def create_booking(self, payload):
             from app.services.courier_platform.base import ProviderError
@@ -42,7 +51,7 @@ async def test_first_create_failure_stops_batch_without_second_post(monkeypatch)
     async def preflight(number, _order, _adapter): return next(row for row in rows if row.number == number) if number in {row.number for row in rows} else script.Preflight(number=number, error="not ready")
     monkeypatch.setattr(script, "_load_orders", orders)
     monkeypatch.setattr(script, "_preflight", preflight)
-    monkeypatch.setattr("app.services.courier_platform.adapters.ShadowfaxAdapter", Adapter)
+    monkeypatch.setattr("app.services.courier_platform.shadowfax_http.ShadowfaxHTTPTransport", Transport)
     monkeypatch.setattr("app.core.config.settings.shadowfax_token", "configured-token")
     monkeypatch.setattr("app.core.config.settings.shadowfax_base_url", "https://api.shadowfax.example")
 
@@ -58,21 +67,21 @@ async def test_each_success_requires_fresh_confirmation_and_tracks_read_only(mon
     rows = [script.Preflight(number=n, payment="Prepaid", amount=400, pincode="411001", package_ok=True, serviceable=True, ready=True, service="regular", payload=valid_payload(n)) for n in script.ORDER_NUMBERS[:2]]
     answers = iter(("BOOK SHADOWFAX 324823 ONCE", "wrong"))
 
-    class Adapter:
+    class Transport:
         def __init__(self, **_kwargs): pass
         async def create_booking(self, payload):
             number = payload["order_details"]["client_order_id"]; creates.append(number)
-            return SimpleNamespace(awb=f"AWB-{number}", provider_order_id=f"ID-{number}", shipment_id=f"ID-{number}")
+            return {"awb": f"AWB-{number}", "provider_order_id": f"ID-{number}", "shipment_id": f"ID-{number}"}
         async def track_shipment(self, shipment):
             tracks.append(shipment["awb"])
-            return SimpleNamespace(provider_status="new", status=SimpleNamespace(value="created"))
+            return {"status": "new"}
 
     async def orders(): return {row.number: object() for row in rows}
     async def preflight(number, _order, _adapter): return next((row for row in rows if row.number == number), script.Preflight(number=number, error="not ready"))
     def confirm(prompt): prompts.append(prompt); return next(answers)
     monkeypatch.setattr(script, "_load_orders", orders)
     monkeypatch.setattr(script, "_preflight", preflight)
-    monkeypatch.setattr("app.services.courier_platform.adapters.ShadowfaxAdapter", Adapter)
+    monkeypatch.setattr("app.services.courier_platform.shadowfax_http.ShadowfaxHTTPTransport", Transport)
     monkeypatch.setattr("app.core.config.settings.shadowfax_token", "configured-token")
     monkeypatch.setattr("app.core.config.settings.shadowfax_base_url", "https://api.shadowfax.example")
 

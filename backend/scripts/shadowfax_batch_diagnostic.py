@@ -77,7 +77,7 @@ def _validate_payload(payload: dict[str, Any]) -> None:
         raise RuntimeError("Payment/COD mapping is invalid.")
 
 
-async def _preflight(number: str, order: Any | None, adapter: Any) -> Preflight:
+async def _preflight(number: str, order: Any | None, transport: Any) -> Preflight:
     from app.api.routes.couriers import PackageDetailsPayload, _build_provider_booking_request, _order_payment_mode
     from app.db.session import SessionLocal
     from app.repositories.shiprocket import get_shipment, snapshot
@@ -107,13 +107,13 @@ async def _preflight(number: str, order: Any | None, adapter: Any) -> Preflight:
         result.package_ok = True
         payload = await _build_provider_booking_request(order, operations, package)
         _validate_payload(payload)
-        serviceability = await adapter.serviceability({"delivery_pincode": result.pincode})
-        result.serviceable = serviceability.serviceable
-        result.service = serviceability.quotes[0].service_type or serviceability.quotes[0].service_id if serviceability.quotes else "-"
+        serviceability = await transport.serviceability({"delivery_pincode": result.pincode})
+        result.serviceable = bool(serviceability.get("serviceable"))
+        result.service = str(serviceability.get("service_type") or serviceability.get("service_id") or "-")
         result.payload = payload
         result.ready = result.package_ok and result.serviceable and not result.existing
         if not result.ready:
-            result.error = serviceability.reason or "not ready"
+            result.error = str(serviceability.get("reason") or "not ready")
     except Exception as error:
         result.error = str(error)
     return result
@@ -137,53 +137,63 @@ def _print_table(rows: list[Preflight]) -> None:
 
 async def run(*, input_fn=input) -> int:
     from app.core.config import settings
-    from app.services.courier_platform.adapters import ShadowfaxAdapter
     from app.services.courier_platform.base import ProviderError
+    from app.services.courier_platform.shadowfax_http import ShadowfaxHTTPTransport
 
-    token = str(settings.shadowfax_token or "")
+    token = str(settings.shadowfax_token or "").strip()
     base_url = str(settings.shadowfax_base_url or "").rstrip("/")
+    fingerprint = f"{token[:4]}...{token[-4:]}" if len(token) >= 8 else "[TOO SHORT]"
+    print(f"token present: {'yes' if token else 'no'}")
+    print(f"token fingerprint: {fingerprint}")
+    print(f"token length: {len(token)}")
+    print("Authorization scheme = Token")
     if not token.strip() or not base_url:
         print("SHADOWFAX_TOKEN and SHADOWFAX_BASE_URL must be configured.")
         return 2
-    adapter = ShadowfaxAdapter(token=token, base_url=base_url)
-    orders = await _load_orders()
-    rows = [await _preflight(number, orders.get(number), adapter) for number in ORDER_NUMBERS]
-    _print_table(rows)
-    ready = [row for row in rows if row.ready and row.payload]
-    if not ready:
-        print("No READY orders. No create request was made.")
-        return 0
-
-    for index, row in enumerate(ready):
-        if index == 0:
-            print("FINAL PAYLOAD:")
-            print(json.dumps(row.payload, ensure_ascii=False, indent=2))
-            print("REDACTED CURL:")
-            print(_redacted_curl(base_url, row.payload))
-        else:
-            print(f"NEXT READY: {row.number} | {row.payment} | {row.pincode} | {row.service}")
-        confirmation = f"BOOK SHADOWFAX {row.number} ONCE"
-        if input_fn(f'Type "{confirmation}" to send exactly one create POST: ').strip() != confirmation:
-            print("STOPPED: confirmation did not match. No request was made for this order.")
+    async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=10.0), follow_redirects=False) as client:
+        # Use the same direct transport as the proven single-order diagnostic.
+        # It applies Authorization: Token <SHADOWFAX_TOKEN> to every GET and POST.
+        transport = ShadowfaxHTTPTransport(token=token, base_url=base_url, client=client)
+        orders = await _load_orders()
+        rows = [await _preflight(number, orders.get(number), transport) for number in ORDER_NUMBERS]
+        _print_table(rows)
+        ready = [row for row in rows if row.ready and row.payload]
+        if not ready:
+            print("No READY orders. No create request was made.")
             return 0
-        try:
-            booking = await adapter.create_booking(row.payload)  # Exactly one POST; no retry path.
-        except ProviderError as error:
-            print(f"STOPPED: create failed/rejected/ambiguous: {error}. NO RETRY.")
-            return 1
-        except (httpx.TimeoutException, httpx.TransportError) as error:
-            print(f"STOPPED: ambiguous {type(error).__name__}. NO RETRY.")
-            return 1
-        if not booking.awb or not (booking.provider_order_id or booking.shipment_id):
-            print("STOPPED: create result is ambiguous (missing provider ID or AWB). NO RETRY.")
-            return 1
-        print(f"SUCCESS {row.number}: provider_id={booking.provider_order_id or booking.shipment_id} awb={booking.awb}")
-        try:
-            tracking = await adapter.track_shipment({"awb": booking.awb})
-            print(f"TRACKING GET: {tracking.provider_status or tracking.status.value}")
-        except Exception as error:
-            print(f"STOPPED: post-create tracking GET failed: {error}. Booking was not retried.")
-            return 1
+
+        for index, row in enumerate(ready):
+            if index == 0:
+                print("FINAL PAYLOAD:")
+                print(json.dumps(row.payload, ensure_ascii=False, indent=2))
+                print("REDACTED CURL:")
+                print(_redacted_curl(base_url, row.payload))
+            else:
+                print(f"NEXT READY: {row.number} | {row.payment} | {row.pincode} | {row.service}")
+            confirmation = f"BOOK SHADOWFAX {row.number} ONCE"
+            if input_fn(f'Type "{confirmation}" to send exactly one create POST: ').strip() != confirmation:
+                print("STOPPED: confirmation did not match. No request was made for this order.")
+                return 0
+            try:
+                booking = await transport.create_booking(row.payload)  # Exactly one POST; no retry path.
+            except ProviderError as error:
+                print(f"STOPPED: create failed/rejected/ambiguous: {error}. NO RETRY.")
+                return 1
+            except (httpx.TimeoutException, httpx.TransportError) as error:
+                print(f"STOPPED: ambiguous {type(error).__name__}. NO RETRY.")
+                return 1
+            awb = str(booking.get("awb") or "")
+            provider_id = str(booking.get("provider_order_id") or booking.get("shipment_id") or "")
+            if not awb or not provider_id:
+                print("STOPPED: create result is ambiguous (missing provider ID or AWB). NO RETRY.")
+                return 1
+            print(f"SUCCESS {row.number}: provider_id={provider_id} awb={awb}")
+            try:
+                tracking = await transport.track_shipment({"awb": awb})
+                print(f"TRACKING GET: {tracking.get('status') or 'unknown'}")
+            except Exception as error:
+                print(f"STOPPED: post-create tracking GET failed: {error}. Booking was not retried.")
+                return 1
     print("BATCH COMPLETE: all confirmed READY orders were created once.")
     return 0
 
