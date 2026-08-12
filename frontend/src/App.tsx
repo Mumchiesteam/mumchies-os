@@ -73,7 +73,7 @@ import { engageCategory } from './utils/engage'
 import { hasShipmentEvidence, listStatus, type OperationalStatus } from './utils/orderStatus'
 import { displayedOrderNumber, orderNumberClipboardValue, stopCopyPropagation } from './utils/orderNumber'
 import { courierSelectionMatches } from './utils/courierSelection'
-import { applyConfirmedBookingState, isConfirmedLabelBooking } from './utils/postBooking'
+import { applyConfirmedBookingState, isConfirmedLabelBooking, mergeCanonicalShipment } from './utils/postBooking'
 import { CourierIssuesPage } from './components/CourierIssuesPage'
 
 type IconName = 'grid' | 'bag' | 'alert' | 'users' | 'chart' | 'settings' | 'search' | 'bell' | 'filter' | 'chevron' | 'more' | 'eye' | 'truck' | 'calendar' | 'close' | 'copy' | 'phone' | 'external' | 'repeat' | 'tag' | 'edit' | 'call'
@@ -396,7 +396,7 @@ function App() {
 
   const applyCanonicalShipment = (orderId: string, shipment: Order['shipment']) => {
     if (!shipment) return
-    const update = (order: Order) => JSON.stringify(order.shipment) === JSON.stringify(shipment) ? order : { ...order, shipment }
+    const update = (order: Order) => mergeCanonicalShipment(order, shipment)
     setOrders(previous => previous.map(order => order.internalId === orderId ? update(order) : order))
     setSelectedOrderSnapshot(previous => previous?.internalId === orderId ? update(previous) : previous)
   }
@@ -680,7 +680,7 @@ function App() {
       const reopened = await getOrderOperations(selectedOrder.internalId)
       setOperations(reopened)
       applyCanonicalShipment(selectedOrder.internalId, reopened.shipment ?? result.shipment ?? null)
-      if (result.warning) setCourierError(`Shiprocket cleanup failed: ${result.warning}`)
+      setCourierError(result.warning ? `Shiprocket cleanup failed: ${result.warning}` : '')
       setNotice(result.warning ? 'Delhivery shipment booked; Shiprocket cleanup needs attention' : result.existing ? 'Existing shipment loaded' : 'Shipment booked')
     } catch (err) {
       setCourierError((err as Error).message)
@@ -699,7 +699,7 @@ function App() {
       const reopened = await getOrderOperations(selectedOrder.internalId)
       setOperations(reopened)
       applyCanonicalShipment(selectedOrder.internalId, reopened.shipment ?? result.shipment ?? null)
-      if (result.warning) setCourierError(`Shiprocket cleanup failed: ${result.warning}`)
+      setCourierError(result.warning ? `Shiprocket cleanup failed: ${result.warning}` : '')
       setNotice(result.warning ? 'Shadowfax shipment saved; Shiprocket cleanup needs attention' : 'Shadowfax manual shipment saved')
     } catch (error) { setCourierError((error as Error).message); throw error } finally { setBookingLoading(false) }
   }
@@ -726,8 +726,9 @@ function App() {
     setCourierError('')
     try {
       const result = await refreshShiprocketShipment(selectedOrder.internalId)
-      setOrders(prev => prev.map(order => order.internalId === selectedOrder.internalId ? { ...order, shipment: result.shipment } : order))
+      applyCanonicalShipment(selectedOrder.internalId, result.shipment)
       setOperations(await getOrderOperations(selectedOrder.internalId))
+      setCourierError('')
       setNotice('Shipment status refreshed')
     } catch (err) {
       setCourierError((err as Error).message)
@@ -741,8 +742,8 @@ function App() {
     setShipmentRefreshLoading(true); setCourierError('')
     try {
       const result = await reconcileCourierBooking(selectedOrder.internalId)
-      setOrders(prev => prev.map(order => order.internalId === selectedOrder.internalId ? { ...order, shipment: result.shipment } : order))
-      setOperations(await getOrderOperations(selectedOrder.internalId)); setNotice('Booking reconciliation completed')
+      applyCanonicalShipment(selectedOrder.internalId, result.shipment)
+      setOperations(await getOrderOperations(selectedOrder.internalId)); setCourierError(''); setNotice('Booking reconciliation completed')
     } catch (err) { setCourierError((err as Error).message) } finally { setShipmentRefreshLoading(false) }
   }
 
@@ -973,7 +974,7 @@ function App() {
           onRefreshShipment={() => void refreshShipment()}
           onReconcileShipment={() => void reconcileShipment()}
           onCancelShipment={() => void cancelShipment()}
-          onRetryShiprocketCleanup={() => { if (selectedOrder) void retryShiprocketCleanup(selectedOrder.internalId).then(result => { if (result.status === 'cancelled' || result.status === 'not_applicable') setCourierError(''); else setCourierError(result.error || `Shiprocket cleanup: ${result.status}`); setOperations(current => current) }).catch(error => setCourierError(error.message)) }}
+          onRetryShiprocketCleanup={() => { if (selectedOrder) void retryShiprocketCleanup(selectedOrder.internalId).then(result => { if (['cancelled', 'not_applicable', 'resolved'].includes(result.status)) setCourierError(''); else setCourierError(result.error || `Shiprocket cleanup: ${result.status}`); setOperations(current => current) }).catch(error => setCourierError(error.message)) }}
           onSyncShopifyFulfillment={() => void syncFulfillment()}
           onDownloadLabel={() => retrieveLabel('download')}
           onPrintLabel={() => retrieveLabel('print')}

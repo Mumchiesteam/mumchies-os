@@ -14,6 +14,7 @@ from app.services.ndr_sources import (
     CourierRow, clean_phone, fetch_delhivery, fetch_shadowfax, fetch_shiprocket,
     fetch_shopify, recommended_action, whatsapp_url,
 )
+from app.services.ndr_delivery import resolve_if_canonically_delivered
 
 
 class NDRSyncAlreadyRunning(RuntimeError): pass
@@ -92,11 +93,13 @@ async def sync_ndr(db: Session, *, trigger: str, actor: User | None = None) -> N
                 changed=existing.provider_status!=row.status or existing.failure_reason!=row.failure_reason
                 for key,value in values.items(): setattr(existing,key,value)
                 existing.source_lifecycle="resolved" if existing.current_status=="resolved" else "active"
+                resolve_if_canonically_delivered(db, existing, now=now)
                 if changed: add_event(db,existing,"sync_update",f"{row.source.title()} updated status to {row.status}.",data={"failure_reason":row.failure_reason})
                 run.cases_updated += 1
             else:
                 existing=NDRCase(id=str(uuid4()),awb=awb,first_ndr_at=first,current_status="new",source_lifecycle="active",products=[],cod_amount=0,**values)
                 db.add(existing); db.flush(); add_event(db,existing,"case_created",f"NDR detected from {row.source.title()}.",data={"provider_status":row.status})
+                resolve_if_canonically_delivered(db, existing, now=now)
                 run.cases_created += 1
             run.cases_seen += 1
 

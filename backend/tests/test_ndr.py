@@ -10,6 +10,7 @@ from app.api.routes.ndr import NDRAction, NDRImportPayload, case_action, import_
 from app.core.config import settings
 from app.db.base import Base
 from app.models.ndr import NDRCase, NDREvent, NDRImportRun
+from app.models.shiprocket import ShiprocketShipment
 from app.models.user import User
 from app.services.ndr_import import import_ndr
 
@@ -148,3 +149,47 @@ def test_kpi_filters_apply_server_side_and_combine_with_search(db):
     assert [item["id"] for item in list_cases(kpi="courier_pending", page=1, page_size=50, db=db)["items"]] == ["courier"]
     assert [item["id"] for item in list_cases(kpi="resolved_today", page=1, page_size=50, db=db)["items"]] == ["resolved"]
     assert [item["id"] for item in list_cases(kpi="over_sla", page=1, page_size=50, db=db)["items"]] == ["courier"]
+
+
+def test_confirmed_canonical_delivery_resolves_active_ndr_and_preserves_history(db):
+    now = datetime.now(timezone.utc)
+    case = NDRCase(id="delivered-ndr", source_identity="awb:DELIVERED1", awb="DELIVERED1", provider="delhivery", order_number="323027", source_lifecycle="active", current_status="courier_pending", priority="high", delivery_attempts=2, first_ndr_at=now, last_synced_at=now, products=[], cod_amount=0)
+    db.add_all([
+        case,
+        NDREvent(id="historic-action", case_id=case.id, event_type="customer_contacted", description="Customer contacted", actor_name="Operator"),
+        ShiprocketShipment(order_id="shopify-1", provider="delhivery", provider_order_id="323027", awb="DELIVERED1", normalized_status="delivered", terminal_status="delivered", latest_status="Delivered", shopify_fulfillment_status="success"),
+    ])
+    db.commit()
+
+    active = list_cases(kpi="active", page=1, page_size=50, db=db)
+
+    assert active["items"] == []
+    db.refresh(case)
+    assert (case.current_status, case.source_lifecycle) == ("resolved", "resolved")
+    assert case.resolved_at is not None
+    events = db.scalars(select(NDREvent).where(NDREvent.case_id == case.id)).all()
+    assert {event.event_type for event in events} == {"customer_contacted", "delivered_resolution"}
+
+
+def test_stale_import_cannot_reactivate_canonically_delivered_ndr(db):
+    db.add(ShiprocketShipment(order_id="shopify-2", provider="delhivery", provider_order_id="323223", awb="SR123", normalized_status="delivered"))
+    db.commit()
+
+    import_ndr(db, payload("delivered-first"))
+    case = db.scalar(select(NDRCase).where(NDRCase.source_identity == "awb:SR123"))
+    assert case.current_status == "resolved"
+
+    import_ndr(db, payload("delivered-stale"))
+    db.refresh(case)
+    assert (case.current_status, case.source_lifecycle) == ("resolved", "resolved")
+    assert len(db.scalars(select(NDREvent).where(NDREvent.case_id == case.id, NDREvent.event_type == "delivered_resolution")).all()) == 1
+
+
+def test_shopify_fulfilled_alone_does_not_resolve_ndr_and_unresolved_case_stays_active(db):
+    db.add(ShiprocketShipment(order_id="shopify-3", provider="delhivery", provider_order_id="323500", awb="SR123", booking_status="booked", latest_status="Manifested", normalized_status="booked", shopify_fulfillment_status="success"))
+    db.commit()
+
+    import_ndr(db, payload("fulfilled-only"))
+    case = db.scalar(select(NDRCase).where(NDRCase.source_identity == "awb:SR123"))
+    assert (case.current_status, case.source_lifecycle) == ("new", "active")
+    assert [item["id"] for item in list_cases(kpi="active", page=1, page_size=50, db=db)["items"]] == [case.id]

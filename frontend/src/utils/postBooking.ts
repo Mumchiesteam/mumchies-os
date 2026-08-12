@@ -9,6 +9,14 @@ export type LabelQueueState = {
 export const isConfirmedLabelBooking = (shipment: Order['shipment']): shipment is NonNullable<Order['shipment']> =>
   Boolean(shipment?.awb && shipment.booking_status === 'booked')
 
+export const mergeCanonicalShipment = (order: Order, shipment: Order['shipment']): Order => {
+  if (!shipment) return order
+  const operationalStatus = isConfirmedLabelBooking(shipment) && !['Shipped', 'Delivered', 'Cancelled'].includes(order.operationalStatus || '')
+    ? 'Booked'
+    : order.operationalStatus
+  return { ...order, shipment, operationalStatus }
+}
+
 export function applyConfirmedBookingState(
   orders: Order[], counts: OrderCounts, labels: LabelQueueState,
   orderId: string, shipment: Order['shipment'], queue: string, pendingView: 'follow_up' | 'on_hold',

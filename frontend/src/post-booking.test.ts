@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Order, OrderCounts } from './services/orders'
-import { applyConfirmedBookingState } from './utils/postBooking'
+import { applyConfirmedBookingState, mergeCanonicalShipment } from './utils/postBooking'
 import appSource from './App.tsx?raw'
 
 const order = { internalId: 'order-1', orderNumber: '324700' } as Order
@@ -43,5 +43,16 @@ describe('confirmed post-booking queue transition', () => {
     const flow = appSource.slice(appSource.indexOf('const applyConfirmedBooking ='), appSource.indexOf('useEffect(() => {', appSource.indexOf('const applyConfirmedBooking =')))
     expect(flow).toContain('applyCanonicalShipment(orderId, shipment)')
     expect(flow).not.toContain('loadOrders')
+  })
+
+  it('immediately promotes the open drawer to Booked while preserving the AWB', () => {
+    const merged = mergeCanonicalShipment({ ...order, operationalStatus: 'Ready for Booking' }, booked)
+    expect(merged.operationalStatus).toBe('Booked')
+    expect(merged.shipment?.awb).toBe('AWB-1')
+  })
+
+  it('clears stale courier errors after later successful operations', () => {
+    expect(appSource).toContain("setCourierError(result.warning ? `Shiprocket cleanup failed: ${result.warning}` : '')")
+    expect(appSource).toContain("['cancelled', 'not_applicable', 'resolved'].includes(result.status)")
   })
 })
