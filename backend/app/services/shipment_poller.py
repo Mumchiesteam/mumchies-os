@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.shipment_event import ShipmentEvent
+from app.models.ndr import NDRCase
 from app.models.shipment_poll import ShipmentPollAttempt, ShipmentPollRun
 from app.models.shiprocket import ShiprocketShipment
 from app.repositories.shiprocket import snapshot
@@ -78,7 +79,12 @@ def eligible_shipments(db: Session, *, batch_size: int) -> list[ShiprocketShipme
         select(ShiprocketShipment)
         .order_by(ShiprocketShipment.last_synced_at.asc().nulls_first(), ShiprocketShipment.order_id.asc())
     ).all()
-    return [shipment for shipment in rows if shipment_poll_eligible(shipment)][:batch_size]
+    active_ndr_awbs = set(db.scalars(select(NDRCase.awb).where(NDRCase.source_lifecycle == "active", NDRCase.current_status != "resolved", NDRCase.awb.is_not(None))).all())
+    eligible = [shipment for shipment in rows if shipment_poll_eligible(shipment)]
+    # Stale active NDR is an operationally urgent read-only tracking target.
+    # Preserve the normal oldest-sync ordering within both priority groups.
+    eligible.sort(key=lambda shipment: 0 if shipment.awb in active_ndr_awbs else 1)
+    return eligible[:batch_size]
 
 
 def resolve_visible_order_number(order_id: str, canonical_order_numbers: dict[str, str] | None) -> str | None:

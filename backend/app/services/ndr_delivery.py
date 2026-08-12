@@ -56,16 +56,27 @@ def resolve_if_canonically_terminal(db: Session, case: NDRCase, *, now: datetime
     if outcome is None: outcome, event = _event_terminal_outcome(db, case)
     if outcome is None:
         return False
-    if case.current_status == "resolved" and case.source_lifecycle == "resolved":
+    provider_outcome = "delivered" if outcome == "delivered" else "rto_confirmed" if outcome in {"rto_underway", "rto_delivered"} else None
+    if case.resolution_source == "manual" and case.resolution_outcome and provider_outcome and case.resolution_outcome != provider_outcome:
+        already = db.scalar(select(NDREvent.id).where(NDREvent.case_id == case.id, NDREvent.event_type == "provider_outcome_conflict"))
+        if not already:
+            db.add(NDREvent(id=str(uuid4()), case_id=case.id, event_type="provider_outcome_conflict", description=f"Provider later reported {provider_outcome.replace('_', ' ').title()}; manual outcome was preserved for audit.", actor_name="Mumchies OS", event_data={"manual_outcome": case.resolution_outcome, "provider_outcome": provider_outcome}))
+        return True
+    if case.current_status == "resolved" and case.source_lifecycle == "resolved" and case.resolution_outcome:
         return True
     resolved_at = now or datetime.now(timezone.utc)
     case.current_status = "resolved"
     case.source_lifecycle = "resolved"
     case.resolved_at = case.resolved_at or resolved_at
+    case.resolution_outcome = case.resolution_outcome or provider_outcome
+    case.resolution_source = case.resolution_source or "provider"
+    case.resolved_by_name = case.resolved_by_name or "Mumchies OS"
     label = outcome.replace("_", " ").title()
     case.resolution_note = case.resolution_note or f"Resolved automatically after canonical shipment outcome {label} was confirmed."
     event_type = "delivered_resolution" if outcome == "delivered" else "terminal_shipment_resolution"
-    db.add(NDREvent(id=str(uuid4()), case_id=case.id, event_type=event_type, description=f"NDR closed after canonical shipment outcome {label} was confirmed.", actor_name="Mumchies OS", event_data={"shipment_order_id": shipment.order_id if shipment else event.order_id, "awb": shipment.awb if shipment else event.awb, "outcome": outcome, "evidence": "shipment_row" if shipment and _terminal_outcome(shipment) else "shipment_event"}))
+    existing = db.scalar(select(NDREvent.id).where(NDREvent.case_id == case.id, NDREvent.event_type == event_type))
+    if not existing:
+        db.add(NDREvent(id=str(uuid4()), case_id=case.id, event_type=event_type, description=f"NDR closed after canonical shipment outcome {label} was confirmed.", actor_name="Mumchies OS", event_data={"shipment_order_id": shipment.order_id if shipment else event.order_id, "awb": shipment.awb if shipment else event.awb, "outcome": case.resolution_outcome, "source": "provider", "evidence": "shipment_row" if shipment and _terminal_outcome(shipment) else "shipment_event"}))
     return True
 
 

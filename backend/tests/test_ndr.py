@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from app.api.routes.ndr import NDRAction, NDRImportPayload, case_action, import_cases, list_cases, summary
+from app.api.routes.ndr import NDRAction, NDRImportPayload, case_action, import_cases, list_cases, resolution_analytics, summary
 from app.core.config import settings
 from app.db.base import Base
 from app.models.ndr import NDRCase, NDREvent, NDRImportRun
@@ -69,7 +69,7 @@ def test_import_is_idempotent_and_preserves_manual_workflow(db):
     assert case.whatsapp_message == "Reason-aware message"
 
     request = SimpleNamespace(state=SimpleNamespace(auth_user=owner))
-    case_action(case.id, NDRAction(action="resolve", note="Keep closed"), request, db)
+    case_action(case.id, NDRAction(action="resolve", resolution_outcome="delivered", note="Keep closed"), request, db)
     repeated = import_ndr(db, payload("run-1"))
     assert repeated.id == first.id
     assert len(db.scalars(select(NDRImportRun)).all()) == 1
@@ -81,6 +81,25 @@ def test_import_is_idempotent_and_preserves_manual_workflow(db):
     assert case.resolution_note == "Keep closed"
     assert case.source_lifecycle == "resolved"
     assert len(db.scalars(select(NDREvent).where(NDREvent.case_id == case.id)).all()) >= 2
+
+
+@pytest.mark.parametrize("outcome", ["delivered", "rto_confirmed"])
+def test_manual_resolution_outcomes_are_audited(outcome, db):
+    now=datetime.now(timezone.utc);owner=User(username="operator",display_name="Operator",password_hash="unused",role="operator",is_active=True);case=NDRCase(id=outcome,source_identity=f"awb:{outcome}",awb=outcome,provider="shadowfax",order_number="323027",source_lifecycle="active",current_status="new",priority="medium",delivery_attempts=1,first_ndr_at=now-timedelta(hours=5),last_synced_at=now,products=[],cod_amount=0)
+    db.add_all([owner,case,NDREvent(id=f"history-{outcome}",case_id=case.id,event_type="customer_contacted",description="Preserved",actor_name="Operator")]);db.commit();db.refresh(owner)
+    case_action(case.id,NDRAction(action="resolve",resolution_outcome=outcome,note="Confirmed"),SimpleNamespace(state=SimpleNamespace(auth_user=owner)),db)
+    db.refresh(case);assert (case.resolution_outcome,case.resolution_source,case.resolved_by_name)==(outcome,"manual","Operator")
+    assert db.scalar(select(NDREvent).where(NDREvent.id==f"history-{outcome}")) is not None
+
+
+def test_resolution_analytics_excludes_open_and_breaks_down_courier_and_reason(db):
+    now=datetime.now(timezone.utc)
+    def case(id,outcome,provider,reason,resolved=True): return NDRCase(id=id,source_identity=f"awb:{id}",awb=id,provider=provider,order_number=id,source_lifecycle="resolved" if resolved else "active",current_status="resolved" if resolved else "new",priority="medium",delivery_attempts=1,first_ndr_at=now-timedelta(days=2),last_synced_at=now,resolved_at=now if resolved else None,resolution_outcome=outcome,resolution_source="provider" if outcome else None,failure_reason=reason,products=[],cod_amount=0)
+    db.add_all([case("d","delivered","shadowfax","Unavailable"),case("r","rto_confirmed","shadowfax","Unavailable"),case("open",None,"delhivery","Address",False)]);db.commit()
+    result=resolution_analytics(period="30d",db=db)
+    assert (result["delivered"],result["rto_confirmed"],result["resolution_percent"],result["open_cases"])==(1,1,50.0,1)
+    shadowfax=next(row for row in result["by_courier"] if row["provider"]=="shadowfax");assert shadowfax["resolution_percent"]==50.0
+    unavailable=next(row for row in result["by_failure_reason"] if row["failure_reason"]=="Unavailable");assert unavailable["resolved_cases"]==2
 
 
 def test_missing_awb_uses_source_order_identity_and_failed_source_keeps_lifecycle(db):
@@ -169,6 +188,7 @@ def test_confirmed_canonical_delivery_resolves_active_ndr_and_preserves_history(
     assert active["items"] == []
     db.refresh(case)
     assert (case.current_status, case.source_lifecycle) == ("resolved", "resolved")
+    assert (case.resolution_outcome, case.resolution_source) == ("delivered", "provider")
     assert case.resolved_at is not None
     events = db.scalars(select(NDREvent).where(NDREvent.case_id == case.id)).all()
     assert {event.event_type for event in events} == {"customer_contacted", "delivered_resolution"}
@@ -205,6 +225,8 @@ def test_confirmed_terminal_outcome_resolves_ndr_and_preserves_history(db, statu
     db.add_all([case, NDREvent(id=f"history-{status}", case_id=case.id, event_type="operator_action", description="Preserved", actor_name="Operator"), ShiprocketShipment(order_id=f"shipment-{status}", provider="delhivery", provider_order_id="322264", awb=status, latest_status=status, terminal_status=status)])
     db.commit()
     assert list_cases(kpi="active", page=1, page_size=50, db=db)["items"] == []
+    db.refresh(case); assert case.resolution_source == "provider"
+    assert case.resolution_outcome == ("rto_confirmed" if status.startswith("RTO") else None)
     assert {event.event_type for event in db.scalars(select(NDREvent).where(NDREvent.case_id == case.id)).all()} == {"operator_action", "terminal_shipment_resolution"}
 
 def test_stale_active_322264_resolves_from_canonical_rto_event_and_enriches_product(db):

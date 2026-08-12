@@ -24,6 +24,7 @@ class NDRAction(BaseModel):
     action: Literal["add_note", "assign", "customer_contacted", "courier_contacted", "resolve", "reopen"]
     note: str | None = Field(default=None, max_length=2000)
     assigned_to_user_id: int | None = None
+    resolution_outcome: Literal["delivered", "rto_confirmed"] | None = None
 
 
 class NDRImportRow(BaseModel):
@@ -135,6 +136,44 @@ def case_detail(case_id: str, db: Session = Depends(get_db)) -> dict:
     return serialize_case(case, events=events)
 
 
+def _analytics_row(cases: list[NDRCase]) -> dict:
+    delivered = sum(case.resolution_outcome == "delivered" for case in cases)
+    rto = sum(case.resolution_outcome == "rto_confirmed" for case in cases)
+    known = delivered + rto
+    durations = [(_aware(case.resolved_at) - _aware(case.first_ndr_at)).total_seconds() / 3600 for case in cases if case.resolved_at and case.resolution_outcome in {"delivered", "rto_confirmed"}]
+    return {"resolved_cases": known, "delivered": delivered, "rto_confirmed": rto, "resolution_percent": round(delivered * 100 / known, 1) if known else None, "avg_resolution_hours": round(sum(durations) / len(durations), 1) if durations else None}
+
+
+def _aware(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+@router.get("/analytics")
+def resolution_analytics(period: Literal["today", "7d", "30d", "custom"] = "30d", start: datetime | None = None, end: datetime | None = None, db: Session = Depends(get_db)) -> dict:
+    resolve_active_terminal_cases(db)
+    now = datetime.now(timezone.utc)
+    if period == "today": start_at = datetime.combine(now.date(), datetime.min.time(), tzinfo=timezone.utc)
+    elif period == "7d": start_at = now - timedelta(days=7)
+    elif period == "30d": start_at = now - timedelta(days=30)
+    else:
+        if not start or not end: raise HTTPException(422, "Custom analytics requires start and end.")
+        start_at, now = _aware(start), _aware(end)
+    cases = db.scalars(select(NDRCase).where(NDRCase.first_ndr_at >= start_at, NDRCase.first_ndr_at <= now)).all()
+    resolved = [case for case in cases if case.resolution_outcome in {"delivered", "rto_confirmed"} and case.resolved_at]
+    core = _analytics_row(cases)
+    def groups(field: str) -> list[dict]:
+        values: dict[str, list[NDRCase]] = {}
+        for case in cases:
+            key = str(getattr(case, field) or "Unknown")
+            values.setdefault(key, []).append(case)
+        return [{field: key, **_analytics_row(rows)} for key, rows in sorted(values.items())]
+    contacted = {}
+    for key, field in (("customer_contacted", "customer_contacted_at"), ("courier_contacted", "courier_contacted_at")):
+        relevant = [case for case in cases if getattr(case, field)]
+        contacted[key] = {"cases": len(relevant), **_analytics_row(relevant)} if relevant else None
+    return {"period":{"start":start_at.isoformat(),"end":now.isoformat()},"total_cases":len(cases),"open_cases":sum(case.current_status != "resolved" and case.source_lifecycle == "active" for case in cases),"resolved_cases":len(resolved),**core,"by_courier":groups("provider"),"by_failure_reason":groups("failure_reason"),"contacted":contacted}
+
+
 @router.post("/sync")
 async def sync_now() -> dict:
     raise HTTPException(410, "Direct courier sync is disabled. NDR data is imported from GitHub Actions.")
@@ -155,7 +194,16 @@ def case_action(case_id: str, payload: NDRAction, request: Request, db: Session 
         description = note
     elif payload.action == "customer_contacted": case.customer_contacted_at = now; case.current_status = "courier_pending"; description = descriptions[payload.action]
     elif payload.action == "courier_contacted": case.courier_contacted_at = now; case.current_status = "awaiting_customer"; description = descriptions[payload.action]
-    elif payload.action == "resolve": case.current_status = "resolved"; case.source_lifecycle = "resolved"; case.resolved_at = now; case.resolution_note = note or None; description = descriptions[payload.action]
-    else: case.current_status = "new"; case.source_lifecycle = "active"; case.resolved_at = None; case.resolution_note = None; description = descriptions[payload.action]
-    add_event(db, case, payload.action, description, actor=actor, data={"note": note} if note else None); db.commit(); db.refresh(case)
+    elif payload.action == "resolve":
+        if payload.resolution_outcome not in {"delivered", "rto_confirmed"}: raise HTTPException(422, "Select Delivered or RTO Confirmed.")
+        case.current_status = "resolved"; case.source_lifecycle = "resolved"; case.resolved_at = now
+        case.resolution_outcome = payload.resolution_outcome; case.resolution_source = "manual"
+        case.resolved_by_user_id = actor.id; case.resolved_by_name = actor.display_name
+        case.resolution_note = note or None; description = f"Resolved as {payload.resolution_outcome.replace('_', ' ').title()}."
+    else:
+        case.current_status = "new"; case.source_lifecycle = "active"; case.resolved_at = None; case.resolution_note = None
+        case.resolution_outcome = None; case.resolution_source = None; case.resolved_by_user_id = None; case.resolved_by_name = None; description = descriptions[payload.action]
+    event_data = {"note": note} if note else {}
+    if payload.action == "resolve": event_data.update({"resolution_outcome": payload.resolution_outcome, "resolution_source": "manual"})
+    add_event(db, case, payload.action, description, actor=actor, data=event_data or None); db.commit(); db.refresh(case)
     return serialize_case(case)

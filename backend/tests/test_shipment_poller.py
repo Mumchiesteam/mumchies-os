@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.config import settings
 from app.db.base import Base
 from app.models.shipment_event import ShipmentEvent
+from app.models.ndr import NDRCase
 from app.models.shipment_poll import ShipmentPollAttempt, ShipmentPollRun
 from app.repositories.shiprocket import get_shipment, upsert_shipment
 from app.services.courier_platform.base import ProviderError
@@ -56,6 +57,15 @@ def test_eligibility_excludes_terminal_failed_placeholder_and_shadowfax(sessions
     assert not shipment_poll_eligible(placeholder)
     assert not shipment_poll_eligible(shadowfax)
     assert not shadowfax_polling_enabled()
+
+
+def test_active_ndr_awb_is_prioritized_inside_bounded_tracking_batch(sessions):
+    add_shipment(sessions,"ordinary",awb="ORDINARY")
+    add_shipment(sessions,"ndr",awb="SF36981898586")
+    now=datetime.now(timezone.utc)
+    with sessions() as db:
+        db.add(NDRCase(id="ndr-case",source_identity="awb:SF36981898586",awb="SF36981898586",provider="shadowfax",order_number="323027",source_lifecycle="active",current_status="courier_pending",priority="medium",delivery_attempts=2,first_ndr_at=now,last_synced_at=now,products=[],cod_amount=0));db.commit()
+        assert [shipment.awb for shipment in eligible_shipments(db,batch_size=1)]==["SF36981898586"]
 
 
 class HistoryAdapter:

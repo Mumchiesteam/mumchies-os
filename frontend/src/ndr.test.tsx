@@ -1,8 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { headings, NDRPage, ndrSemanticCells } from './components/NDRPage'
+import { copyVisibleOrderNumber, headings, NDRPage, ndrSemanticCells } from './components/NDRPage'
 import type { NDRCase } from './services/ndr'
-import { actOnNDR, getNDRCases, type NDRSummary } from './services/ndr'
+import { actOnNDR, getNDRAnalytics, getNDRCases, type NDRSummary } from './services/ndr'
 import { kpiButtonClass, shopifyPresentation, toggleKpi } from './utils/ndrView'
 
 afterEach(() => vi.restoreAllMocks())
@@ -14,6 +14,11 @@ describe('NDR operations module', () => {
     expect(html).not.toContain('Assigned To')
     expect(html).not.toContain('Sync Now')
   })
+  it('loads the resolution analytics period without unrelated endpoints', async()=>{
+    const fetchMock=vi.spyOn(globalThis,'fetch').mockResolvedValue(new Response('{}',{status:200,headers:{'Content-Type':'application/json'}}))
+    await getNDRAnalytics('7d');expect(String(fetchMock.mock.calls[0][0])).toContain('/ndr/analytics?period=7d')
+  })
+  it('copies only the visible Shopify order number',async()=>{const write=vi.fn().mockResolvedValue(undefined);await copyVisibleOrderNumber('#323027',write);expect(write).toHaveBeenCalledWith('323027')})
   it('maps every header to its semantic row value in the same order', () => {
     const item={priority:'medium',order_number:'323027',awb:'SF36981898586',products:[{product_name:'Dry Fruit Ladoo',quantity:1,price:499}],customer_name:'Ankita',customer_phone:'9999999999',courier_name:'Shadowfax',provider:'shadowfax',current_status:'courier_pending',failure_reason:'Attempted But Not Delivered',recommended_action:'Call customer',ageing_hours:350,last_provider_update_at:'2026-08-10T12:17:00Z'} as NDRCase
     const mapped=Object.fromEntries(ndrSemanticCells(item).map((value,index)=>[headings[index],value]))
