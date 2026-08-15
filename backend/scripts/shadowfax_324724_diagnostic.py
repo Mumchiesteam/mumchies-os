@@ -181,6 +181,7 @@ async def main() -> None:
     _progress("Loading configuration...")
     from app.core.config import settings
     from app.services.courier_platform.shadowfax_http import ShadowfaxHTTPTransport
+    from app.api.routes.couriers import PackageDetailsPayload, _assert_booking_payload, _booking_context
     token = str(settings.shadowfax_token or "").strip()
     base_url = str(settings.shadowfax_base_url or "").rstrip("/")
     if not token or not base_url:
@@ -207,6 +208,11 @@ async def main() -> None:
 
     _progress("Building payload...")
     payload = deepcopy(await _build_payload(order, operations))
+    integrity_context = _booking_context(
+        order, operations, PackageDetailsPayload.model_validate(operations["package_details"]),
+        {"provider": "shadowfax", "courier_id": "regular", "courier_name": "Shadowfax Direct", "booking_supported": True},
+    )
+    _assert_booking_payload(integrity_context, "shadowfax", payload)
     _progress("Payload built.")
     _progress("Validating payload...")
     _validate_payload(payload)

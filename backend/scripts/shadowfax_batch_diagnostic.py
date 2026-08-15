@@ -78,7 +78,7 @@ def _validate_payload(payload: dict[str, Any]) -> None:
 
 
 async def _preflight(number: str, order: Any | None, transport: Any) -> Preflight:
-    from app.api.routes.couriers import PackageDetailsPayload, _build_provider_booking_request, _order_payment_mode
+    from app.api.routes.couriers import PackageDetailsPayload, _assert_booking_payload, _booking_context, _build_provider_booking_request, _context_operations, _order_payment_mode
     from app.db.session import SessionLocal
     from app.repositories.shiprocket import get_shipment, snapshot
     from app.services.order_operations import OrderOperationsStore
@@ -105,8 +105,11 @@ async def _preflight(number: str, order: Any | None, transport: Any) -> Prefligh
             raise RuntimeError("existing shipment evidence")
         package = PackageDetailsPayload.model_validate(operations.get("package_details") or {})
         result.package_ok = True
-        payload = await _build_provider_booking_request(order, operations, package)
+        selected = {"provider": "shadowfax", "courier_id": "regular", "courier_name": "Shadowfax Direct", "booking_supported": True}
+        context = _booking_context(order, operations, package, selected)
+        payload = await _build_provider_booking_request(context.order, _context_operations(context), context.package)
         _validate_payload(payload)
+        _assert_booking_payload(context, "shadowfax", payload)
         serviceability = await transport.serviceability({"delivery_pincode": result.pincode})
         result.serviceable = bool(serviceability.get("serviceable"))
         result.service = str(serviceability.get("service_type") or serviceability.get("service_id") or "-")
