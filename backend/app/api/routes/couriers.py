@@ -4,8 +4,10 @@ import asyncio
 from dataclasses import asdict
 from datetime import datetime, timezone
 import json
+import hashlib
 import logging
 import time
+from copy import deepcopy
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -38,6 +40,7 @@ from app.services.temporary_shadowfax_repair import repair_legacy_shadowfax_test
 
 router = APIRouter(prefix="/couriers/shiprocket", tags=["couriers"])
 booking_router = APIRouter(prefix="/orders", tags=["couriers"])
+LOGGER = logging.getLogger(__name__)
 
 
 class PackageDetailsPayload(BaseModel):
@@ -56,6 +59,30 @@ class BookingPayload(PackageDetailsPayload):
     provider: str | None = None
     courier_name: str | None = None
     operator: str = "Mumchies OS"
+    draft_order_id: str
+    address_revision: int = Field(ge=0)
+    booking_context_hash: str
+
+
+class BookingPreviewPayload(PackageDetailsPayload):
+    courier_id: str
+    provider: str
+    courier_name: str
+    draft_order_id: str
+    address_revision: int = Field(ge=0)
+
+
+class BookingContext(BaseModel):
+    model_config = {"frozen": True, "arbitrary_types_allowed": True}
+    order_id: str
+    order_number: str
+    order: ShopifyOrder
+    address: dict[str, object]
+    address_source: str
+    address_revision: int
+    package: PackageDetailsPayload
+    selected_courier: dict[str, object]
+    context_hash: str
 
 
 class ProviderActionPayload(BaseModel):
@@ -135,6 +162,86 @@ def _order_payment_mode(order: ShopifyOrder) -> str:
 
 def _order_latest_address(order: ShopifyOrder, operations: dict[str, object]) -> dict[str, object] | None:
     return operations.get("corrected_address") or operations.get("verified_address_snapshot") or (order.shipping_address.model_dump() if order.shipping_address else None)
+
+
+def _booking_context(order: ShopifyOrder, operations: dict[str, object], package: PackageDetailsPayload, selected: dict[str, object]) -> BookingContext:
+    stored_package = operations.get("package_details")
+    package_provenance = operations.get("package_provenance")
+    package_revision = int(operations.get("package_revision") or 0)
+    if not isinstance(stored_package, dict) or PackageDetailsPayload.model_validate(stored_package).model_dump() != package.model_dump():
+        raise HTTPException(status_code=409, detail="Booking blocked: package data changed or is not associated with this order. Refresh courier options.")
+    if not isinstance(package_provenance, dict) or str(package_provenance.get("order_id") or "") != order.order_id or int(package_provenance.get("revision") or -1) != package_revision:
+        raise HTTPException(status_code=409, detail="Booking blocked: package provenance is missing or belongs to another order. Refresh courier options.")
+    override = operations.get("corrected_address") or operations.get("verified_address_snapshot")
+    revision = int(operations.get("address_revision") or 0)
+    if override:
+        provenance = operations.get("address_provenance")
+        if not isinstance(provenance, dict) or str(provenance.get("order_id") or "") != order.order_id or int(provenance.get("revision") or -1) != revision:
+            raise HTTPException(status_code=409, detail="Booking blocked: corrected address provenance is missing, stale, or belongs to another order. Reload and verify the address.")
+        address, source = deepcopy(override), "verified_override"
+    else:
+        if not order.shipping_address:
+            raise HTTPException(status_code=409, detail="Booking blocked: authoritative Shopify shipping address is missing.")
+        address, source = order.shipping_address.model_dump(), "shopify"
+    snapshot = {
+        "order_id": order.order_id, "order_number": order.order_number,
+        "customer": order.customer_name, "phone": order.phone,
+        "address": address, "products": [item.model_dump(mode="json") for item in order.products],
+        "order_value": str(order.order_total), "payment": order.payment_type,
+        "cod": str(order.cod_collectable_amount), "package": package.model_dump(),
+        "selected_courier": selected, "address_source": source, "address_revision": revision, "package_revision": package_revision,
+    }
+    digest = hashlib.sha256(json.dumps(snapshot, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()
+    return BookingContext(
+        order_id=order.order_id, order_number=order.order_number, order=order.model_copy(deep=True),
+        address=deepcopy(address), address_source=source, address_revision=revision,
+        package=package.model_copy(deep=True), selected_courier=deepcopy(selected), context_hash=digest,
+    )
+
+
+def _context_operations(context: BookingContext) -> dict[str, object]:
+    return {"corrected_address": deepcopy(context.address)}
+
+
+def _assert_booking_payload(context: BookingContext, provider: str, payload: dict[str, object]) -> None:
+    expected_products = ", ".join(item.product_name for item in context.order.products)[:250]
+    expected_name = str(context.address.get("customer_name") or context.address.get("name") or context.order.customer_name or "")
+    expected_phone = str(context.address.get("phone") or context.order.phone or "")
+    expected_address = " ".join(filter(None, [context.address.get("address_line1") or context.address.get("address"), context.address.get("address_line2"), context.address.get("landmark")]))
+    payment_mode = _order_payment_mode(context.order)
+    failures: list[str] = []
+    if provider == "delhivery":
+        checks = {"order": context.order_number, "name": expected_name, "phone": expected_phone, "add": expected_address,
+                  "pin": str(context.address.get("pincode") or ""), "city": context.address.get("city") or "", "state": context.address.get("state") or "",
+                  "products_desc": expected_products, "payment_mode": payment_mode,
+                  "quantity": sum(item.quantity for item in context.order.products), "total_amount": float(context.order.order_total),
+                  "cod_amount": float(context.order.cod_collectable_amount) if payment_mode == "COD" else 0,
+                  "weight": max(round(context.package.weight_kg * 1000), 1)}
+    elif provider == "shiprocket":
+        expected_items = [{"name": item.product_name, "sku": item.sku or f"ITEM-{index + 1}", "units": item.quantity, "selling_price": float(item.price), "discount": 0, "tax": 0, "hsn": ""} for index, item in enumerate(context.order.products)]
+        name_parts = expected_name.split(maxsplit=1)
+        checks = {"order_id": context.order_number, "shipping_customer_name": name_parts[0] if name_parts else "Customer",
+                  "shipping_phone": expected_phone, "shipping_address": context.address.get("address_line1") or context.address.get("address") or "",
+                  "shipping_city": context.address.get("city") or "", "shipping_state": context.address.get("state") or "",
+                  "shipping_pincode": str(context.address.get("pincode") or ""), "order_items": expected_items,
+                  "sub_total": float(context.order.cod_collectable_amount if context.order.payment_type == "partial_cod" else context.order.order_total),
+                  "weight": context.package.weight_kg}
+    else:
+        details = payload.get("order_details") if isinstance(payload.get("order_details"), dict) else {}
+        customer = payload.get("customer_details") if isinstance(payload.get("customer_details"), dict) else {}
+        payload = {**details, "pincode": customer.get("pincode"), "customer_name": customer.get("name"), "phone": customer.get("contact"),
+                   "address": customer.get("address_line_1"), "city": customer.get("city"), "state": customer.get("state"), "products": payload.get("product_details")}
+        expected_shadowfax_products = [{"sku_name": item.product_name, "price": float(item.price), "additional_details": {"quantity": item.quantity}, **({"sku_id": item.sku} if item.sku else {})} for item in context.order.products]
+        checks = {"client_order_id": context.order_number, "pincode": int(str(context.address.get("pincode") or "0")),
+                  "customer_name": expected_name, "phone": expected_phone, "address": context.address.get("address_line1") or context.address.get("address"),
+                  "city": context.address.get("city"), "state": context.address.get("state"), "products": expected_shadowfax_products,
+                  "total_amount": float(context.order.order_total), "actual_weight": max(round(context.package.weight_kg * 1000), 1)}
+    for field, expected in checks.items():
+        if payload.get(field) != expected:
+            failures.append(field)
+    if failures:
+        LOGGER.error("booking_integrity_block order_id=%s provider=%s fields=%s", context.order_id, provider, ",".join(failures))
+        raise HTTPException(status_code=409, detail="Booking blocked: order data changed or could not be verified. Reload the order before booking.")
 
 
 def _validate_shadowfax_booking_request(payload: dict[str, object]) -> None:
@@ -601,7 +708,9 @@ async def temporary_shadowfax_direct_test_324663(request: Request, db: Session =
     if not isinstance(package_data, dict):
         raise HTTPException(status_code=409, detail="Package details are required before the Shadowfax test.")
     package = PackageDetailsPayload.model_validate(package_data)
-    booking_request = await _build_provider_booking_request(order, operations, package)
+    selected_for_context = operations.get("selected_courier") if isinstance(operations.get("selected_courier"), dict) else {"provider": "shadowfax", "courier_name": "Shadowfax Direct", "courier_id": "regular"}
+    context = _booking_context(order, operations, package, selected_for_context)
+    booking_request = await _build_provider_booking_request(context.order, _context_operations(context), context.package)
     delivery_pincode = str((booking_request.get("customer_details") or {}).get("pincode") or "")
     for key in ("pickup_details", "rto_details"):
         details = booking_request.get(key)
@@ -610,6 +719,7 @@ async def temporary_shadowfax_direct_test_324663(request: Request, db: Session =
             details["name"] = "Mumchies Foods"
             details["pincode"] = 560076
     _validate_shadowfax_booking_request(booking_request)
+    _assert_booking_payload(context, "shadowfax", booking_request)
 
     adapter = ShadowfaxAdapter()
     OrderOperationsStore.update_shadowfax_direct_test(
@@ -947,6 +1057,11 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
         selected = operations.get("selected_courier")
         if not _booking_selection_matches(selected, payload):
             raise HTTPException(status_code=400, detail="Selected courier does not match the stored courier selection.")
+        if payload.draft_order_id != order_id:
+            raise HTTPException(status_code=409, detail="Booking blocked: package or drawer state belongs to a different order.")
+        context = _booking_context(order, operations, package, selected)
+        if payload.address_revision != context.address_revision or payload.booking_context_hash != context.context_hash:
+            raise HTTPException(status_code=409, detail="Booking blocked: order data changed or could not be verified. Reload the order before booking.")
 
         provider = str(selected.get("provider") or "shiprocket").lower()
         if payload.provider and payload.provider.lower() != provider:
@@ -964,10 +1079,12 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
             fulfillment = str(order.fulfillment_status or "").strip().casefold()
             if fulfillment in {"fulfilled", "shipped", "delivered", "in_transit", "in transit"}:
                 raise HTTPException(status_code=409, detail="Fulfilled or shipped orders cannot be booked with Delhivery.")
+            provider_payload = _build_delhivery_payload(context.order, _context_operations(context), context.package)
+            _assert_booking_payload(context, "delhivery", provider_payload)
             result = await service.book_order_shipment(
                 db, order_id, order.order_number,
-                _build_delhivery_payload(order, operations, package),
-                package.model_dump(), payload.courier_id,
+                provider_payload,
+                context.package.model_dump(), payload.courier_id,
                 str(selected.get("courier_name") or "Delhivery Surface"),
             )
             OrderOperationsStore.save_selected_courier(order_id, selected)
@@ -977,7 +1094,8 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
             OrderOperationsStore.record_timeline_event(order_id, "shipment_booked", operator=actor, details={"provider": "delhivery"})
             return {"provider": "delhivery", **result, "shipment": synchronized or result.get("shipment"), "shiprocket_cleanup": cleanup, "warning": cleanup.get("error")}
 
-        order_payload = _build_shiprocket_order_payload(order, operations, package)
+        order_payload = _build_shiprocket_order_payload(context.order, _context_operations(context), context.package)
+        _assert_booking_payload(context, "shiprocket", order_payload)
         service = ShiprocketService()
         result = await service.book_order_shipment(
             db,
@@ -1015,6 +1133,31 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
 async def provider_book_shipment(order_id: str, payload: BookingPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     """Provider-neutral booking entrypoint; delegates to the existing guarded implementation."""
     return await shiprocket_book_shipment(order_id, payload, db, current_actor(request))
+
+
+@booking_router.post("/{order_id}/booking-context")
+async def preview_booking_context(order_id: str, payload: BookingPreviewPayload, db: Session = Depends(get_db)) -> dict[str, object]:
+    if payload.draft_order_id != order_id:
+        raise HTTPException(status_code=409, detail="Booking preview belongs to a different order.")
+    order, operations, shipment = await _load_context(order_id, db)
+    if has_existing_shipment_evidence(order, operations, shipment):
+        raise HTTPException(status_code=409, detail="An active shipment or fulfilment already exists for this order.")
+    selected = operations.get("selected_courier")
+    booking_payload = BookingPayload(**payload.model_dump(), booking_context_hash="preview")
+    if not _booking_selection_matches(selected, booking_payload):
+        raise HTTPException(status_code=409, detail="Selected courier does not match this order.")
+    context = _booking_context(order, operations, PackageDetailsPayload.model_validate(payload.model_dump()), selected)
+    if payload.address_revision != context.address_revision:
+        raise HTTPException(status_code=409, detail="Address changed. Reload before booking.")
+    return {
+        "order_id": context.order_id, "order_number": context.order_number,
+        "customer": str(context.address.get("customer_name") or context.address.get("name") or context.order.customer_name or ""),
+        "city": context.address.get("city"), "pincode": context.address.get("pincode"),
+        "products": [{"name": item.product_name, "quantity": item.quantity} for item in context.order.products],
+        "payment": _order_payment_mode(context.order), "cod_amount": float(context.order.cod_collectable_amount),
+        "courier": context.selected_courier.get("courier_name"),
+        "address_revision": context.address_revision, "booking_context_hash": context.context_hash,
+    }
 
 
 def _shiprocket_cleanup_usage_evidence(order: dict[str, object]) -> tuple[list[str], bool]:

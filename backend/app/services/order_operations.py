@@ -27,11 +27,15 @@ class OrderOperationsStore:
         "timeline_events": [],
         "corrected_address": None,
         "package_details": None,
+        "package_revision": 0,
+        "package_provenance": None,
         "selected_courier": None,
         "address_verified": False,
         "address_verified_at": None,
         "address_verified_by": None,
         "verified_address_snapshot": None,
+        "address_revision": 0,
+        "address_provenance": None,
         "courier_sync_status": None,
         "courier_sync_error": None,
         "address_sync_results": {
@@ -121,6 +125,47 @@ class OrderOperationsStore:
             return record
 
     @classmethod
+    def save_verified_address_if_current(
+        cls, order_id: str, address: dict[str, Any], *, expected_revision: int,
+        visible_order_number: str, operator: str, verified: bool,
+    ) -> dict[str, Any]:
+        """Atomically save a same-order address; stale writers never modify the record."""
+        with cls._lock:
+            data = cls._read_all()
+            record = data.get(order_id, deepcopy(cls._default_record))
+            current_revision = int(record.get("address_revision") or 0)
+            if expected_revision != current_revision:
+                raise ValueError(f"stale_address_revision:{current_revision}")
+            occurred_at = datetime.now(timezone.utc).isoformat()
+            revision = current_revision + 1
+            provenance = {
+                "order_id": order_id, "order_number": visible_order_number,
+                "source": "operator_corrected", "saved_at": occurred_at,
+                "verified_at": occurred_at if verified else None,
+                "operator": operator, "revision": revision,
+            }
+            record.update({
+                "corrected_address": deepcopy(address),
+                "address_verified": verified,
+                "address_verified_at": occurred_at if verified else None,
+                "address_verified_by": operator if verified else None,
+                "verified_address_snapshot": deepcopy(address) if verified else None,
+                "address_revision": revision,
+                "address_provenance": provenance,
+                "courier_sync_status": None,
+                "courier_sync_error": None,
+            })
+            cls._record_action(record, "address_verified" if verified else "address_corrected", occurred_at, operator)
+            record.setdefault("timeline_events", []).append({
+                "action": "address_verified" if verified else "address_corrected",
+                "timestamp": occurred_at, "operator": operator,
+                "details": {"order_id": order_id, "revision": revision},
+            })
+            data[order_id] = record
+            cls._write_all(data)
+            return deepcopy(record)
+
+    @classmethod
     def append_address_confirmation(cls, order_id: str, comment: str, operator: str, timestamp: str) -> dict[str, Any]:
         with cls._lock:
             data = cls._read_all()
@@ -199,7 +244,10 @@ class OrderOperationsStore:
             data = cls._read_all()
             record = data.get(order_id, deepcopy(cls._default_record))
             occurred_at = datetime.now(timezone.utc).isoformat()
+            revision = int(record.get("package_revision") or 0) + 1
             record["package_details"] = package_details
+            record["package_revision"] = revision
+            record["package_provenance"] = {"order_id": order_id, "saved_at": occurred_at, "operator": operator, "revision": revision}
             cls._record_action(record, "package_details_saved", occurred_at, operator)
             record.setdefault("timeline_events", []).append({
                 "action": "package_details_updated", "timestamp": occurred_at,

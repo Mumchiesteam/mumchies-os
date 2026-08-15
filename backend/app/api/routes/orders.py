@@ -4,6 +4,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import re
+import hashlib
+import hmac
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -16,6 +18,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.db.session import SessionLocal, get_db
+from app.core.config import settings
 from app.core.identity import current_actor
 from app.schemas.orders import ShopifyOrder
 from app.repositories.shiprocket import get_shipment, get_shipments_by_order_id, snapshot as shipment_snapshot, sync_engage_orders
@@ -65,6 +68,17 @@ class AddressConfirmationPayload(BaseModel):
 
 class SaveVerifyAddressPayload(AddressPayload):
     operator: str | None = None
+    draft_order_id: str
+    draft_generation: int = Field(ge=0)
+    expected_revision: int = Field(ge=0)
+    draft_token: str
+
+
+class AddressUpdatePayload(AddressPayload):
+    draft_order_id: str
+    draft_generation: int = Field(ge=0)
+    expected_revision: int = Field(ge=0)
+    draft_token: str
 
 
 class CancellationPayload(BaseModel):
@@ -107,6 +121,18 @@ class OrdersPage(BaseModel):
     total: int
     total_pages: int
     counts: dict[str, int | float]
+
+
+def _address_draft_token(order_id: str, revision: int) -> str:
+    secret = str(settings.auth_session_secret or settings.shopify_client_secret or "")
+    if not secret:
+        raise HTTPException(status_code=503, detail="Address integrity signing is not configured.")
+    return hmac.new(secret.encode(), f"{order_id}:{revision}".encode(), hashlib.sha256).hexdigest()
+
+
+def _assert_address_draft_token(order_id: str, revision: int, token: str) -> None:
+    if not hmac.compare_digest(_address_draft_token(order_id, revision), str(token or "")):
+        raise HTTPException(status_code=409, detail="Address draft identity could not be verified. Reload before saving.")
 
 
 def _merged_operational_state(order: ShopifyOrder, operations: dict[str, object]) -> ShopifyOrder:
@@ -474,7 +500,8 @@ async def get_order_operations(order_id: str, db: Session = Depends(get_db)) -> 
         shipment = shipment_snapshot(local) if local else None
     if shipment is not None:
         operations = {**operations, "shipment": shipment}
-    return operations
+    revision = int(operations.get("address_revision") or 0)
+    return {**operations, "address_revision": revision, "address_draft_token": _address_draft_token(order_id, revision)}
 
 
 @router.post("/{order_id}/shopify-fulfillment/sync")
@@ -646,8 +673,7 @@ async def get_shipping_label(order_id: str, db: Session = Depends(get_db)):
     return await _official_shipping_label(order_id, db)
 
 
-@router.put("/{order_id}/address")
-async def update_order_address(order_id: str, payload: AddressPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
+async def _update_order_address(order_id: str, payload: AddressPayload, request: Request, db: Session, *, persist_local: bool) -> dict[str, object]:
     address = {
         "customer_name": payload.customer_name,
         "phone": payload.phone,
@@ -659,13 +685,11 @@ async def update_order_address(order_id: str, payload: AddressPayload, request: 
         "pincode": payload.pincode,
     }
     # Local correction is intentionally committed before any external write.
-    OrderOperationsStore.save_address(
-        order_id,
-        address,
-        courier_sync_status=payload.courier_sync_status,
-        courier_sync_error=payload.courier_sync_error,
-        operator=current_actor(request),
-    )
+    if persist_local:
+        OrderOperationsStore.save_address(
+            order_id, address, courier_sync_status=payload.courier_sync_status,
+            courier_sync_error=payload.courier_sync_error, operator=current_actor(request),
+        )
     results: dict[str, object] = {
         "shopify_order": "failed",
         "shopify_customer": "not_applicable",
@@ -730,21 +754,55 @@ async def update_order_address(order_id: str, payload: AddressPayload, request: 
     return OrderOperationsStore.save_address_sync_results(order_id, results)
 
 
+@router.put("/{order_id}/address")
+async def update_order_address(order_id: str, payload: AddressUpdatePayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
+    if payload.draft_order_id != order_id:
+        raise HTTPException(status_code=409, detail="Address draft belongs to a different order. No address was saved.")
+    _assert_address_draft_token(order_id, payload.expected_revision, payload.draft_token)
+    canonical = await ShopifyService().get_order(order_id)
+    if canonical.order_id != order_id:
+        raise HTTPException(status_code=409, detail="Canonical order identity mismatch. No address was saved.")
+    address = {key: getattr(payload, key) for key in ("customer_name", "phone", "address_line1", "address_line2", "landmark", "city", "state", "pincode")}
+    try:
+        OrderOperationsStore.save_verified_address_if_current(
+            order_id, address, expected_revision=payload.expected_revision,
+            visible_order_number=canonical.order_number, operator=current_actor(request), verified=False,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail="Address changed in another session. Reload before saving.") from error
+    return await _update_order_address(order_id, payload, request, db, persist_local=False)
+
+
 @router.post("/{order_id}/address/save-verify")
 async def save_and_verify_address(order_id: str, payload: SaveVerifyAddressPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
+    if payload.draft_order_id != order_id:
+        raise HTTPException(status_code=409, detail="Address draft belongs to a different order. Reload the order before saving.")
+    _assert_address_draft_token(order_id, payload.expected_revision, payload.draft_token)
+    try:
+        canonical = await ShopifyService().get_order(order_id)
+    except (ShopifySyncError, httpx.HTTPError) as error:
+        raise HTTPException(status_code=409, detail="Current Shopify order identity could not be verified. Reload before saving.") from error
+    if canonical.order_id != order_id:
+        raise HTTPException(status_code=409, detail="Canonical order identity mismatch. No address was saved.")
     address = AddressValidationPayload(**payload.model_dump())
     validation = await validate_order_address(order_id, address, db)
-    saved = await update_order_address(order_id, AddressPayload(**{
+    snapshot = {key: getattr(payload, key) for key in ("customer_name", "phone", "address_line1", "address_line2", "landmark", "city", "state", "pincode")}
+    try:
+        saved = OrderOperationsStore.save_verified_address_if_current(
+            order_id, snapshot, expected_revision=payload.expected_revision,
+            visible_order_number=canonical.order_number, operator=current_actor(request),
+            verified=not bool(validation["blockers"]),
+        )
+    except ValueError as error:
+        current = str(error).partition(":")[2]
+        raise HTTPException(status_code=409, detail=f"Address changed in another session (current revision {current}). Reload before saving.") from error
+    await _update_order_address(order_id, AddressPayload(**{
         **payload.model_dump(),
         "update_customer_address": True,
         "one_time_delivery_address": False,
         "use_as_default_address": False,
-    }), request, db)
-    verified = False
-    if not validation["blockers"]:
-        snapshot = {key: getattr(payload, key) for key in ("customer_name", "phone", "address_line1", "address_line2", "landmark", "city", "state", "pincode")}
-        saved = OrderOperationsStore.verify_address(order_id, current_actor(request), snapshot, datetime.now(timezone.utc).isoformat())
-        verified = True
+    }), request, db, persist_local=False)
+    verified = not bool(validation["blockers"])
     return {"operations": saved, "validation": validation, "verified": verified}
 
 

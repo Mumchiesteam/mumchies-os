@@ -220,7 +220,13 @@ async def test_save_verify_address_validates_syncs_and_invalidates_old_verificat
     monkeypatch.setattr(orders.ShopifyService, "get_order_address_context", context)
     monkeypatch.setattr(orders.ShopifyService, "update_order_shipping_address", update_order)
     monkeypatch.setattr(orders.ShopifyService, "update_customer_address", update_customer)
-    payload = SaveVerifyAddressPayload(operator="Operator", customer_name="Customer", phone="9999999999", address_line1="12 Main Road", landmark="Near Park", city="Delhi", state="Delhi", pincode="110001")
+    async def get_order(_self, _id):
+        value = raw_order()
+        value["id"] = 1
+        return ShopifyService._to_order(value)
+    monkeypatch.setattr(orders.ShopifyService, "get_order", get_order)
+    monkeypatch.setattr(orders.settings, "auth_session_secret", "test-secret")
+    payload = SaveVerifyAddressPayload(operator="Operator", customer_name="Customer", phone="9999999999", address_line1="12 Main Road", landmark="Near Park", city="Delhi", state="Delhi", pincode="110001", draft_order_id="1", draft_generation=1, expected_revision=0, draft_token=orders._address_draft_token("1", 0))
     result = await orders.save_and_verify_address("1", payload, authenticated_request(), db)
     assert result["verified"] is True and result["operations"]["address_verified_by"] == "Authenticated Operator"
     assert calls == ["order", ("customer", False)]

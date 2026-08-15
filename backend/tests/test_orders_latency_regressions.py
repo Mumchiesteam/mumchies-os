@@ -84,7 +84,7 @@ async def test_operational_fetch_returns_before_repeat_enrichment(monkeypatch: p
 
 def test_booking_requires_the_same_persisted_canonical_courier() -> None:
     selected = {"provider": "shiprocket", "courier_id": "43", "courier_name": "Delhivery Surface", "mode": "surface"}
-    payload = BookingPayload(weight_kg=0.5, courier_id="43", provider="shiprocket", courier_name="Delhivery Surface")
+    payload = BookingPayload(weight_kg=0.5, courier_id="43", provider="shiprocket", courier_name="Delhivery Surface", draft_order_id="1", address_revision=0, booking_context_hash="test")
     assert _booking_selection_matches(selected, payload)
     assert not _booking_selection_matches(None, payload)
     assert not _booking_selection_matches({**selected, "provider": "delhivery"}, payload)

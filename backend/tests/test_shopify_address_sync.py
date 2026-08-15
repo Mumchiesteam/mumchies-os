@@ -7,7 +7,8 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.api.routes.orders import AddressPayload, update_order_address
+from app.api.routes import orders
+from app.api.routes.orders import AddressUpdatePayload, update_order_address
 from app.db.base import Base
 from app.models.user import User
 from app.services import order_operations as operations_module
@@ -117,6 +118,7 @@ async def test_new_address_is_default_only_when_selected(monkeypatch):
 @pytest.mark.anyio
 async def test_customer_failure_does_not_undo_local_or_order_sync(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(operations_module, "OPS_FILE", tmp_path / "operations.json")
+    monkeypatch.setattr(orders.settings, "auth_session_secret", "test-secret")
     order_updated = False
 
     async def context(_self, _order_id):
@@ -132,12 +134,14 @@ async def test_customer_failure_does_not_undo_local_or_order_sync(monkeypatch, t
     monkeypatch.setattr(ShopifyService, "get_order_address_context", context)
     monkeypatch.setattr(ShopifyService, "update_order_shipping_address", update_order)
     monkeypatch.setattr(ShopifyService, "update_customer_address", update_customer)
+    async def current_order(_self, _order_id): return SimpleNamespace(order_id="order-1", order_number="324695")
+    monkeypatch.setattr(ShopifyService, "get_order", current_order)
 
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'state.db'}")
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
     try:
-        result = await update_order_address("order-1", AddressPayload(**corrected()), authenticated_request(), db)
+        result = await update_order_address("order-1", AddressUpdatePayload(**corrected(), draft_order_id="order-1", draft_generation=1, expected_revision=0, draft_token=orders._address_draft_token("order-1", 0)), authenticated_request(), db)
     finally:
         db.close()
         engine.dispose()
@@ -151,6 +155,7 @@ async def test_customer_failure_does_not_undo_local_or_order_sync(monkeypatch, t
 @pytest.mark.anyio
 async def test_unlinked_customer_is_not_applicable(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(operations_module, "OPS_FILE", tmp_path / "operations.json")
+    monkeypatch.setattr(orders.settings, "auth_session_secret", "test-secret")
 
     async def context(_self, _order_id):
         return {"customer_id": None, "shipping_address": {"address1": "Old"}}
@@ -160,11 +165,13 @@ async def test_unlinked_customer_is_not_applicable(monkeypatch, tmp_path: Path):
 
     monkeypatch.setattr(ShopifyService, "get_order_address_context", context)
     monkeypatch.setattr(ShopifyService, "update_order_shipping_address", update_order)
+    async def current_order(_self, _order_id): return SimpleNamespace(order_id="order-1", order_number="324695")
+    monkeypatch.setattr(ShopifyService, "get_order", current_order)
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'state.db'}")
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
     try:
-        result = await update_order_address("order-1", AddressPayload(**corrected()), authenticated_request(), db)
+        result = await update_order_address("order-1", AddressUpdatePayload(**corrected(), draft_order_id="order-1", draft_generation=1, expected_revision=0, draft_token=orders._address_draft_token("order-1", 0)), authenticated_request(), db)
     finally:
         db.close()
         engine.dispose()

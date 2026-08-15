@@ -83,9 +83,9 @@ describe('provider-neutral courier client', () => {
 
   it('omits operator when current-user identity is unavailable', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ provider: 'shadowfax' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
-    await bookShiprocketShipment('1', { provider: 'shadowfax', courier_name: 'Shadowfax Direct', courier_id: 'Regular', weight_kg: 0.5 })
+    await bookShiprocketShipment('1', { provider: 'shadowfax', courier_name: 'Shadowfax Direct', courier_id: 'Regular', weight_kg: 0.5, draft_order_id: '1', address_revision: 0, booking_context_hash: 'hash' })
     const request = fetchMock.mock.calls[0][1] as RequestInit
-    expect(JSON.parse(String(request.body))).toEqual({ provider: 'shadowfax', courier_name: 'Shadowfax Direct', courier_id: 'Regular', weight_kg: 0.5 })
+    expect(JSON.parse(String(request.body))).toEqual({ provider: 'shadowfax', courier_name: 'Shadowfax Direct', courier_id: 'Regular', weight_kg: 0.5, draft_order_id: '1', address_revision: 0, booking_context_hash: 'hash' })
   })
 
   it.each([

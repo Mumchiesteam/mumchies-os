@@ -169,7 +169,7 @@ async def test_booking_endpoint_rejects_externally_shipped_order(monkeypatch: py
         lambda _order_id: {"address_verified": True, "call_logs": [{"result": "Confirmed"}], "selected_courier": {"courier_id": "c1", "provider": "shiprocket"}},
     )
 
-    payload = BookingPayload(weight_kg=0.5, courier_id="c1")
+    payload = BookingPayload(weight_kg=0.5, courier_id="c1", draft_order_id="1", address_revision=0, booking_context_hash="test")
     with pytest.raises(HTTPException) as excinfo:
         await shiprocket_book_shipment("322726", payload, db)
     assert excinfo.value.status_code == 409

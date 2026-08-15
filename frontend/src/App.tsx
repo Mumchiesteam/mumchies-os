@@ -16,6 +16,7 @@ import {
   checkShiprocketCouriers,
   formatMoney,
   getBookingEligibility,
+  getBookingContextPreview,
   getOrderOperations,
   getCancellationPreflight,
   getOrders,
@@ -58,6 +59,7 @@ import {
   type ReconciliationRecord,
 } from './services/orders'
 import { logout } from './services/auth'
+import { canUseDraft, emptyAddressDraft, isCurrentDrawerRequest } from './order-drawer-integrity'
 import { useAuth } from './auth-context'
 import { UsersPage } from './components/UsersPage'
 import { NDRPage } from './components/NDRPage'
@@ -266,16 +268,10 @@ function App() {
   const [shipmentRefreshLoading, setShipmentRefreshLoading] = useState(false)
   const [shopifySyncLoading, setShopifySyncLoading] = useState(false)
   const [labelLoading, setLabelLoading] = useState(false)
-  const [addressDraft, setAddressDraft] = useState({
-    customer_name: '',
-    phone: '',
-    address_line1: '',
-    address_line2: '',
-    landmark: '',
-    city: '',
-    state: '',
-    pincode: '',
-  })
+  const [addressDraft, setAddressDraft] = useState(emptyAddressDraft)
+  const [addressDraftOrderId, setAddressDraftOrderId] = useState<string | null>(null)
+  const [addressDraftGeneration, setAddressDraftGeneration] = useState<number | null>(null)
+  const [addressInitializing, setAddressInitializing] = useState(true)
   const [labelQueue, setLabelQueue] = useState<{ ready_to_ship: NonNullable<Order['shipment']>[]; manifested: NonNullable<Order['shipment']>[]; printed_today: NonNullable<Order['shipment']>[] }>({ ready_to_ship: [], manifested: [], printed_today: [] })
   const [showLabels, setShowLabels] = useState(false)
   const [showDispatch, setShowDispatch] = useState(false)
@@ -427,6 +423,8 @@ function App() {
   useEffect(() => {
     if (!selectedOrder) return
     let active = true
+    const generation = drawerGenerationRef.current
+    const orderId = selectedOrder.internalId
     void (async () => {
       setBookingEligibility(null)
       setOperations(null)
@@ -435,8 +433,8 @@ function App() {
       setSelectedCourierId(null)
       setCourierError('')
       setCancellationPreflight(null)
-      const ops = await getOrderOperations(selectedOrder.internalId)
-      if (!active) return
+      const ops = await getOrderOperations(orderId)
+      if (!active || !isCurrentDrawerRequest({ orderId, generation }, selectedOrderId, drawerGenerationRef.current)) return
       setOperations(ops)
       applyCanonicalShipment(selectedOrder.internalId, ops.shipment)
       setCallResult('No Answer')
@@ -451,9 +449,12 @@ function App() {
         state: ops.corrected_address?.state ?? selectedOrder.shippingAddress?.state ?? '',
         pincode: ops.corrected_address?.pincode ?? selectedOrder.shippingAddress?.pincode ?? '',
       })
+      setAddressDraftOrderId(orderId)
+      setAddressDraftGeneration(generation)
+      setAddressInitializing(false)
       setSelectedCourierId(ops.selected_courier?.courier_id ?? null)
-      const eligibility = await getBookingEligibility(selectedOrder.internalId)
-      if (!active) return
+      const eligibility = await getBookingEligibility(orderId)
+      if (!active || !isCurrentDrawerRequest({ orderId, generation }, selectedOrderId, drawerGenerationRef.current)) return
       setBookingEligibility(eligibility)
     })().catch((err) => {
       if (!active) return
@@ -477,6 +478,10 @@ function App() {
     setCourierError('')
     setCourierLoading(false)
     setCancellationPreflight(null)
+    setAddressDraft(emptyAddressDraft())
+    setAddressDraftOrderId(null)
+    setAddressDraftGeneration(null)
+    setAddressInitializing(true)
     setSelectedOrderSnapshot([...orders, ...reconciliationOrders].find(order => order.internalId === orderId) || null)
     setSelectedOrderId(orderId)
   }
@@ -486,8 +491,7 @@ function App() {
     setSearchDraft(orderNumber)
     setSearch(orderNumber)
     setPage(1)
-    setSelectedOrderSnapshot(null)
-    setSelectedOrderId(orderId)
+    openOrder(orderId)
   }
 
   const handleCleanupResult = (record: ShiprocketCleanupRecord, result: ShiprocketCancellationResult) => {
@@ -600,13 +604,20 @@ function App() {
 
   const saveAndVerifyAddress = async () => {
     if (!selectedOrder) return
+    const orderId = selectedOrder.internalId
+    const generation = drawerGenerationRef.current
+    if (!canUseDraft(addressDraftOrderId && addressDraftGeneration !== null ? { orderId: addressDraftOrderId, generation: addressDraftGeneration } : null, orderId, generation, addressInitializing) || !operations) {
+      setNotice('Address is still loading or belongs to another order. Reload before saving.')
+      return
+    }
     try {
-      const result = await saveAndVerifyOrderAddress(selectedOrder.internalId, addressDraft)
+      const result = await saveAndVerifyOrderAddress(orderId, { ...addressDraft, draft_order_id: orderId, draft_generation: generation, expected_revision: operations.address_revision ?? 0, draft_token: operations.address_draft_token })
+      if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return
       setOperations(result.operations)
       setOrders(previous => previous.map(order => order.internalId === selectedOrder.internalId ? { ...order, correctedAddress: result.operations.corrected_address, addressVerified: result.operations.address_verified, addressVerifiedAt: result.operations.address_verified_at, addressVerifiedBy: result.operations.address_verified_by, verifiedAddressSnapshot: result.operations.verified_address_snapshot, addressSyncResults: result.operations.address_sync_results } : order))
       const [freshOperations, freshEligibility] = await Promise.all([
-        getOrderOperations(selectedOrder.internalId),
-        getBookingEligibility(selectedOrder.internalId),
+        getOrderOperations(orderId),
+        getBookingEligibility(orderId),
       ])
       setOperations(freshOperations)
       setBookingEligibility(freshEligibility)
@@ -655,16 +666,19 @@ function App() {
   const selectCourier = async (courier: CourierQuote) => {
     if (!selectedOrder || !courier.courier_id || courierSelectionInFlight.current) return
     courierSelectionInFlight.current = true
+    const orderId = selectedOrder.internalId
+    const generation = drawerGenerationRef.current
     setCourierError('')
     setSelectedCourierId(null)
     setOperations(previous => previous ? { ...previous, selected_courier: null } : previous)
     try {
-      const result = await selectShiprocketCourier(selectedOrder.internalId, { ...courier, courier_id: courier.courier_id })
+      const result = await selectShiprocketCourier(orderId, { ...courier, courier_id: courier.courier_id })
+      if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return
       if (!courierSelectionMatches(result.selected_courier, courier)) throw new Error('The courier selection could not be persisted consistently. Select it again.')
       setOperations(prev => prev ? { ...prev, selected_courier: result.selected_courier } : prev)
       setSelectedCourierId(result.selected_courier?.courier_id ?? null)
     } catch (err) {
-      setCourierError((err as Error).message)
+      if (generation === drawerGenerationRef.current && selectedOrderId === orderId) setCourierError((err as Error).message)
     } finally {
       courierSelectionInFlight.current = false
     }
@@ -678,28 +692,38 @@ function App() {
       setCourierError('Select and save a courier before booking.')
       return
     }
-    if (!window.confirm(`Book ${selectedQuote.courier_name} shipment for order #${selectedOrder.orderNumber}?`)) return
+    const orderId = selectedOrder.internalId
+    const generation = drawerGenerationRef.current
+    if (addressInitializing || addressDraftOrderId !== orderId || addressDraftGeneration !== generation || !operations) return
     bookingRequestInFlight.current = true
     setBookingLoading(true)
     setCourierError('')
     try {
-      const result = await bookShiprocketShipment(selectedOrder.internalId, {
+      const preview = await getBookingContextPreview(orderId, { provider: String(persistedSelection.provider), courier_name: String(persistedSelection.courier_name), courier_id: String(persistedSelection.courier_id), ...packageNumbers, draft_order_id: orderId, address_revision: operations.address_revision ?? 0 })
+      if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return
+      const products = preview.products.map(item => `${item.name} × ${item.quantity}`).join(', ')
+      if (!window.confirm(`Order #${preview.order_number}\nCustomer: ${preview.customer}\nDestination: ${preview.city} - ${preview.pincode}\nProducts: ${products}\nPayment: ${preview.payment}${preview.payment === 'COD' ? ` ₹${preview.cod_amount}` : ''}\nCourier: ${preview.courier}`)) return
+      const result = await bookShiprocketShipment(orderId, {
         provider: String(persistedSelection.provider),
         courier_name: String(persistedSelection.courier_name),
         courier_id: String(persistedSelection.courier_id),
         ...packageNumbers,
+        draft_order_id: orderId,
+        address_revision: preview.address_revision,
+        booking_context_hash: preview.booking_context_hash,
       })
-      applyConfirmedBooking(selectedOrder.internalId, result.shipment ?? null)
-      const reopened = await getOrderOperations(selectedOrder.internalId)
+      if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return
+      applyConfirmedBooking(orderId, result.shipment ?? null)
+      const reopened = await getOrderOperations(orderId)
       setOperations(reopened)
-      applyCanonicalShipment(selectedOrder.internalId, reopened.shipment ?? result.shipment ?? null)
+      applyCanonicalShipment(orderId, reopened.shipment ?? result.shipment ?? null)
       setCourierError(result.warning ? `Shiprocket cleanup failed: ${result.warning}` : '')
       setNotice(result.warning ? 'Delhivery shipment booked; Shiprocket cleanup needs attention' : result.existing ? 'Existing shipment loaded' : 'Shipment booked')
     } catch (err) {
-      setCourierError((err as Error).message)
+      if (generation === drawerGenerationRef.current && selectedOrderId === orderId) setCourierError((err as Error).message)
     } finally {
       bookingRequestInFlight.current = false
-      setBookingLoading(false)
+      if (generation === drawerGenerationRef.current) setBookingLoading(false)
     }
   }
 
@@ -959,9 +983,10 @@ function App() {
           setCallComment={setCallComment}
           addressDraft={addressDraft}
           setAddressDraft={setAddressDraft}
+          addressInitializing={addressInitializing}
           courierSyncMessage={courierSyncMessage}
           addressVerificationLine={addressVerifiedLabel}
-          onClose={() => { setSelectedOrderId(null); setSelectedOrderSnapshot(null) }}
+          onClose={() => { drawerGenerationRef.current += 1; setAddressDraft(emptyAddressDraft()); setAddressDraftOrderId(null); setAddressDraftGeneration(null); setAddressInitializing(true); setSelectedOrderId(null); setSelectedOrderSnapshot(null) }}
           onSaveCallLog={() => void saveCallLog()}
           onSaveAddress={saveAndVerifyAddress}
           onSaveAddressConfirmation={() => void saveAddressConfirmation()}
@@ -1085,6 +1110,7 @@ const OrderDrawer = memo(function OrderDrawer({
   setCallComment,
   addressDraft,
   setAddressDraft,
+  addressInitializing,
   courierSyncMessage,
   addressVerificationLine,
   onClose,
@@ -1149,6 +1175,7 @@ const OrderDrawer = memo(function OrderDrawer({
     state: string
     pincode: string
   }) => void
+  addressInitializing: boolean
   courierSyncMessage: string
   addressVerificationLine: string
   onClose: () => void
@@ -1317,22 +1344,24 @@ const OrderDrawer = memo(function OrderDrawer({
           </Section>
 
           <Section title="Shipping Address" subtitle={<span className={hasVerifiedAddress ? 'text-emerald-700' : 'text-amber-700'}>{verificationLine}</span>}>
+            <fieldset disabled={addressInitializing} aria-busy={addressInitializing}>
             <div className="grid gap-2 sm:grid-cols-2">
-              <Field label="Customer Name" value={addressDraft.customer_name} onChange={value => setAddressDraft({ ...addressDraft, customer_name: value })} />
-              <Field label="Phone" value={addressDraft.phone} onChange={value => setAddressDraft({ ...addressDraft, phone: value })} />
-              <MultilineField label="Address Line 1" value={addressDraft.address_line1} onChange={value => setAddressDraft({ ...addressDraft, address_line1: value })} />
-              <MultilineField label="Address Line 2" value={addressDraft.address_line2} onChange={value => setAddressDraft({ ...addressDraft, address_line2: value })} />
-              <MultilineField label="Landmark" value={addressDraft.landmark} onChange={value => setAddressDraft({ ...addressDraft, landmark: value })} />
+              <Field disabled={addressInitializing} label="Customer Name" value={addressDraft.customer_name} onChange={value => setAddressDraft({ ...addressDraft, customer_name: value })} />
+              <Field disabled={addressInitializing} label="Phone" value={addressDraft.phone} onChange={value => setAddressDraft({ ...addressDraft, phone: value })} />
+              <MultilineField disabled={addressInitializing} label="Address Line 1" value={addressDraft.address_line1} onChange={value => setAddressDraft({ ...addressDraft, address_line1: value })} />
+              <MultilineField disabled={addressInitializing} label="Address Line 2" value={addressDraft.address_line2} onChange={value => setAddressDraft({ ...addressDraft, address_line2: value })} />
+              <MultilineField disabled={addressInitializing} label="Landmark" value={addressDraft.landmark} onChange={value => setAddressDraft({ ...addressDraft, landmark: value })} />
               <div className="grid gap-2 sm:col-span-2 sm:grid-cols-3">
-                <Field label="City" value={addressDraft.city} onChange={value => setAddressDraft({ ...addressDraft, city: value })} />
-                <Field label="State" value={addressDraft.state} onChange={value => setAddressDraft({ ...addressDraft, state: value })} />
-                <Field label="PIN Code" value={addressDraft.pincode} onChange={value => setAddressDraft({ ...addressDraft, pincode: value })} />
+                <Field disabled={addressInitializing} label="City" value={addressDraft.city} onChange={value => setAddressDraft({ ...addressDraft, city: value })} />
+                <Field disabled={addressInitializing} label="State" value={addressDraft.state} onChange={value => setAddressDraft({ ...addressDraft, state: value })} />
+                <Field disabled={addressInitializing} label="PIN Code" value={addressDraft.pincode} onChange={value => setAddressDraft({ ...addressDraft, pincode: value })} />
               </div>
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
               <button onClick={() => { setAddressReviewLoading(true); void onSaveAddress().then(result => { if (result) setAddressReview(result.validation) }).finally(() => setAddressReviewLoading(false)) }} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white">{addressReviewLoading ? 'Saving & Verifying…' : 'Save & Verify Address'}</button>
               <button onClick={() => { const query = [addressDraft.address_line1, addressDraft.address_line2, addressDraft.landmark, addressDraft.city, addressDraft.state, addressDraft.pincode, 'India'].filter(Boolean).join(', '); window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`, '_blank', 'noopener,noreferrer') }} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600">Open in Google Maps</button>
             </div>
+            </fieldset>
             {addressReview && <div className={`mt-3 rounded-lg px-3 py-2 text-sm ${addressReview.blockers.length ? 'bg-rose-50 text-rose-700' : addressReview.warnings.length ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-700'}`}><p className="font-semibold">{addressReview.status}</p>{addressReview.blockers.map(value => <p key={value}>• {value}</p>)}{addressReview.warnings.map(value => <p key={value}>• {value}</p>)}<p className="mt-1 text-xs opacity-80">{addressReview.shiprocket_message}</p><p className="mt-1 text-[11px] opacity-70">Advisory only; Maps results and warnings do not block verification.</p></div>}
             <div className="mt-3 space-y-2 text-xs text-slate-600">
               {order.addressSyncResults && (
@@ -1605,17 +1634,17 @@ const OrderDrawer = memo(function OrderDrawer({
   )
 })
 
-function Field({ label, value, onChange, testId }: { label: string; value: string; onChange: (value: string) => void; testId?: string }) {
+function Field({ label, value, onChange, testId, disabled = false }: { label: string; value: string; onChange: (value: string) => void; testId?: string; disabled?: boolean }) {
   return (
     <label className="block">
       <span className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-slate-400">{label}</span>
-      <input data-testid={testId} value={value} onChange={e => onChange(e.target.value)} className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-orange-300 focus:ring-2 focus:ring-orange-100" />
+      <input disabled={disabled} data-testid={testId} value={value} onChange={e => onChange(e.target.value)} className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-orange-300 focus:ring-2 focus:ring-orange-100 disabled:bg-slate-100" />
     </label>
   )
 }
 
-export function MultilineField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
-  return <label className="block sm:col-span-2"><span className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-slate-400">{label}</span><textarea rows={1} value={value} onChange={event => onChange(event.target.value)} className="min-h-[42px] w-full resize-y overflow-x-hidden whitespace-pre-wrap break-words rounded-lg border border-slate-200 px-3 py-2 text-sm leading-snug outline-none focus:border-orange-300 focus:ring-2 focus:ring-orange-100" /></label>
+export function MultilineField({ label, value, onChange, disabled = false }: { label: string; value: string; onChange: (value: string) => void; disabled?: boolean }) {
+  return <label className="block sm:col-span-2"><span className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-slate-400">{label}</span><textarea disabled={disabled} rows={1} value={value} onChange={event => onChange(event.target.value)} className="min-h-[42px] w-full resize-y overflow-x-hidden whitespace-pre-wrap break-words rounded-lg border border-slate-200 px-3 py-2 text-sm leading-snug outline-none focus:border-orange-300 focus:ring-2 focus:ring-orange-100 disabled:bg-slate-100" /></label>
 }
 
 function KeyValue({ label, value }: { label: string; value: string }) {

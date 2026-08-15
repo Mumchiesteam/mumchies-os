@@ -329,6 +329,11 @@ export interface OrderOperations {
   address_sync_results: AddressSyncResults | null
   package_details: Order['packageDetails']
   selected_courier: Order['selectedCourier']
+  address_revision: number
+  address_draft_token: string
+  address_provenance: { order_id: string; order_number: string; source: string; saved_at: string; verified_at: string | null; operator: string; revision: number } | null
+  package_revision: number
+  package_provenance: { order_id: string; saved_at: string; operator: string; revision: number } | null
   shipment: Order['shipment']
 }
 
@@ -692,7 +697,7 @@ export async function addAddressConfirmationComment(orderId: string, comment: st
   return response.json()
 }
 
-export async function saveAndVerifyOrderAddress(orderId: string, payload: Record<string, string | null>): Promise<{ operations: OrderOperations; validation: { status: string; blockers: string[]; warnings: string[]; shiprocket_message: string }; verified: boolean }> {
+export async function saveAndVerifyOrderAddress(orderId: string, payload: Record<string, string | number | null>): Promise<{ operations: OrderOperations; validation: { status: string; blockers: string[]; warnings: string[]; shiprocket_message: string }; verified: boolean }> {
   const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/address/save-verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail || 'Could not save and verify address.')
@@ -849,6 +854,9 @@ export async function bookShiprocketShipment(orderId: string, payload: {
   length_cm?: number | null
   breadth_cm?: number | null
   height_cm?: number | null
+  draft_order_id: string
+  address_revision: number
+  booking_context_hash: string
 }): Promise<{ provider: string; shipment?: Order['shipment']; existing?: boolean; warning?: string; shiprocket_cleanup?: { status: string; error?: string } }> {
   const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/book`, {
     method: 'POST',
@@ -860,6 +868,14 @@ export async function bookShiprocketShipment(orderId: string, payload: {
     throw new Error(body?.detail?.message || body?.detail || 'Could not book shipment.')
   }
   return response.json()
+}
+
+export type BookingContextPreview = { order_id: string; order_number: string; customer: string; city: string; pincode: string; products: { name: string; quantity: number }[]; payment: string; cod_amount: number; courier: string; address_revision: number; booking_context_hash: string }
+export async function getBookingContextPreview(orderId: string, payload: { provider: string; courier_name: string; courier_id: string; weight_kg: number; length_cm?: number | null; breadth_cm?: number | null; height_cm?: number | null; draft_order_id: string; address_revision: number }): Promise<BookingContextPreview> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/booking-context`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail?.message || body?.detail || 'Could not verify booking context.')
+  return body
 }
 
 export async function refreshShiprocketShipment(orderId: string): Promise<{ provider: string; shipment: Order['shipment'] }> {
