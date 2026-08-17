@@ -488,11 +488,17 @@ async def list_orders(
 
 @router.get("/{order_id}/operations")
 async def get_order_operations(order_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
+    request_started = time.perf_counter()
+    store_started = time.perf_counter()
     operations = OrderOperationsStore.get(order_id)
+    store_ms = (time.perf_counter() - store_started) * 1000
+    shopify_started = time.perf_counter()
     try:
         order = await ShopifyService().get_order(order_id)
     except (ShopifyConfigurationError, httpx.HTTPError):
         order = None
+    shopify_ms = (time.perf_counter() - shopify_started) * 1000
+    shipment_started = time.perf_counter()
     if order is not None:
         shipment = await _canonical_shipment_readback(order, operations, db)
     else:
@@ -501,6 +507,11 @@ async def get_order_operations(order_id: str, db: Session = Depends(get_db)) -> 
     if shipment is not None:
         operations = {**operations, "shipment": shipment}
     revision = int(operations.get("address_revision") or 0)
+    logging.getLogger(__name__).info(
+        "order_drawer total_ms=%.2f operations_store_ms=%.2f shopify_ms=%.2f shipment_readback_ms=%.2f",
+        (time.perf_counter() - request_started) * 1000, store_ms, shopify_ms,
+        (time.perf_counter() - shipment_started) * 1000,
+    )
     return {**operations, "address_revision": revision, "address_draft_token": _address_draft_token(order_id, revision)}
 
 

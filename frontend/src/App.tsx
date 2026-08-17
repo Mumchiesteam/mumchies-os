@@ -615,13 +615,8 @@ function App() {
       if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return
       setOperations(result.operations)
       setOrders(previous => previous.map(order => order.internalId === selectedOrder.internalId ? { ...order, correctedAddress: result.operations.corrected_address, addressVerified: result.operations.address_verified, addressVerifiedAt: result.operations.address_verified_at, addressVerifiedBy: result.operations.address_verified_by, verifiedAddressSnapshot: result.operations.verified_address_snapshot, addressSyncResults: result.operations.address_sync_results } : order))
-      const [freshOperations, freshEligibility] = await Promise.all([
-        getOrderOperations(orderId),
-        getBookingEligibility(orderId),
-      ])
-      setOperations(freshOperations)
+      const freshEligibility = await getBookingEligibility(orderId)
       setBookingEligibility(freshEligibility)
-      await loadOrders()
       setNotice(result.verified ? (result.validation.warnings.length ? `Address verified with advisories: ${result.validation.warnings.join('; ')}` : 'Address saved and verified') : `Address saved but not verified: ${result.validation.blockers.join('; ')}`)
       return result
     } catch (err) { setNotice((err as Error).message) }

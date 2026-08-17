@@ -14,6 +14,7 @@ from app.services.ndr_sources import (
     CourierRow, clean_phone, fetch_delhivery, fetch_shadowfax, fetch_shiprocket,
     fetch_shopify, recommended_action, whatsapp_url,
 )
+from app.services.ndr_eligibility import is_ndr_eligible
 from app.services.ndr_delivery import resolve_if_canonically_terminal
 
 
@@ -37,6 +38,8 @@ def _priority(attempts: int, first_ndr: datetime, now: datetime, repeat: bool = 
 def serialize_case(case: NDRCase, *, events: list[NDREvent] | None = None) -> dict:
     now = datetime.now(timezone.utc); first = _aware(case.first_ndr_at)
     result = {column.name: getattr(case, column.name) for column in case.__table__.columns if column.name != "raw_provider_data"}
+    if result.get("source_lifecycle") == "active" and not is_ndr_eligible(case.provider_status, case.failure_reason):
+        result["source_lifecycle"] = "no_longer_reported"
     for key, value in list(result.items()):
         if isinstance(value, datetime): result[key] = value.isoformat()
     result["ageing_hours"] = max(int((now-first).total_seconds()//3600),0)

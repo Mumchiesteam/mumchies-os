@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.ndr import NDRCase, NDREvent, NDRImportRun
 from app.services.ndr_delivery import resolve_if_canonically_terminal
+from app.services.ndr_eligibility import is_ndr_eligible
 
 
 COURIER_FIELDS = (
@@ -53,8 +54,13 @@ def import_ndr(db: Session, payload: Any) -> NDRImportRun:
         identity = identity_for(source, order_id, awb)
         if identity is None:
             rejected += 1; errors.append(f"Row {index + 1}: source/order identity is missing."); continue
-        seen_by_source.setdefault(source, set()).add(identity)
         case = db.scalar(select(NDRCase).where(NDRCase.source_identity == identity))
+        if not is_ndr_eligible(row.status, row.failure_reason):
+            rejected += 1
+            if case is not None and case.current_status != "resolved":
+                case.source_lifecycle = "no_longer_reported"
+            continue
+        seen_by_source.setdefault(source, set()).add(identity)
         row_time = _dt(row.last_update, _dt(payload.generated_at, now))
         values = {
             "order_id": order_id or None, "order_number": order_id or None, "provider": source,

@@ -14,6 +14,7 @@ from urllib.parse import quote
 import httpx
 
 from app.core.config import settings
+from app.services.ndr_eligibility import is_ndr_eligible, is_pre_pickup_state
 from app.services.shopify import ShopifyService
 
 
@@ -214,7 +215,8 @@ async def fetch_shadowfax() -> SourceResult:
                 result.fetched += len(orders)
                 for item in orders:
                     info=item.get("status_info") if isinstance(item.get("status_info"),dict) else {}; code=str(info.get("status_code") or "").casefold(); sub=str(info.get("subcategory_code") or "").casefold()
-                    is_ndr=code in {"customer_nc","customer_cid","delivery_not_attempted","pickup_not_attempted"} or sub=="attempted_but_not_delivered" or any(x in code for x in ("customer_nc","customer_cid","not_attempted","not_delivered"))
+                    labels=(info.get("status_label"),info.get("subcategory_label"),item.get("status"))
+                    is_ndr=not is_pre_pickup_state(code,sub,*labels) and is_ndr_eligible(code,sub,*labels)
                     if not is_ndr: result.skipped += 1; continue
                     result.rows.append(CourierRow("shadowfax",str(item.get("client_order_id") or ""),str(item.get("awb_number") or ""),str(item.get("consignee_name") or item.get("customer_name") or ""),str(item.get("consignee_phone") or item.get("consignee_contact") or item.get("customer_phone") or item.get("contact_number") or item.get("consignee_mobile") or ""),str(item.get("delivery_city") or ""),str(info.get("status_label") or item.get("status") or ""),str(info.get("subcategory_label") or ""),_int(item.get("attempt_number")),parse_datetime(info.get("last_updated")),item))
                 total=_int(body.get("total_orders")); result.accepted=len(result.rows)

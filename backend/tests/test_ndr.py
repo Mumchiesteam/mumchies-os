@@ -158,10 +158,10 @@ def test_summary_health_comes_from_latest_successful_run(db):
 def test_kpi_filters_apply_server_side_and_combine_with_search(db):
     now = datetime.now(timezone.utc)
     rows = [
-        NDRCase(id="active", source_identity="awb:A", awb="A", provider="shiprocket", order_number="323500", source_lifecycle="active", current_status="new", priority="high", delivery_attempts=1, first_ndr_at=now, last_synced_at=now, products=[], cod_amount=0),
-        NDRCase(id="awaiting", source_identity="awb:B", awb="B", provider="shadowfax", order_number="323501", source_lifecycle="active", current_status="awaiting_customer", priority="medium", delivery_attempts=1, first_ndr_at=now, last_synced_at=now, products=[], cod_amount=0),
+        NDRCase(id="active", source_identity="awb:A", awb="A", provider="shiprocket", order_number="323500", source_lifecycle="active", current_status="new", failure_reason="Customer unavailable", priority="high", delivery_attempts=1, first_ndr_at=now, last_synced_at=now, products=[], cod_amount=0),
+        NDRCase(id="awaiting", source_identity="awb:B", awb="B", provider="shadowfax", order_number="323501", source_lifecycle="active", current_status="awaiting_customer", failure_reason="Delivery rescheduled", priority="medium", delivery_attempts=1, first_ndr_at=now, last_synced_at=now, products=[], cod_amount=0),
         NDRCase(id="resolved", source_identity="awb:C", awb="C", provider="delhivery", order_number="323502", source_lifecycle="resolved", current_status="resolved", resolved_at=now, priority="low", delivery_attempts=1, first_ndr_at=now, last_synced_at=now, products=[], cod_amount=0),
-        NDRCase(id="courier", source_identity="awb:D", awb="D", provider="delhivery", order_number="323503", source_lifecycle="active", current_status="courier_pending", priority="medium", delivery_attempts=1, first_ndr_at=now-timedelta(hours=80), last_synced_at=now, products=[], cod_amount=0),
+        NDRCase(id="courier", source_identity="awb:D", awb="D", provider="delhivery", order_number="323503", source_lifecycle="active", current_status="courier_pending", failure_reason="Wrong address", priority="medium", delivery_attempts=1, first_ndr_at=now-timedelta(hours=80), last_synced_at=now, products=[], cod_amount=0),
     ]
     db.add_all(rows); db.commit()
     assert {item["id"] for item in list_cases(page=1, page_size=50, db=db)["items"]} == {"active", "awaiting", "courier"}
