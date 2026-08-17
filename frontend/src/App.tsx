@@ -362,12 +362,12 @@ function App() {
 
   useEffect(() => {
     const loads = workspaceLoadsForPage(activePage)
-    if (loads.orders) refreshLabels()
+    if (loads.orders && queue !== 'ready_to_ship' && queue !== 'manifested') refreshLabels()
     if (loads.reconciliation && reconciliationSection === 'reconciliation') {
       const timeout = window.setTimeout(() => refreshReconciliation(false), 0)
       return () => window.clearTimeout(timeout)
     }
-  }, [activePage, reconciliationRetry, reconciliationSection, refreshLabels, refreshReconciliation])
+  }, [activePage, queue, reconciliationRetry, reconciliationSection, refreshLabels, refreshReconciliation])
 
   useEffect(() => {
     if (activePage !== 'Reconciliation' || reconciliationSection !== 'reconciliation' || !reconciliation?.refreshing) return
