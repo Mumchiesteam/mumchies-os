@@ -95,3 +95,26 @@ def test_booking_requires_the_same_persisted_canonical_courier() -> None:
 def test_courier_lookup_clears_stored_selection_before_returning_quotes() -> None:
     source = inspect.getsource(couriers.shiprocket_serviceability)
     assert "save_selected_courier(order_id, None)" in source
+
+
+def test_booking_returns_before_noncritical_post_booking_work() -> None:
+    source = inspect.getsource(couriers.shiprocket_book_shipment)
+    assert "background_tasks.add_task(_run_post_booking_work" in source
+    assert "await _sync_shopify_after_booking" not in source
+    assert "await _cleanup_unused_shiprocket_order" not in source
+    assert "OrderOperationsStore.save_selected_courier(order_id, selected)" not in source
+
+
+def test_post_booking_failures_remain_persisted_and_actionable() -> None:
+    source = inspect.getsource(couriers._run_post_booking_work)
+    assert "ShopifyFulfillmentSynchronizer().sync" in source
+    assert "_cleanup_unused_shiprocket_order" in source
+    assert "OrderOperationsStore.record_timeline_event" in source
+
+
+def test_confirmation_can_reuse_display_cache_but_booking_keeps_fresh_shopify_guard() -> None:
+    preview = inspect.getsource(couriers.preview_booking_context)
+    booking = inspect.getsource(couriers.shiprocket_book_shipment)
+    assert "get_cached_order(order_id) or await _load_order(order_id)" in preview
+    assert "order = await _load_order(order_id)" in booking
+    assert "get_cached_order" not in booking

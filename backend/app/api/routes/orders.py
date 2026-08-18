@@ -9,7 +9,7 @@ import hmac
 from zoneinfo import ZoneInfo
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Font
@@ -684,7 +684,10 @@ async def get_shipping_label(order_id: str, db: Session = Depends(get_db)):
     return await _official_shipping_label(order_id, db)
 
 
-async def _update_order_address(order_id: str, payload: AddressPayload, request: Request, db: Session, *, persist_local: bool) -> dict[str, object]:
+async def _update_order_address(
+    order_id: str, payload: AddressPayload, request: Request | None, db: Session, *,
+    persist_local: bool, actor: str | None = None,
+) -> dict[str, object]:
     address = {
         "customer_name": payload.customer_name,
         "phone": payload.phone,
@@ -699,7 +702,8 @@ async def _update_order_address(order_id: str, payload: AddressPayload, request:
     if persist_local:
         OrderOperationsStore.save_address(
             order_id, address, courier_sync_status=payload.courier_sync_status,
-            courier_sync_error=payload.courier_sync_error, operator=current_actor(request),
+            courier_sync_error=payload.courier_sync_error,
+            operator=actor or (current_actor(request) if request is not None else "Mumchies OS"),
         )
     results: dict[str, object] = {
         "shopify_order": "failed",
@@ -765,6 +769,21 @@ async def _update_order_address(order_id: str, payload: AddressPayload, request:
     return OrderOperationsStore.save_address_sync_results(order_id, results)
 
 
+async def _sync_saved_address(order_id: str, payload: AddressPayload, actor: str) -> None:
+    """Run best-effort external address propagation after local verified persistence."""
+    started = time.perf_counter()
+    try:
+        with SessionLocal() as background_db:
+            await _update_order_address(order_id, payload, None, background_db, persist_local=False, actor=actor)
+    except Exception:  # noqa: BLE001 - failure is retained by the sync routine where classifiable
+        logging.getLogger(__name__).exception("address_sync_background_failed order_id=%s", order_id)
+    finally:
+        logging.getLogger(__name__).info(
+            "address_sync_background order_id=%s total_ms=%.2f", order_id,
+            (time.perf_counter() - started) * 1000,
+        )
+
+
 @router.put("/{order_id}/address")
 async def update_order_address(order_id: str, payload: AddressUpdatePayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     if payload.draft_order_id != order_id:
@@ -785,36 +804,63 @@ async def update_order_address(order_id: str, payload: AddressUpdatePayload, req
 
 
 @router.post("/{order_id}/address/save-verify")
-async def save_and_verify_address(order_id: str, payload: SaveVerifyAddressPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
+async def save_and_verify_address(
+    order_id: str, payload: SaveVerifyAddressPayload, request: Request,
+    background_tasks: BackgroundTasks, response: Response, db: Session = Depends(get_db),
+) -> dict[str, object]:
+    request_started = time.perf_counter()
+    stages: dict[str, float] = {}
+    stage_started = time.perf_counter()
     if payload.draft_order_id != order_id:
         raise HTTPException(status_code=409, detail="Address draft belongs to a different order. Reload the order before saving.")
     _assert_address_draft_token(order_id, payload.expected_revision, payload.draft_token)
+    stages["draft_revision_validation"] = (time.perf_counter() - stage_started) * 1000
+    stage_started = time.perf_counter()
     try:
         canonical = await ShopifyService().get_order(order_id)
     except (ShopifySyncError, httpx.HTTPError) as error:
         raise HTTPException(status_code=409, detail="Current Shopify order identity could not be verified. Reload before saving.") from error
     if canonical.order_id != order_id:
         raise HTTPException(status_code=409, detail="Canonical order identity mismatch. No address was saved.")
+    stages["shopify_integrity_get"] = (time.perf_counter() - stage_started) * 1000
+    stage_started = time.perf_counter()
     address = AddressValidationPayload(**payload.model_dump())
     validation = await validate_order_address(order_id, address, db)
+    stages["local_validation_db"] = (time.perf_counter() - stage_started) * 1000
     snapshot = {key: getattr(payload, key) for key in ("customer_name", "phone", "address_line1", "address_line2", "landmark", "city", "state", "pincode")}
+    pending_sync = {
+        "shopify_order": "pending", "shopify_customer": "pending",
+        "shiprocket": "pending", "delhivery": "pending", "errors": {},
+    }
+    stage_started = time.perf_counter()
     try:
         saved = OrderOperationsStore.save_verified_address_if_current(
             order_id, snapshot, expected_revision=payload.expected_revision,
             visible_order_number=canonical.order_number, operator=current_actor(request),
-            verified=not bool(validation["blockers"]),
+            verified=not bool(validation["blockers"]), address_sync_results=pending_sync,
         )
     except ValueError as error:
         current = str(error).partition(":")[2]
         raise HTTPException(status_code=409, detail=f"Address changed in another session (current revision {current}). Reload before saving.") from error
-    await _update_order_address(order_id, AddressPayload(**{
+    stages["operations_store_write"] = (time.perf_counter() - stage_started) * 1000
+    sync_payload = AddressPayload(**{
         **payload.model_dump(),
         "update_customer_address": True,
         "one_time_delivery_address": False,
         "use_as_default_address": False,
-    }), request, db, persist_local=False)
+    })
+    background_tasks.add_task(_sync_saved_address, order_id, sync_payload, current_actor(request))
     verified = not bool(validation["blockers"])
-    return {"operations": saved, "validation": validation, "verified": verified}
+    revision = int(saved.get("address_revision") or 0)
+    saved = {**saved, "address_draft_token": _address_draft_token(order_id, revision)}
+    total_ms = (time.perf_counter() - request_started) * 1000
+    stages["total_backend"] = total_ms
+    response.headers["Server-Timing"] = ", ".join(f"save_{name};dur={value:.2f}" for name, value in stages.items())
+    logging.getLogger(__name__).info(
+        "save_verify_address order_id=%s %s", order_id,
+        " ".join(f"{name}_ms={value:.2f}" for name, value in stages.items()),
+    )
+    return {"operations": saved, "validation": validation, "verified": verified, "sync_status": "pending"}
 
 
 @router.post("/{order_id}/call-logs")

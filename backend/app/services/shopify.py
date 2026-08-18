@@ -56,6 +56,8 @@ class ShopifyService:
     _reporting_orders_lock = asyncio.Lock()
     _repeat_refresh_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
     _orders_cache_ttl_seconds = 300
+    _single_order_cache: dict[tuple[str, str, str], tuple[float, ShopifyOrder]] = {}
+    _single_order_cache_ttl_seconds = 120
 
     def __init__(
         self,
@@ -437,7 +439,18 @@ class ShopifyService:
                 raise ShopifySyncError("Shopify returned an invalid order response.")
             if str(raw.get("financial_status") or "").casefold() == "partially_paid":
                 raw["_transaction_summary"] = await self._transaction_summary(client, str(raw["id"]), headers)
-        return self._to_order(raw)
+        order = self._to_order(raw)
+        self._single_order_cache[(self.store, self.api_version or "", order_id)] = (
+            time.monotonic() + self._single_order_cache_ttl_seconds, order,
+        )
+        return order
+
+    def get_cached_order(self, order_id: str) -> ShopifyOrder | None:
+        """Return a recent display snapshot; never use this at a mutation boundary."""
+        cached = self._single_order_cache.get((self.store, self.api_version or "", order_id))
+        if not cached or cached[0] <= time.monotonic():
+            return None
+        return cached[1]
 
     @staticmethod
     def _repeat_email(value: object) -> str:

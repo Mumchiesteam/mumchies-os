@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from fastapi import BackgroundTasks, Response
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -210,6 +211,7 @@ async def test_prepaid_address_comment_persists_operator_and_utc_timestamp(tmp_p
 @pytest.mark.anyio
 async def test_save_verify_address_validates_syncs_and_invalidates_old_verification(db, tmp_path, monkeypatch):
     monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    monkeypatch.setattr(orders, "SessionLocal", sessionmaker(bind=db.get_bind()))
     OrderOperationsStore.verify_address("1", "Old", {"address_line1": "Old"}, "2026-07-25T00:00:00+00:00")
     calls = []
 
@@ -227,8 +229,11 @@ async def test_save_verify_address_validates_syncs_and_invalidates_old_verificat
     monkeypatch.setattr(orders.ShopifyService, "get_order", get_order)
     monkeypatch.setattr(orders.settings, "auth_session_secret", "test-secret")
     payload = SaveVerifyAddressPayload(operator="Operator", customer_name="Customer", phone="9999999999", address_line1="12 Main Road", landmark="Near Park", city="Delhi", state="Delhi", pincode="110001", draft_order_id="1", draft_generation=1, expected_revision=0, draft_token=orders._address_draft_token("1", 0))
-    result = await orders.save_and_verify_address("1", payload, authenticated_request(), db)
+    background = BackgroundTasks()
+    result = await orders.save_and_verify_address("1", payload, authenticated_request(), background, Response(), db)
     assert result["verified"] is True and result["operations"]["address_verified_by"] == "Authenticated Operator"
+    assert result["sync_status"] == "pending" and calls == []
+    await background()
     assert calls == ["order", ("customer", False)]
     OrderOperationsStore.save_address("1", {"address_line1": "Changed"}, operator="Operator")
     assert OrderOperationsStore.get("1")["address_verified"] is False
@@ -491,9 +496,8 @@ async def test_accepted_cleanup_invalidates_shiprocket_new_cache(tmp_path, monke
 
 def test_delhivery_cleanup_precedes_shopify_fulfillment_sync():
     import inspect
-    source = inspect.getsource(couriers.shiprocket_book_shipment)
-    branch = source[source.index('if provider == "delhivery"'):source.index('order_payload =')]
-    assert branch.index("_cleanup_unused_shiprocket_order") < branch.index("_sync_shopify_after_booking")
+    source = inspect.getsource(couriers._run_post_booking_work)
+    assert source.index("_cleanup_unused_shiprocket_order") < source.index("ShopifyFulfillmentSynchronizer().sync")
 
 
 @pytest.mark.anyio

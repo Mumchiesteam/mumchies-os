@@ -34,6 +34,7 @@ logging.getLogger(__name__).info(
 @app.middleware("http")
 async def require_authentication(request: Request, call_next):
     request_started = time.perf_counter()
+    auth_started = time.perf_counter()
     public_paths = {"/health", f"{settings.api_v1_prefix}/auth/login", f"{settings.api_v1_prefix}/auth/logout"}
     signed_provider_webhook = request.method == "POST" and request.url.path.startswith(f"{settings.api_v1_prefix}/couriers/webhooks/")
     signed_ndr_import = request.method == "POST" and request.url.path == f"{settings.api_v1_prefix}/ndr/import"
@@ -53,6 +54,8 @@ async def require_authentication(request: Request, call_next):
         response = JSONResponse(status_code=401, content={"detail": "Authentication required."})
         response.delete_cookie(settings.auth_cookie_name, path="/")
         return response
+    session_ms = (time.perf_counter() - auth_started) * 1000
+    auth_db_started = time.perf_counter()
     with request.app.state.session_factory() as db:
         user = db.scalar(select(User).where(User.username == session.username))
         if user is None or not user.is_active:
@@ -60,6 +63,7 @@ async def require_authentication(request: Request, call_next):
             response.delete_cookie(settings.auth_cookie_name, path="/")
             return response
         db.expunge(user)
+    auth_db_ms = (time.perf_counter() - auth_db_started) * 1000
     if request.method not in {"GET", "HEAD"} and not hmac.compare_digest(
         request.headers.get("X-CSRF-Token", ""),
         session.csrf_token,
@@ -70,8 +74,14 @@ async def require_authentication(request: Request, call_next):
     request.state.csrf_token = session.csrf_token
     response = await call_next(request)
     prior = response.headers.get("Server-Timing")
-    total = f"request_total;dur={(time.perf_counter() - request_started) * 1000:.2f}"
-    response.headers["Server-Timing"] = f"{prior}, {total}" if prior else total
+    total_ms = (time.perf_counter() - request_started) * 1000
+    timings = f"auth_session;dur={session_ms:.2f}, auth_db;dur={auth_db_ms:.2f}, request_total;dur={total_ms:.2f}"
+    response.headers["Server-Timing"] = f"{prior}, {timings}" if prior else timings
+    if request.url.path.endswith(("/address/save-verify", "/book")):
+        logging.getLogger(__name__).info(
+            "interactive_request path=%s auth_session_ms=%.2f auth_db_ms=%.2f total_ms=%.2f",
+            request.url.path, session_ms, auth_db_ms, total_ms,
+        )
     return response
 
 

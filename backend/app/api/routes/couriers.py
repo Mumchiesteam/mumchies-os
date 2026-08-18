@@ -10,12 +10,12 @@ import time
 from copy import deepcopy
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.core.identity import current_actor, current_user
 from app.repositories.shiprocket import get_shipment, snapshot as shipment_snapshot, upsert_shipment
 from app.schemas.orders import ShopifyOrder
@@ -109,6 +109,34 @@ async def _sync_shopify_after_booking(db: Session, order: ShopifyOrder) -> dict[
         )
     except ShopifyFulfillmentSyncError:
         return shipment_snapshot(get_shipment(db, order.order_id))
+
+
+async def _run_post_booking_work(
+    order_id: str, order_number: str, order_gid: str | None,
+    provider: str, operator: str,
+) -> None:
+    """Persist visible, retryable downstream results without extending booking latency."""
+    started = time.perf_counter()
+    cleanup_ms = 0.0
+    if provider == "delhivery":
+        cleanup_started = time.perf_counter()
+        await _cleanup_unused_shiprocket_order(order_id, order_number, operator)
+        cleanup_ms = (time.perf_counter() - cleanup_started) * 1000
+    fulfillment_started = time.perf_counter()
+    with SessionLocal() as background_db:
+        try:
+            await ShopifyFulfillmentSynchronizer().sync(background_db, order_id, order_gid)
+        except ShopifyFulfillmentSyncError:
+            # The synchronizer persists its actionable failure state on the shipment.
+            pass
+    fulfillment_ms = (time.perf_counter() - fulfillment_started) * 1000
+    timeline_started = time.perf_counter()
+    OrderOperationsStore.record_timeline_event(order_id, "shipment_booked", operator=operator, details={"provider": provider})
+    timeline_ms = (time.perf_counter() - timeline_started) * 1000
+    LOGGER.info(
+        "post_booking order_id=%s provider=%s shopify_fulfillment_ms=%.2f shiprocket_cleanup_ms=%.2f timeline_ms=%.2f total_ms=%.2f",
+        order_id, provider, fulfillment_ms, cleanup_ms, timeline_ms, (time.perf_counter() - started) * 1000,
+    )
 
 
 def _activate_new_label_tracking(db: Session, order_id: str, booking_result: dict[str, object]) -> None:
@@ -635,8 +663,13 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
 
 
 @router.post("/orders/{order_id}/book")
-async def shiprocket_book_shipment_route(order_id: str, payload: BookingPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
-    return await shiprocket_book_shipment(order_id, payload, db, current_actor(request))
+async def shiprocket_book_shipment_route(
+    order_id: str, payload: BookingPayload, request: Request, background_tasks: BackgroundTasks,
+    response: Response, db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return await shiprocket_book_shipment(
+        order_id, payload, db, current_actor(request), background_tasks=background_tasks, response=response,
+    )
 
 
 @booking_router.post("/{order_id}/shadowfax/manual")
@@ -1031,12 +1064,41 @@ def _booking_selection_matches(selected: object, payload: BookingPayload) -> boo
     return bool(stored_provider and stored_name)
 
 
-async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: Session, operator: str = "Mumchies OS") -> dict[str, object]:
+def _finish_booking_response(
+    order_id: str, provider: str, result: dict[str, object], canonical: dict[str, object] | None,
+    stages: dict[str, float], request_started: float, response: Response | None,
+) -> dict[str, object]:
+    stages["total_backend"] = (time.perf_counter() - request_started) * 1000
+    if response is not None:
+        response.headers["Server-Timing"] = ", ".join(f"book_{name};dur={value:.2f}" for name, value in stages.items())
+    LOGGER.info(
+        "book_shipment order_id=%s provider=%s %s", order_id, provider,
+        " ".join(f"{name}_ms={value:.2f}" for name, value in stages.items()),
+    )
+    return {
+        "provider": provider, **result, "shipment": canonical or result.get("shipment"),
+        "post_booking_status": "pending",
+    }
+
+
+async def shiprocket_book_shipment(
+    order_id: str, payload: BookingPayload, db: Session, operator: str = "Mumchies OS",
+    *, background_tasks: BackgroundTasks | None = None, response: Response | None = None,
+) -> dict[str, object]:
     actor = operator
+    request_started = time.perf_counter()
+    stages: dict[str, float] = {}
     try:
-        order, operations, shipment = await _load_context(order_id, db)
+        stage_started = time.perf_counter()
+        order = await _load_order(order_id)
+        stages["fresh_shopify_integrity_get"] = (time.perf_counter() - stage_started) * 1000
+        stage_started = time.perf_counter()
+        operations = OrderOperationsStore.get(order_id)
+        local_shipment = get_shipment(db, order_id)
+        shipment = shipment_snapshot(local_shipment) if local_shipment else None
+        stages["booking_context_load"] = (time.perf_counter() - stage_started) * 1000
         package = PackageDetailsPayload.model_validate(payload.model_dump())
-        existing = get_shipment(db, order_id)
+        existing = local_shipment
         if existing and has_persisted_provider_booking_evidence(shipment_snapshot(existing)):
             return {"provider": existing.provider or "shiprocket", "existing": True, "shipment": shipment_snapshot(existing)}
         if existing and has_uncertain_provider_booking(shipment_snapshot(existing)):
@@ -1059,9 +1121,11 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
             raise HTTPException(status_code=400, detail="Selected courier does not match the stored courier selection.")
         if payload.draft_order_id != order_id:
             raise HTTPException(status_code=409, detail="Booking blocked: package or drawer state belongs to a different order.")
+        stage_started = time.perf_counter()
         context = _booking_context(order, operations, package, selected)
         if payload.address_revision != context.address_revision or payload.booking_context_hash != context.context_hash:
             raise HTTPException(status_code=409, detail="Booking blocked: order data changed or could not be verified. Reload the order before booking.")
+        stages["integrity_comparison"] = (time.perf_counter() - stage_started) * 1000
 
         provider = str(selected.get("provider") or "shiprocket").lower()
         if payload.provider and payload.provider.lower() != provider:
@@ -1081,22 +1145,27 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
                 raise HTTPException(status_code=409, detail="Fulfilled or shipped orders cannot be booked with Delhivery.")
             provider_payload = _build_delhivery_payload(context.order, _context_operations(context), context.package)
             _assert_booking_payload(context, "delhivery", provider_payload)
+            stage_started = time.perf_counter()
             result = await service.book_order_shipment(
                 db, order_id, order.order_number,
                 provider_payload,
                 context.package.model_dump(), payload.courier_id,
                 str(selected.get("courier_name") or "Delhivery Surface"),
             )
-            OrderOperationsStore.save_selected_courier(order_id, selected)
+            stages["provider_post_and_canonical_persistence"] = (time.perf_counter() - stage_started) * 1000
+            stage_started = time.perf_counter()
             _activate_new_label_tracking(db, order_id, result)
-            cleanup = await _cleanup_unused_shiprocket_order(order_id, order.order_number, actor)
-            synchronized = await _sync_shopify_after_booking(db, order)
-            OrderOperationsStore.record_timeline_event(order_id, "shipment_booked", operator=actor, details={"provider": "delhivery"})
-            return {"provider": "delhivery", **result, "shipment": synchronized or result.get("shipment"), "shiprocket_cleanup": cleanup, "warning": cleanup.get("error")}
+            upsert_shipment(db, order_id, shopify_fulfillment_sync_status="pending", shopify_fulfillment_sync_error=None)
+            canonical = shipment_snapshot(get_shipment(db, order_id))
+            stages["canonical_readback_and_label_state"] = (time.perf_counter() - stage_started) * 1000
+            if background_tasks is not None:
+                background_tasks.add_task(_run_post_booking_work, order_id, order.order_number, order.shopify_graphql_id, "delhivery", actor)
+            return _finish_booking_response(order_id, "delhivery", result, canonical, stages, request_started, response)
 
         order_payload = _build_shiprocket_order_payload(context.order, _context_operations(context), context.package)
         _assert_booking_payload(context, "shiprocket", order_payload)
         service = ShiprocketService()
+        stage_started = time.perf_counter()
         result = await service.book_order_shipment(
             db,
             order_id,
@@ -1105,11 +1174,15 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
             package_details=package.model_dump(),
             courier_name=str(selected.get("courier_name") or ""),
         )
-        OrderOperationsStore.save_selected_courier(order_id, selected)
+        stages["provider_post_and_canonical_persistence"] = (time.perf_counter() - stage_started) * 1000
+        stage_started = time.perf_counter()
         _activate_new_label_tracking(db, order_id, result)
-        synchronized = await _sync_shopify_after_booking(db, order)
-        OrderOperationsStore.record_timeline_event(order_id, "shipment_booked", operator=actor, details={"provider": "shiprocket"})
-        return {"provider": "shiprocket", **result, "shipment": synchronized or result.get("shipment")}
+        upsert_shipment(db, order_id, shopify_fulfillment_sync_status="pending", shopify_fulfillment_sync_error=None)
+        canonical = shipment_snapshot(get_shipment(db, order_id))
+        stages["canonical_readback_and_label_state"] = (time.perf_counter() - stage_started) * 1000
+        if background_tasks is not None:
+            background_tasks.add_task(_run_post_booking_work, order_id, order.order_number, order.shopify_graphql_id, "shiprocket", actor)
+        return _finish_booking_response(order_id, "shiprocket", result, canonical, stages, request_started, response)
     except DelhiveryError as error:
         raise HTTPException(status_code=502, detail={"message": str(error), "upstream_status": error.status_code}) from error
     except httpx.HTTPError as error:
@@ -1130,16 +1203,25 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
 
 
 @booking_router.post("/{order_id}/book")
-async def provider_book_shipment(order_id: str, payload: BookingPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
+async def provider_book_shipment(
+    order_id: str, payload: BookingPayload, request: Request, background_tasks: BackgroundTasks,
+    response: Response, db: Session = Depends(get_db),
+) -> dict[str, object]:
     """Provider-neutral booking entrypoint; delegates to the existing guarded implementation."""
-    return await shiprocket_book_shipment(order_id, payload, db, current_actor(request))
+    return await shiprocket_book_shipment(
+        order_id, payload, db, current_actor(request), background_tasks=background_tasks, response=response,
+    )
 
 
 @booking_router.post("/{order_id}/booking-context")
 async def preview_booking_context(order_id: str, payload: BookingPreviewPayload, db: Session = Depends(get_db)) -> dict[str, object]:
     if payload.draft_order_id != order_id:
         raise HTTPException(status_code=409, detail="Booking preview belongs to a different order.")
-    order, operations, shipment = await _load_context(order_id, db)
+    shopify = ShopifyService()
+    order = shopify.get_cached_order(order_id) or await _load_order(order_id)
+    operations = OrderOperationsStore.get(order_id)
+    local_shipment = get_shipment(db, order_id)
+    shipment = shipment_snapshot(local_shipment) if local_shipment else None
     if has_existing_shipment_evidence(order, operations, shipment):
         raise HTTPException(status_code=409, detail="An active shipment or fulfilment already exists for this order.")
     selected = operations.get("selected_courier")

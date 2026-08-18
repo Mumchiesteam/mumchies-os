@@ -42,4 +42,19 @@ describe('Orders latency regressions', () => {
     const guard = source.slice(source.indexOf('const canBookShipment'), source.indexOf('const requirementLabels'))
     expect(guard).toContain('selectedCourierPersisted')
   })
+
+  it('shows saved address before the secondary eligibility refresh', () => {
+    const flow = source.slice(source.indexOf('const saveAndVerifyAddress'), source.indexOf('const checkCouriers'))
+    expect(flow).toContain('setNotice(result.verified')
+    expect(flow).toContain('void getBookingEligibility(orderId)')
+    expect(flow).not.toContain('await getBookingEligibility(orderId)')
+  })
+
+  it('shows booked before the secondary canonical readback', () => {
+    const flow = source.slice(source.indexOf('const bookShipment'), source.indexOf('const saveManualShadowfax'))
+    expect(flow).toContain("setNotice(result.existing ? 'Existing shipment loaded' : 'Shipment booked')")
+    expect(flow).toContain('void getOrderOperations(orderId)')
+    expect(flow).not.toContain('await getOrderOperations(orderId)')
+    expect(flow).not.toContain('loadOrders(')
+  })
 })

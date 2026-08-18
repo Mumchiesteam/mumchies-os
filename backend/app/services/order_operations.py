@@ -18,8 +18,24 @@ OPS_FILE.parent.mkdir(parents=True, exist_ok=True)
 LOGGER = logging.getLogger(__name__)
 
 
+class _TimedLock:
+    """Keep the file store serialized while exposing production lock contention."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+
+    def __enter__(self) -> "_TimedLock":
+        started = time.perf_counter()
+        self._lock.acquire()
+        LOGGER.info("order_operations_lock wait_ms=%.2f", (time.perf_counter() - started) * 1000)
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self._lock.release()
+
+
 class OrderOperationsStore:
-    _lock = Lock()
+    _lock = _TimedLock()
     _default_record = {
         "call_logs": [],
         "address_confirmation_comments": [],
@@ -51,10 +67,14 @@ class OrderOperationsStore:
 
     @classmethod
     def _read_all(cls) -> dict[str, Any]:
+        started = time.perf_counter()
         if not OPS_FILE.exists():
+            LOGGER.info("order_operations_read duration_ms=%.2f records=0", (time.perf_counter() - started) * 1000)
             return {}
         with OPS_FILE.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
+            payload = json.load(handle)
+        LOGGER.info("order_operations_read duration_ms=%.2f records=%d", (time.perf_counter() - started) * 1000, len(payload))
+        return payload
 
     @classmethod
     def _write_all(cls, payload: dict[str, Any]) -> None:
@@ -128,6 +148,7 @@ class OrderOperationsStore:
     def save_verified_address_if_current(
         cls, order_id: str, address: dict[str, Any], *, expected_revision: int,
         visible_order_number: str, operator: str, verified: bool,
+        address_sync_results: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Atomically save a same-order address; stale writers never modify the record."""
         with cls._lock:
@@ -155,6 +176,8 @@ class OrderOperationsStore:
                 "courier_sync_status": None,
                 "courier_sync_error": None,
             })
+            if address_sync_results is not None:
+                record["address_sync_results"] = deepcopy(address_sync_results)
             cls._record_action(record, "address_verified" if verified else "address_corrected", occurred_at, operator)
             record.setdefault("timeline_events", []).append({
                 "action": "address_verified" if verified else "address_corrected",

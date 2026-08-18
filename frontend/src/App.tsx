@@ -610,14 +610,20 @@ function App() {
       setNotice('Address is still loading or belongs to another order. Reload before saving.')
       return
     }
+    const clickStarted = performance.now()
     try {
+      const requestStarted = performance.now()
       const result = await saveAndVerifyOrderAddress(orderId, { ...addressDraft, draft_order_id: orderId, draft_generation: generation, expected_revision: operations.address_revision ?? 0, draft_token: operations.address_draft_token })
+      const responseReceived = performance.now()
       if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return
       setOperations(result.operations)
       setOrders(previous => previous.map(order => order.internalId === selectedOrder.internalId ? { ...order, correctedAddress: result.operations.corrected_address, addressVerified: result.operations.address_verified, addressVerifiedAt: result.operations.address_verified_at, addressVerifiedBy: result.operations.address_verified_by, verifiedAddressSnapshot: result.operations.verified_address_snapshot, addressSyncResults: result.operations.address_sync_results } : order))
-      const freshEligibility = await getBookingEligibility(orderId)
-      setBookingEligibility(freshEligibility)
       setNotice(result.verified ? (result.validation.warnings.length ? `Address verified with advisories: ${result.validation.warnings.join('; ')}` : 'Address saved and verified') : `Address saved but not verified: ${result.validation.blockers.join('; ')}`)
+      const successRendered = performance.now()
+      console.info('save_verify_frontend_timing', { orderId, click_to_request_ms: requestStarted - clickStarted, request_ms: responseReceived - requestStarted, post_response_ms: successRendered - responseReceived, total_ms: successRendered - clickStarted })
+      void getBookingEligibility(orderId).then(freshEligibility => {
+        if (generation === drawerGenerationRef.current && selectedOrderId === orderId) setBookingEligibility(freshEligibility)
+      }).catch(() => undefined)
       return result
     } catch (err) { setNotice((err as Error).message) }
   }
@@ -693,6 +699,7 @@ function App() {
     bookingRequestInFlight.current = true
     setBookingLoading(true)
     setCourierError('')
+    const clickStarted = performance.now()
     try {
       const preview = await getBookingContextPreview(orderId, { provider: String(persistedSelection.provider), courier_name: String(persistedSelection.courier_name), courier_id: String(persistedSelection.courier_id), ...packageNumbers, draft_order_id: orderId, address_revision: operations.address_revision ?? 0 })
       if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return
@@ -707,13 +714,18 @@ function App() {
         address_revision: preview.address_revision,
         booking_context_hash: preview.booking_context_hash,
       })
+      const responseReceived = performance.now()
       if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return
       applyConfirmedBooking(orderId, result.shipment ?? null)
-      const reopened = await getOrderOperations(orderId)
-      setOperations(reopened)
-      applyCanonicalShipment(orderId, reopened.shipment ?? result.shipment ?? null)
-      setCourierError(result.warning ? `Shiprocket cleanup failed: ${result.warning}` : '')
-      setNotice(result.warning ? 'Delhivery shipment booked; Shiprocket cleanup needs attention' : result.existing ? 'Existing shipment loaded' : 'Shipment booked')
+      setCourierError('')
+      setNotice(result.existing ? 'Existing shipment loaded' : 'Shipment booked')
+      const successRendered = performance.now()
+      console.info('book_shipment_frontend_timing', { orderId, request_and_confirmation_ms: responseReceived - clickStarted, post_response_ms: successRendered - responseReceived, total_ms: successRendered - clickStarted })
+      void getOrderOperations(orderId).then(reopened => {
+        if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return
+        setOperations(reopened)
+        applyCanonicalShipment(orderId, reopened.shipment ?? result.shipment ?? null)
+      }).catch(() => undefined)
     } catch (err) {
       if (generation === drawerGenerationRef.current && selectedOrderId === orderId) setCourierError((err as Error).message)
     } finally {
