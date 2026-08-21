@@ -463,6 +463,71 @@ async def test_cleanup_allows_real_325270_empty_placeholder_shape_without_channe
 
 
 @pytest.mark.anyio
+async def test_cleanup_allows_exact_325577_pending_placeholder_shape_without_channel_cancellation(tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    fresh = {
+        "id": 1531615273, "channel_order_id": "325577", "status": "new", "status_code": 1,
+        "shipments": {
+            "id": 1527835397, "order_id": 1531615273, "channel_id": 6315578, "code": "",
+            "cost": "0.00", "tax": "0.00", "awb": None, "last_mile_awb": None, "rto_awb": "",
+            "awb_assign_date": None, "etd": "", "delivered_date": "", "quantity": 1,
+            "cod_charges": "0.00", "weight": 0.5, "volumetric_weight": 0,
+            "dimensions": "1.000x1.000x1.000", "comment": "", "courier": "", "courier_id": "",
+            "manifest_id": "", "manifest_escalate": False, "status": "PENDING", "isd_code": "+91",
+            "created_at": "21st Aug 2026 16:46 PM", "updated_at": "21st Aug 2026 16:46 PM",
+            "pod": None, "eway_bill_number": "-", "eway_bill_date": None, "length": 1, "breadth": 1,
+            "height": 1, "rto_initiated_date": "", "rto_delivered_date": "", "shipped_date": "",
+            "package_images": "", "is_rto": False, "eway_required": False, "invoice_link": "",
+            "is_darkstore_courier": 0, "courier_custom_rule": "", "is_single_shipment": True,
+            "pickup_scheduled_date": "", "order_product_id": None, "number": None, "name": None,
+            "order_item_id": None,
+        },
+    }
+    calls: list[dict] = []
+    detail_responses = iter((fresh, {**fresh, "status": "CANCELED", "status_code": 5}))
+    monkeypatch.setattr(couriers.ShiprocketService, "find_existing_order", lambda *_args: _async_value(fresh))
+    monkeypatch.setattr(couriers.ShiprocketService, "order_details", lambda *_args: _async_value(next(detail_responses)))
+    async def cancel(_self, upstream):
+        calls.append({"ids": [upstream["id"]], "cancel_on_channel": False})
+        return {"http_status": 200, "response": {"success": True}, "classification": "accepted"}
+    monkeypatch.setattr(couriers.ShiprocketService, "cancel_unbooked_order", cancel)
+
+    result = await couriers._cleanup_unused_shiprocket_order("internal-325577", "325577", "Operator")
+
+    diagnostic = result["cleanup_diagnostics"]
+    assert diagnostic["guards"]["provider_payload_unambiguous"] is True
+    assert diagnostic["final_guard_decision"] == "eligible_for_cleanup"
+    assert diagnostic["request_attempted"] is True
+    assert diagnostic["safe_request_flags"] == {"cancel_on_channel": False}
+    assert calls == [{"ids": [1531615273], "cancel_on_channel": False}]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("field", "value"), [
+    ("cost", "1.00"),
+    ("tax", "1.00"),
+    ("cod_charges", "1.00"),
+    ("eway_bill_number", "EWB-1"),
+    ("unknown_processing_marker", "active"),
+    ("dimensions", {"length": 1}),
+])
+async def test_325577_placeholder_non_sentinel_or_unknown_values_remain_protected(tmp_path, monkeypatch, field, value):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    shipment = {"status": "PENDING", "cost": "0.00", "tax": "0.00", "cod_charges": "0.00", "eway_bill_number": "-"}
+    shipment[field] = value
+    upstream = {"id": 1531615273, "channel_order_id": "325577", "status": "NEW", "status_code": 1, "shipments": shipment}
+    monkeypatch.setattr(couriers.ShiprocketService, "find_existing_order", lambda *_args: _async_value(upstream))
+    monkeypatch.setattr(couriers.ShiprocketService, "order_details", lambda *_args: _async_value(upstream))
+    monkeypatch.setattr(couriers.ShiprocketService, "cancel_unbooked_order", lambda *_args: pytest.fail("unsafe shape must not invoke cancellation"))
+
+    result = await couriers._cleanup_unused_shiprocket_order("internal-325577", "325577", "Operator")
+
+    assert result["status"] == "protected"
+    assert result["cleanup_diagnostics"]["guards"]["provider_payload_unambiguous"] is False
+    assert result["cleanup_diagnostics"]["request_attempted"] is False
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("shipment", [
     {"status": 0, "awb": "AWB1"},
     {"status": 0, "courier_id": 12},

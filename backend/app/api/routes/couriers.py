@@ -1331,6 +1331,18 @@ def _shiprocket_cleanup_usage_evidence(order: dict[str, object]) -> tuple[list[s
         "pickup_id", "pickup_token_number", "pickedup_timestamp", "pickup_generated_date", "pickup_scheduled_date",
         "awb_assign_date", "shipped_date", "delivered_date", "rto_initiated_date", "rto_delivered_date",
     }
+    benign_static_metadata_fields = {
+        # Static order/package metadata present on Shiprocket's pre-booking
+        # shipment placeholder. These scalar fields do not describe carrier usage.
+        "channel_id", "quantity", "weight", "volumetric_weight", "dimensions", "isd_code",
+        "length", "breadth", "height", "is_single_shipment",
+    }
+    benign_placeholder_sentinels = {
+        "cost": {"0.00"},
+        "tax": {"0.00"},
+        "cod_charges": {"0.00"},
+        "eway_bill_number": {"-"},
+    }
 
     def empty_placeholder_value(value: object) -> bool:
         if value in (None, "", 0, "0", False, [], {}):
@@ -1353,7 +1365,7 @@ def _shiprocket_cleanup_usage_evidence(order: dict[str, object]) -> tuple[list[s
             evidence.append("shipment_progress")
         shipment_status = shipment.get("status")
         if not empty_placeholder_value(shipment_status):
-            if isinstance(shipment_status, str) and shipment_status.strip().casefold() in {"new", "canceled", "cancelled"}:
+            if isinstance(shipment_status, str) and shipment_status.strip().casefold() in {"new", "pending", "canceled", "cancelled"}:
                 pass
             elif isinstance(shipment_status, str) and shipment_status.strip().casefold() in {
                 "processing", "ready to ship", "pickup scheduled", "manifested", "shipped",
@@ -1365,7 +1377,13 @@ def _shiprocket_cleanup_usage_evidence(order: dict[str, object]) -> tuple[list[s
         # Fail closed on provider fields we do not understand when they carry data.
         # Empty/null additions are harmless schema noise; non-empty unknown structures
         # may represent provider processing that our explicit evidence guards do not know.
-        if any(key not in known_shipment_fields and not empty_placeholder_value(value) for key, value in shipment.items()):
+        if any(
+            key not in known_shipment_fields
+            and not empty_placeholder_value(value)
+            and not (key in benign_static_metadata_fields and isinstance(value, (str, int, float, bool)))
+            and not any(value == sentinel for sentinel in benign_placeholder_sentinels.get(key, set()))
+            for key, value in shipment.items()
+        ):
             ambiguous = True
     return sorted(set(evidence)), ambiguous
 
