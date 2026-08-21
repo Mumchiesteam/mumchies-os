@@ -118,7 +118,7 @@ async def _run_post_booking_work(
     """Persist visible, retryable downstream results without extending booking latency."""
     started = time.perf_counter()
     cleanup_ms = 0.0
-    if provider == "delhivery":
+    if provider in {"delhivery", "shadowfax"}:
         cleanup_started = time.perf_counter()
         await _cleanup_unused_shiprocket_order(order_id, order_number, operator)
         cleanup_ms = (time.perf_counter() - cleanup_started) * 1000
@@ -659,6 +659,18 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
         "weight_kg": package.weight_kg,
         "provider_warnings": provider_warnings,
         "couriers": sorted(normalized_quotes, key=lambda quote: float(quote["total_estimated_shipping_cost"])),
+        # This is the authoritative eligibility snapshot after package persistence.
+        # The drawer must not keep using the pre-package snapshot that was loaded
+        # when it first opened.
+        "booking_readiness": {
+            "eligible": eligibility.eligible,
+            "missing_requirements": eligibility.missing_requirements,
+            "operational_status": eligibility.operational_status,
+            "payment_mode": eligibility.payment_mode,
+            "shipment_exists": eligibility.shipment_exists,
+            "shipment_status": eligibility.shipment_status,
+            "shipment": eligibility.shipment_snapshot,
+        },
     }
 
 
@@ -708,7 +720,9 @@ async def save_manual_shadowfax_shipment(order_id: str, payload: ManualShadowfax
 
 
 @booking_router.post("/shadowfax-test-324663")
-async def temporary_shadowfax_direct_test_324663(request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
+async def temporary_shadowfax_direct_test_324663(
+    request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db),
+) -> dict[str, object]:
     """Temporary, admin-only, single-order production validation endpoint."""
     user = current_user(request)
     if user.role not in {"owner", "admin"}:
@@ -825,6 +839,14 @@ async def temporary_shadowfax_direct_test_324663(request: Request, db: Session =
     OrderOperationsStore.record_timeline_event(
         order.order_id, "shadowfax_direct_test_324663_booked", operator=actor,
         details={"provider_order_id": booking.provider_order_id, "shipment_id": booking.shipment_id, "awb": booking.awb},
+    )
+    OrderOperationsStore.record_timeline_event(
+        order.order_id, "shiprocket_cleanup", operator=actor,
+        details={"status": "pending", "reason": "confirmed_shadowfax_direct_booking"},
+    )
+    background_tasks.add_task(
+        _run_post_booking_work, order.order_id, order.order_number,
+        order.shopify_graphql_id, "shadowfax", actor,
     )
     OrderOperationsStore.update_shadowfax_direct_test(
         order.order_id, tracking_started_at=datetime.now(timezone.utc).isoformat(), final_test_state="tracking_in_progress",
@@ -1159,6 +1181,10 @@ async def shiprocket_book_shipment(
             canonical = shipment_snapshot(get_shipment(db, order_id))
             stages["canonical_readback_and_label_state"] = (time.perf_counter() - stage_started) * 1000
             if background_tasks is not None:
+                OrderOperationsStore.record_timeline_event(
+                    order_id, "shiprocket_cleanup", operator=actor,
+                    details={"status": "pending", "reason": "confirmed_delhivery_booking"},
+                )
                 background_tasks.add_task(_run_post_booking_work, order_id, order.order_number, order.shopify_graphql_id, "delhivery", actor)
             return _finish_booking_response(order_id, "delhivery", result, canonical, stages, request_started, response)
 
@@ -1315,6 +1341,9 @@ async def _cleanup_unused_shiprocket_order(order_id: str, channel_order_id: str,
                     result = {"status": "ambiguous", "cancel_on_channel": False, "error": "Shiprocket did not conclusively accept cleanup; no retry was attempted."}
     except (ShiprocketAPIError, ShiprocketConfigurationError, httpx.HTTPError) as error:
         result = {"status": "failed", "cancel_on_channel": False, "error": str(error)}
+    except Exception as error:  # noqa: BLE001 - persist unexpected background failures for safe retry
+        LOGGER.exception("shiprocket_cleanup_unexpected_failure order_id=%s", order_id)
+        result = {"status": "failed", "cancel_on_channel": False, "error": f"Unexpected cleanup failure: {error}"}
     OrderOperationsStore.record_timeline_event(order_id, "shiprocket_cleanup", operator=operator, details=result)
     return result
 
@@ -1322,9 +1351,12 @@ async def _cleanup_unused_shiprocket_order(order_id: str, channel_order_id: str,
 @router.post("/shiprocket/orders/{order_id}/cleanup-unused")
 async def retry_unused_shiprocket_cleanup(order_id: str, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     shipment = get_shipment(db, order_id)
-    if shipment is None or shipment.provider != "delhivery" or not shipment.awb or shipment.booking_status != "booked":
-        raise HTTPException(status_code=409, detail="Shiprocket cleanup is available only after a successful direct Delhivery booking with a confirmed AWB.")
-    return await _cleanup_unused_shiprocket_order(order_id, shipment.provider_order_id or order_id, current_actor(request))
+    if shipment is None or shipment.provider not in {"delhivery", "shadowfax"} or not shipment.awb or shipment.booking_status != "booked":
+        raise HTTPException(status_code=409, detail="Shiprocket cleanup is available only after a successful direct-provider booking with a confirmed AWB.")
+    order = await _load_order(order_id)
+    # Shiprocket is keyed by Shopify's channel order number. A direct-provider
+    # ID is unrelated and previously made retries report not_applicable.
+    return await _cleanup_unused_shiprocket_order(order_id, order.order_number, current_actor(request))
 
 
 @booking_router.post("/{order_id}/courier/reconcile")

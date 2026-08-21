@@ -95,6 +95,8 @@ def test_booking_requires_the_same_persisted_canonical_courier() -> None:
 def test_courier_lookup_clears_stored_selection_before_returning_quotes() -> None:
     source = inspect.getsource(couriers.shiprocket_serviceability)
     assert "save_selected_courier(order_id, None)" in source
+    assert '"booking_readiness"' in source
+    assert '"eligible": eligibility.eligible' in source
 
 
 def test_booking_returns_before_noncritical_post_booking_work() -> None:
@@ -110,6 +112,17 @@ def test_post_booking_failures_remain_persisted_and_actionable() -> None:
     assert "ShopifyFulfillmentSynchronizer().sync" in source
     assert "_cleanup_unused_shiprocket_order" in source
     assert "OrderOperationsStore.record_timeline_event" in source
+    assert 'provider in {"delhivery", "shadowfax"}' in source
+
+
+def test_direct_cleanup_is_pending_before_background_work_and_retry_uses_shopify_number() -> None:
+    booking = inspect.getsource(couriers.shiprocket_book_shipment)
+    retry = inspect.getsource(couriers.retry_unused_shiprocket_cleanup)
+    assert 'details={"status": "pending", "reason": "confirmed_delhivery_booking"}' in booking
+    assert 'shipment.provider not in {"delhivery", "shadowfax"}' in retry
+    assert "order = await _load_order(order_id)" in retry
+    assert "order.order_number" in retry
+    assert "shipment.provider_order_id or order_id" not in retry
 
 
 def test_confirmation_can_reuse_display_cache_but_booking_keeps_fresh_shopify_guard() -> None:

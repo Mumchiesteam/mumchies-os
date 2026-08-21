@@ -783,6 +783,15 @@ export async function checkShiprocketCouriers(orderId: string, payload: {
   payment_mode: string
   weight_kg: number
   provider_warnings: string[]
+  booking_readiness: {
+    eligible: boolean
+    missing_requirements: string[]
+    operational_status: string | null
+    payment_mode: string | null
+    shipment_exists: boolean
+    shipment_status: string | null
+    shipment: Order['shipment']
+  }
   couriers: Array<{
     courier_id: string | null
     courier_name: string

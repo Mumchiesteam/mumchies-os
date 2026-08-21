@@ -650,6 +650,11 @@ function App() {
         courier_payment_mode: selectedOrder.payment,
       })
       if (generation !== drawerGenerationRef.current) return
+      // The lookup response is authoritative for the package that was just
+      // persisted. Reusing drawer-open eligibility here leaves `eligible=false`
+      // when that older snapshot only lacked package data, so the visible first
+      // click silently returns before preview or booking HTTP is sent.
+      setBookingEligibility(result.booking_readiness)
       const sorted = [...(result.couriers ?? [])].sort((a, b) => a.total_estimated_shipping_cost - b.total_estimated_shipping_cost)
       setCourierOptions(sorted)
       setCourierWarnings(result.provider_warnings ?? [])
