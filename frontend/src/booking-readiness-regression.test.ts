@@ -14,4 +14,9 @@ describe('first-attempt booking readiness', () => {
     expect(appSource).toContain('getBookingContextPreview')
     expect(appSource).toContain('booking_context_hash: preview.booking_context_hash')
   })
+
+  it('shows an explicit preparation state while authoritative readiness is loading', () => {
+    expect(appSource).toContain("const preparingBooking = addressInitializing || bookingEligibility === null || courierLoading")
+    expect(appSource).toContain("? 'Preparing booking…'")
+  })
 })

@@ -1273,6 +1273,7 @@ const OrderDrawer = memo(function OrderDrawer({
   const canCheckCouriers = bookingEligibility !== null && packageValid && nonPackageMissing.length === 0
   const selectedCourier = courierOptions.find(option => option.courier_id === selectedCourierId)
   const selectedCourierPersisted = courierSelectionMatches(persistedCourierSelection, selectedCourier)
+  const preparingBooking = addressInitializing || bookingEligibility === null || courierLoading
   const canBookShipment = bookingEligibility !== null
     && nonPackageMissing.length === 0
     && packageValid
@@ -1302,7 +1303,9 @@ const OrderDrawer = memo(function OrderDrawer({
     ...(!packageDraft.breadth_cm || !Number.isFinite(packageDimensions[1]) || packageDimensions[1] <= 0 ? ['Package breadth missing'] : []),
     ...(!packageDraft.height_cm || !Number.isFinite(packageDimensions[2]) || packageDimensions[2] <= 0 ? ['Package height missing'] : []),
   ]
-  const bookingBlocker = bookingEligibility?.shipment_exists
+  const bookingBlocker = preparingBooking
+    ? 'Preparing booking…'
+    : bookingEligibility?.shipment_exists
     ? 'Shipment already booked'
     : visibleMissing[0]
       || (!selectedCourierId ? 'Select a courier service'
