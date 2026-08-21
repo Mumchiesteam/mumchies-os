@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query
 from app.api.routes.dashboard import IST, _at, _period
 from app.services.report_snapshots import ReportSnapshotStore
 from app.services.shopify import ShopifyService
+from app.services.runtime_metrics import background_job
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 _analytics_tasks: dict[str, asyncio.Task[None]] = {}
@@ -210,7 +211,10 @@ async def _build(start: datetime, end: datetime, preset: str, label: str, paymen
 def _key(preset: str, start: datetime, end: datetime, payment: str, customer: str) -> str: return f"analytics:v3:{preset}:{start.date()}:{end.date()}:{payment}:{customer}"
 
 async def _refresh(key: str, start: datetime, end: datetime, preset: str, label: str, payment: str, customer: str) -> None:
-    try: ReportSnapshotStore.save_success(key, await _build(start, end, preset, label, payment, customer))
+    try:
+        async with background_job("analytics_refresh", heavy=True):
+            result = await _build(start, end, preset, label, payment, customer)
+        ReportSnapshotStore.save_success(key, result)
     except Exception as error: ReportSnapshotStore.save_error(key, f"{type(error).__name__}: {str(error)[:250]}")
     finally: _analytics_tasks.pop(key, None)
 

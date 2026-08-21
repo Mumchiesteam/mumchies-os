@@ -22,6 +22,7 @@ from app.services.ndr_eligibility import is_ndr_eligible
 from app.services.order_operations import OrderOperationsStore
 from app.services.report_snapshots import ReportSnapshotStore
 from app.services.shopify import ShopifyService
+from app.services.runtime_metrics import background_job
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 IST = ZoneInfo("Asia/Kolkata")
@@ -176,8 +177,9 @@ def _dashboard_key(preset: str, start_at: datetime, end_at: datetime) -> str:
 
 async def _refresh_dashboard_snapshot(key: str, preset: str, start_at: datetime, end_at: datetime, label: str) -> None:
     try:
-        with SessionLocal() as db:
-            result = await _build_dashboard(preset, start_at, end_at, label, db)
+        async with background_job("dashboard_refresh", heavy=True):
+            with SessionLocal() as db:
+                result = await _build_dashboard(preset, start_at, end_at, label, db)
         ReportSnapshotStore.save_success(key, result)
     except Exception as error:  # noqa: BLE001 - a stale snapshot is safer than blanking the Dashboard
         logger.exception("Dashboard snapshot refresh failed")

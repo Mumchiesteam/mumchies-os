@@ -17,10 +17,10 @@ from app.core.auth import read_session
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.user import User
-from app.services.report_snapshots import ReportSnapshotStore
 from app.services.order_read_models import cache_orders
 from app.services.shopify import ShopifyService
-from app.services.shipment_poller import poller_status, tracking_poller_loop
+from app.services.shipment_poller import tracking_poller_loop
+from app.services.runtime_metrics import active_background_jobs, background_job, event_loop_watchdog, rss_mb
 from sqlalchemy import select
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
@@ -43,6 +43,7 @@ async def require_authentication(request: Request, call_next):
         prior = response.headers.get("Server-Timing")
         total = f"request_total;dur={(time.perf_counter() - request_started) * 1000:.2f}"
         response.headers["Server-Timing"] = f"{prior}, {total}" if prior else total
+        logging.getLogger(__name__).info("request_complete path=%s method=%s total_ms=%.2f rss_mb=%s", request.url.path, request.method, (time.perf_counter() - request_started) * 1000, rss_mb())
         return response
     if not settings.auth_session_secret:
         return JSONResponse(status_code=503, content={"detail": "Authentication is not configured."})
@@ -82,6 +83,7 @@ async def require_authentication(request: Request, call_next):
             "interactive_request path=%s auth_session_ms=%.2f auth_db_ms=%.2f total_ms=%.2f",
             request.url.path, session_ms, auth_db_ms, total_ms,
         )
+    logging.getLogger(__name__).info("request_complete path=%s method=%s total_ms=%.2f rss_mb=%s", request.url.path, request.method, total_ms, rss_mb())
     return response
 
 
@@ -105,11 +107,14 @@ async def warm_management_report_snapshots() -> None:
         # Populate the local canonical read model once per deploy. Dispatch/NDR reads
         # never call Shopify themselves.
         try:
-            recent = await ShopifyService().get_orders_created_between(
-                datetime.now(timezone.utc) - timedelta(days=90), datetime.now(timezone.utc)
-            )
-            with SessionLocal() as db:
-                cache_orders(db, recent)
+            async with background_job("order_read_model_backfill", heavy=True):
+                service = ShopifyService()
+                now = datetime.now(timezone.utc)
+                async for page in service.iter_orders_created_between(now - timedelta(days=90), now):
+                    def persist_page(rows=page) -> None:
+                        with SessionLocal() as db:
+                            cache_orders(db, rows)
+                    await asyncio.to_thread(persist_page)
         except Exception:
             logging.getLogger(__name__).exception("Canonical order read-model warmup failed.")
         start_at, end_at, label = _period("today", None, None)
@@ -127,7 +132,9 @@ async def warm_management_report_snapshots() -> None:
             await analytics_task
         await asyncio.sleep(30)
         _start_reconciliation_refresh()
+        app.state.background_warmup_complete.set()
 
+    app.state.background_warmup_complete = asyncio.Event()
     asyncio.create_task(warm_sequentially())
 
 
@@ -136,43 +143,25 @@ async def start_shipment_tracking_poller() -> None:
     """Start one conservative GET-only tracking loop per backend process."""
     if settings.shipment_tracking_poller_enabled:
         async def deferred_poller() -> None:
-            await asyncio.sleep(60)
+            await app.state.background_warmup_complete.wait()
+            await asyncio.sleep(30)
             await tracking_poller_loop(app.state.session_factory)
         app.state.shipment_tracking_poller_task = asyncio.create_task(deferred_poller())
 
 
+@app.on_event("startup")
+async def start_runtime_watchdog() -> None:
+    app.state.event_loop_watchdog_task = asyncio.create_task(event_loop_watchdog())
+
+
 @app.get("/health", tags=["health"])
 def health_check() -> dict:
-    """Return deployment identity and the configured NDR ingestion mode."""
-    start_at, end_at, _ = _period("today", None, None)
-    dashboard_snapshot = ReportSnapshotStore.get(_dashboard_key("today", start_at, end_at))
-    reconciliation_snapshot = ReportSnapshotStore.get("reconciliation")
-    analytics_start, analytics_end, _ = _period("last_30_days", None, None)
-    analytics_snapshot = ReportSnapshotStore.get(_analytics_key("last_30_days", analytics_start, analytics_end, "all", "all"))
-    tracking_poller = poller_status()
+    """Constant-time liveness only: no files, database, caches, or providers."""
     return {
         "status": "ok",
         "git_sha": os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_SHA") or "unknown",
         "ndr_mode": "github_import",
         "ndr_import_enabled": bool(settings.ndr_ingest_token),
-        "shipment_tracking_poller": {
-            "enabled": tracking_poller.get("enabled"),
-            "last_poll_started": tracking_poller.get("last_poll_started"),
-            "last_poll_completed": tracking_poller.get("last_poll_completed"),
-            "state": tracking_poller.get("state"),
-            "shipments_attempted": tracking_poller.get("shipments_attempted", 0),
-            "shipments_failed": tracking_poller.get("shipments_failed", 0),
-            "new_events_persisted": tracking_poller.get("new_events_persisted", 0),
-            "shadowfax_enabled": tracking_poller.get("providers", {}).get("shadowfax", False),
-        },
-        "report_snapshots": {
-            "dashboard_ready": bool(dashboard_snapshot and dashboard_snapshot.get("data")),
-            "dashboard_refreshed_at": (dashboard_snapshot or {}).get("last_refreshed_at"),
-            "dashboard_refresh_error": (dashboard_snapshot or {}).get("refresh_error"),
-            "reconciliation_ready": bool(reconciliation_snapshot and reconciliation_snapshot.get("data")),
-            "reconciliation_refreshed_at": (reconciliation_snapshot or {}).get("last_refreshed_at"),
-            "reconciliation_refresh_error": (reconciliation_snapshot or {}).get("refresh_error"),
-            "analytics_ready": bool(analytics_snapshot and analytics_snapshot.get("data")),
-            "analytics_refreshed_at": (analytics_snapshot or {}).get("last_refreshed_at"),
-        },
+        "rss_mb": rss_mb(),
+        "active_background_jobs": active_background_jobs(),
     }

@@ -12,6 +12,7 @@ from threading import Lock
 from typing import Any
 
 from app.core.config import settings
+from app.services.runtime_metrics import rss_mb
 
 OPS_FILE = settings.data_dir / "order_operations.json"
 OPS_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -73,7 +74,7 @@ class OrderOperationsStore:
             return {}
         with OPS_FILE.open("r", encoding="utf-8") as handle:
             payload = json.load(handle)
-        LOGGER.info("order_operations_read duration_ms=%.2f records=%d", (time.perf_counter() - started) * 1000, len(payload))
+        LOGGER.info("order_operations_read duration_ms=%.2f records=%d file_bytes=%d rss_mb=%s", (time.perf_counter() - started) * 1000, len(payload), OPS_FILE.stat().st_size, rss_mb())
         return payload
 
     @classmethod
@@ -81,7 +82,7 @@ class OrderOperationsStore:
         started = time.perf_counter()
         with OPS_FILE.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
-        LOGGER.info("order_operations_write duration_ms=%.2f records=%d", (time.perf_counter() - started) * 1000, len(payload))
+        LOGGER.info("order_operations_write duration_ms=%.2f records=%d file_bytes=%d rss_mb=%s", (time.perf_counter() - started) * 1000, len(payload), OPS_FILE.stat().st_size, rss_mb())
 
     @classmethod
     def get(cls, order_id: str) -> dict[str, Any]:

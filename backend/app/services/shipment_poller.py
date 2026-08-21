@@ -24,6 +24,7 @@ from app.services.courier_platform.service import CourierPlatformService
 from app.services.report_snapshots import ReportSnapshotStore
 from app.services.shipment_events import normalize_event_status
 from app.services.shipment_status import has_persisted_provider_booking_evidence, has_uncertain_provider_booking
+from app.services.runtime_metrics import background_job, rss_mb
 
 LOGGER = logging.getLogger(__name__)
 POLLER_SNAPSHOT_KEY = "shipment_tracking_poller"
@@ -208,97 +209,107 @@ async def run_tracking_poll(
     if _run_lock.locked():
         return {"state": "overlap_skipped", "overlap_prevented": True}
     async with _run_lock:
-        run_id = uuid4().hex
-        started = datetime.now(timezone.utc)
-        started_at = started.isoformat()
-        stats: dict[str, Any] = {
-            "run_id": run_id, "state": "running", "last_poll_started": started_at, "last_poll_completed": None,
-            "shipments_attempted": 0, "shipments_succeeded": 0, "shipments_failed": 0,
-            "new_events_persisted": 0, "rate_limit_failures": 0, "last_error": None,
-            "provider_stats": {}, "overlap_prevented": False,
-        }
-        ReportSnapshotStore.save_success(POLLER_SNAPSHOT_KEY, stats)
-        tracking_service = service or CourierPlatformService()
-        with session_factory() as db:
-            cleanup_poller_audit(db)
-            persisted_run = ShipmentPollRun(
-                run_id=run_id, started_at=started, completed_at=None, total_attempted=0,
-                total_succeeded=0, total_failed=0, new_events_persisted=0,
-                provider_counts={}, status="running",
+        async with background_job("shipment_tracking_poll", heavy=True):
+            return await _run_tracking_poll_locked(session_factory, sleep=sleep, service=service, canonical_order_numbers=canonical_order_numbers)
+
+
+async def _run_tracking_poll_locked(
+    session_factory, *, sleep: Callable[[float], Any], service: CourierPlatformService | None,
+    canonical_order_numbers: dict[str, str] | None,
+) -> dict[str, Any]:
+    run_id = uuid4().hex
+    started = datetime.now(timezone.utc)
+    started_at = started.isoformat()
+    stats: dict[str, Any] = {
+        "run_id": run_id, "state": "running", "last_poll_started": started_at, "last_poll_completed": None,
+        "shipments_attempted": 0, "shipments_succeeded": 0, "shipments_failed": 0,
+        "new_events_persisted": 0, "rate_limit_failures": 0, "last_error": None,
+        "provider_stats": {}, "overlap_prevented": False,
+        "rss_mb_started": rss_mb(),
+    }
+    ReportSnapshotStore.save_success(POLLER_SNAPSHOT_KEY, stats)
+    tracking_service = service or CourierPlatformService()
+    with session_factory() as db:
+        cleanup_poller_audit(db)
+        persisted_run = ShipmentPollRun(
+            run_id=run_id, started_at=started, completed_at=None, total_attempted=0,
+            total_succeeded=0, total_failed=0, new_events_persisted=0,
+            provider_counts={}, status="running",
+        )
+        db.add(persisted_run)
+        db.commit()
+        shipments = eligible_shipments(db, batch_size=max(1, min(100, settings.shipment_tracking_poll_batch_size)))
+        for index, shipment in enumerate(shipments):
+            provider = str(shipment.provider or "unknown").casefold()
+            provider_stats = stats["provider_stats"].setdefault(provider, {"attempted": 0, "succeeded": 0, "failed": 0, "new_events": 0})
+            stats["shipments_attempted"] += 1
+            provider_stats["attempted"] += 1
+            attempted_at = datetime.now(timezone.utc)
+            timer = time.perf_counter()
+            attempt_row = ShipmentPollAttempt(
+                id=uuid4().hex, run_id=run_id, order_id=shipment.order_id,
+                order_number=resolve_visible_order_number(shipment.order_id, canonical_order_numbers),
+                provider=provider,
+                courier_service=str(shipment.courier_service or shipment.courier_name or "").strip() or None,
+                awb_reference=str(shipment.awb or shipment.shipment_id or shipment.provider_order_id or "").strip() or None,
+                attempted_at=attempted_at, completed_at=None, result="running",
+                events_returned=0, new_events_persisted=0,
             )
-            db.add(persisted_run)
-            db.commit()
-            shipments = eligible_shipments(db, batch_size=max(1, min(100, settings.shipment_tracking_poll_batch_size)))
-            for index, shipment in enumerate(shipments):
-                provider = str(shipment.provider or "unknown").casefold()
-                provider_stats = stats["provider_stats"].setdefault(provider, {"attempted": 0, "succeeded": 0, "failed": 0, "new_events": 0})
-                stats["shipments_attempted"] += 1
-                provider_stats["attempted"] += 1
-                attempted_at = datetime.now(timezone.utc)
-                timer = time.perf_counter()
-                attempt_row = ShipmentPollAttempt(
-                    id=uuid4().hex, run_id=run_id, order_id=shipment.order_id,
-                    order_number=resolve_visible_order_number(shipment.order_id, canonical_order_numbers),
-                    provider=provider,
-                    courier_service=str(shipment.courier_service or shipment.courier_name or "").strip() or None,
-                    awb_reference=str(shipment.awb or shipment.shipment_id or shipment.provider_order_id or "").strip() or None,
-                    attempted_at=attempted_at, completed_at=None, result="running",
-                    events_returned=0, new_events_persisted=0,
-                )
-                db.add(attempt_row)
-                persisted_run.total_attempted += 1
-                persisted_run.provider_counts = dict(stats["provider_stats"])
-                db.commit()
-                try:
-                    audit = await _track_with_limited_retry(db, shipment, sleep=sleep, service=tracking_service)
-                    added = int(audit.get("new_events_persisted") or 0)
-                    stats["shipments_succeeded"] += 1
-                    stats["new_events_persisted"] += added
-                    provider_stats["succeeded"] += 1
-                    provider_stats["new_events"] += added
-                    attempt_row.result = "success"
-                    attempt_row.events_returned = int(audit.get("events_returned") or 0)
-                    attempt_row.new_events_persisted = added
-                    attempt_row.terminal_status_detected = audit.get("terminal_status_detected")
-                    attempt_row.response_format = audit.get("response_format")
-                    persisted_run.total_succeeded += 1
-                    persisted_run.new_events_persisted += added
-                except Exception as error:
-                    db.rollback()
-                    category = error.category if isinstance(error, PollTrackingError) else "provider_error"
-                    stats["shipments_failed"] += 1
-                    provider_stats["failed"] += 1
-                    if category == "rate_limited":
-                        stats["rate_limit_failures"] += 1
-                    stats["last_error"] = {
-                        "provider": provider, "reference": str(shipment.awb or shipment.shipment_id or ""),
-                        "category": category, "at": datetime.now(timezone.utc).isoformat(),
-                    }
-                    attempt_row = db.get(ShipmentPollAttempt, attempt_row.id)
-                    persisted_run = db.get(ShipmentPollRun, run_id)
-                    attempt_row.result = "failure"
-                    attempt_row.error_category = category
-                    attempt_row.http_status = error.http_status if isinstance(error, PollTrackingError) else None
-                    attempt_row.error_summary = error.summary if isinstance(error, PollTrackingError) else _safe_error_summary(error)
-                    persisted_run.total_failed += 1
-                    LOGGER.warning("Shipment tracking poll failed provider=%s reference=%s category=%s", provider, shipment.awb or shipment.shipment_id, category)
-                attempt_row.completed_at = datetime.now(timezone.utc)
-                attempt_row.duration_ms = round((time.perf_counter() - timer) * 1000, 2)
-                persisted_run.provider_counts = dict(stats["provider_stats"])
-                db.commit()
-                if index + 1 < len(shipments):
-                    await sleep(max(0.25, settings.shipment_tracking_poll_spacing_seconds))
-            completed_at = datetime.now(timezone.utc)
-            persisted_run = db.get(ShipmentPollRun, run_id)
-            persisted_run.completed_at = completed_at
-            persisted_run.status = "completed"
+            db.add(attempt_row)
+            persisted_run.total_attempted += 1
             persisted_run.provider_counts = dict(stats["provider_stats"])
             db.commit()
-            cleanup_poller_audit(db)
-        stats["state"] = "completed"
-        stats["last_poll_completed"] = completed_at.isoformat()
-        ReportSnapshotStore.save_success(POLLER_SNAPSHOT_KEY, stats)
-        return stats
+            try:
+                audit = await _track_with_limited_retry(db, shipment, sleep=sleep, service=tracking_service)
+                added = int(audit.get("new_events_persisted") or 0)
+                stats["shipments_succeeded"] += 1
+                stats["new_events_persisted"] += added
+                provider_stats["succeeded"] += 1
+                provider_stats["new_events"] += added
+                attempt_row.result = "success"
+                attempt_row.events_returned = int(audit.get("events_returned") or 0)
+                attempt_row.new_events_persisted = added
+                attempt_row.terminal_status_detected = audit.get("terminal_status_detected")
+                attempt_row.response_format = audit.get("response_format")
+                persisted_run.total_succeeded += 1
+                persisted_run.new_events_persisted += added
+            except Exception as error:
+                db.rollback()
+                category = error.category if isinstance(error, PollTrackingError) else "provider_error"
+                stats["shipments_failed"] += 1
+                provider_stats["failed"] += 1
+                if category == "rate_limited":
+                    stats["rate_limit_failures"] += 1
+                stats["last_error"] = {
+                    "provider": provider, "reference": str(shipment.awb or shipment.shipment_id or ""),
+                    "category": category, "at": datetime.now(timezone.utc).isoformat(),
+                }
+                attempt_row = db.get(ShipmentPollAttempt, attempt_row.id)
+                persisted_run = db.get(ShipmentPollRun, run_id)
+                attempt_row.result = "failure"
+                attempt_row.error_category = category
+                attempt_row.http_status = error.http_status if isinstance(error, PollTrackingError) else None
+                attempt_row.error_summary = error.summary if isinstance(error, PollTrackingError) else _safe_error_summary(error)
+                persisted_run.total_failed += 1
+                LOGGER.warning("Shipment tracking poll failed provider=%s reference=%s category=%s", provider, shipment.awb or shipment.shipment_id, category)
+            attempt_row.completed_at = datetime.now(timezone.utc)
+            attempt_row.duration_ms = round((time.perf_counter() - timer) * 1000, 2)
+            persisted_run.provider_counts = dict(stats["provider_stats"])
+            db.commit()
+            if index + 1 < len(shipments):
+                await sleep(max(0.25, settings.shipment_tracking_poll_spacing_seconds))
+        completed_at = datetime.now(timezone.utc)
+        persisted_run = db.get(ShipmentPollRun, run_id)
+        persisted_run.completed_at = completed_at
+        persisted_run.status = "completed"
+        persisted_run.provider_counts = dict(stats["provider_stats"])
+        db.commit()
+        cleanup_poller_audit(db)
+    stats["state"] = "completed"
+    stats["last_poll_completed"] = completed_at.isoformat()
+    stats["rss_mb_completed"] = rss_mb()
+    ReportSnapshotStore.save_success(POLLER_SNAPSHOT_KEY, stats)
+    return stats
 
 
 async def tracking_poller_loop(session_factory) -> None:

@@ -58,6 +58,27 @@ class ShopifyService:
     _orders_cache_ttl_seconds = 300
     _single_order_cache: dict[tuple[str, str, str], tuple[float, ShopifyOrder]] = {}
     _single_order_cache_ttl_seconds = 120
+    _reporting_cache_max_entries = 2
+    _single_order_cache_max_entries = 128
+
+    @classmethod
+    def _prune_caches(cls) -> None:
+        now = time.monotonic()
+        cls._reporting_orders_cache = {key: value for key, value in cls._reporting_orders_cache.items() if value[0] > now}
+        if len(cls._reporting_orders_cache) > cls._reporting_cache_max_entries:
+            oldest = sorted(cls._reporting_orders_cache, key=lambda key: cls._reporting_orders_cache[key][0])
+            for key in oldest[:-cls._reporting_cache_max_entries]:
+                cls._reporting_orders_cache.pop(key, None)
+        cls._single_order_cache = {key: value for key, value in cls._single_order_cache.items() if value[0] > now}
+        if len(cls._single_order_cache) > cls._single_order_cache_max_entries:
+            oldest = sorted(cls._single_order_cache, key=lambda key: cls._single_order_cache[key][0])
+            for key in oldest[:-cls._single_order_cache_max_entries]:
+                cls._single_order_cache.pop(key, None)
+        LOGGER.info(
+            "shopify_cache_sizes operational_entries=%d reporting_entries=%d single_order_entries=%d repeat_tasks=%d",
+            len(cls._orders_cache), len(cls._reporting_orders_cache), len(cls._single_order_cache),
+            sum(1 for task in cls._repeat_refresh_tasks.values() if not task.done()),
+        )
 
     def __init__(
         self,
@@ -440,13 +461,16 @@ class ShopifyService:
             if str(raw.get("financial_status") or "").casefold() == "partially_paid":
                 raw["_transaction_summary"] = await self._transaction_summary(client, str(raw["id"]), headers)
         order = self._to_order(raw)
+        self._prune_caches()
         self._single_order_cache[(self.store, self.api_version or "", order_id)] = (
             time.monotonic() + self._single_order_cache_ttl_seconds, order,
         )
+        self._prune_caches()
         return order
 
     def get_cached_order(self, order_id: str) -> ShopifyOrder | None:
         """Return a recent display snapshot; never use this at a mutation boundary."""
+        self._prune_caches()
         cached = self._single_order_cache.get((self.store, self.api_version or "", order_id))
         if not cached or cached[0] <= time.monotonic():
             return None
@@ -486,14 +510,38 @@ class ShopifyService:
             pageInfo { hasNextPage endCursor }
           }
         }"""
+        # Repeat classification only needs one qualifying prior order per identity.
+        # Retaining every historical node made this list grow with total Shopify history.
         rows: list[dict[str, Any]] = []
+        matched_identities: set[str] = set()
+        current_ids = {str(order.order_id) for order in orders}
+        customer_targets = {str(order.customer_id): f"customer_id:{order.customer_id}" for order in orders if order.customer_id}
+        email_targets = {self._repeat_email(order.email): f"email:{self._repeat_email(order.email)}" for order in orders if not order.customer_id and self._repeat_email(order.email)}
+        phone_targets = {self._repeat_phone(order.phone): f"phone:{self._repeat_phone(order.phone)}" for order in orders if not order.customer_id and self._repeat_phone(order.phone)}
         for start in range(0, len(identities), 20):
             search = " OR ".join(identities[start:start + 20])
             after: str | None = None
             while True:
                 data = await self.graphql(query, {"query": search, "after": after})
                 connection = data.get("orders") or {}
-                rows.extend(value for value in connection.get("nodes") or [] if isinstance(value, dict))
+                for value in connection.get("nodes") or []:
+                    if not isinstance(value, dict):
+                        continue
+                    previous_id = str(value.get("id") or "").rsplit("/", 1)[-1]
+                    if previous_id in current_ids:
+                        continue
+                    if value.get("cancelledAt") and not value.get("fulfillments"):
+                        continue
+                    customer = value.get("customer") or {}
+                    customer_id = str(customer.get("id") or "").rsplit("/", 1)[-1]
+                    identity = customer_targets.get(customer_id)
+                    if identity is None:
+                        identity = email_targets.get(self._repeat_email(value.get("email") or customer.get("email")))
+                    if identity is None:
+                        identity = phone_targets.get(self._repeat_phone(value.get("phone") or customer.get("phone")))
+                    if identity and identity not in matched_identities:
+                        matched_identities.add(identity)
+                        rows.append(value)
                 page_info = connection.get("pageInfo") or {}
                 if not page_info.get("hasNextPage"):
                     break
@@ -509,29 +557,29 @@ class ShopifyService:
             history = await self._repeat_history_rows(orders)
         except ShopifySyncError:
             return
+        qualifying_ids: dict[tuple[str, str], set[str]] = {}
+        for previous in history:
+            if previous.get("cancelledAt") and not previous.get("fulfillments"):
+                continue
+            previous_id = str(previous.get("id") or "").rsplit("/", 1)[-1]
+            customer = previous.get("customer") or {}
+            customer_id = str(customer.get("id") or "").rsplit("/", 1)[-1]
+            email = self._repeat_email(previous.get("email") or customer.get("email"))
+            phone = self._repeat_phone(previous.get("phone") or customer.get("phone"))
+            if customer_id:
+                qualifying_ids.setdefault(("customer", customer_id), set()).add(previous_id)
+            if email:
+                qualifying_ids.setdefault(("email", email), set()).add(previous_id)
+            if phone:
+                qualifying_ids.setdefault(("phone", phone), set()).add(previous_id)
         for order in orders:
-            customer_id = str(order.customer_id or "")
-            email = self._repeat_email(order.email)
-            phone = self._repeat_phone(order.phone)
-            repeat = False
-            for previous in history:
-                previous_id = str(previous.get("id") or "").rsplit("/", 1)[-1]
-                if previous_id == order.order_id:
-                    continue
-                customer = previous.get("customer") or {}
-                if customer_id:
-                    matches = str(customer.get("id") or "").rsplit("/", 1)[-1] == customer_id
-                else:
-                    previous_email = self._repeat_email(previous.get("email") or customer.get("email"))
-                    previous_phone = self._repeat_phone(previous.get("phone") or customer.get("phone"))
-                    matches = bool((email and previous_email == email) or (phone and previous_phone == phone))
-                if not matches:
-                    continue
-                fulfillments = previous.get("fulfillments") or []
-                cancelled_before_dispatch = bool(previous.get("cancelledAt")) and not bool(fulfillments)
-                if not cancelled_before_dispatch:
-                    repeat = True
-                    break
+            keys = []
+            if order.customer_id:
+                keys.append(("customer", str(order.customer_id)))
+            else:
+                if email := self._repeat_email(order.email): keys.append(("email", email))
+                if phone := self._repeat_phone(order.phone): keys.append(("phone", phone))
+            repeat = any(any(previous_id != order.order_id for previous_id in qualifying_ids.get(key, set())) for key in keys)
             order.customer_orders_count = 2 if repeat else 1
 
     async def get_orders_for_ndr_enrichment(self) -> list[ShopifyOrder]:
@@ -569,6 +617,7 @@ class ShopifyService:
 
     async def get_orders_created_between(self, start: datetime, end: datetime) -> list[ShopifyOrder]:
         """Read a bounded business-reporting period without changing the operational lookback."""
+        self._prune_caches()
         cache_key = (self.store, self.api_version or "", start.isoformat(), end.isoformat())
         cached = self._reporting_orders_cache.get(cache_key)
         if cached and cached[0] > time.monotonic():
@@ -583,7 +632,30 @@ class ShopifyService:
                 time.monotonic() + self._orders_cache_ttl_seconds,
                 list(orders),
             )
+            self._prune_caches()
             return orders
+
+    async def iter_orders_created_between(self, start: datetime, end: datetime):
+        """Yield normalized Shopify pages without retaining a full reporting period."""
+        access_token = await self._get_access_token()
+        fields = "id,name,status,order_number,created_at,customer,email,phone,shipping_address,line_items,shipping_lines,total_price,current_total_price,total_outstanding,financial_status,fulfillment_status,cancelled_at,tags,payment_gateway_names,fulfillments"
+        next_url: str | None = f"https://{self.store}/admin/api/{self.api_version}/orders.json"
+        params: dict[str, str] | None = {
+            "status": "any", "limit": "250", "order": "created_at desc", "fields": fields,
+            "created_at_min": start.isoformat(), "created_at_max": end.isoformat(),
+        }
+        seen_urls: set[str] = set()
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            while next_url:
+                if next_url in seen_urls:
+                    raise ShopifyConfigurationError("Shopify pagination repeated a page URL.")
+                seen_urls.add(next_url)
+                response = await client.get(next_url, params=params, headers={"X-Shopify-Access-Token": access_token})
+                response.raise_for_status()
+                raw_page = response.json().get("orders", [])
+                yield [self._to_order(value) for value in raw_page if isinstance(value, dict)]
+                next_url = self._next_page_url(response.headers.get("link"))
+                params = None
 
     async def _fetch_orders_created_between(self, start: datetime, end: datetime) -> list[ShopifyOrder]:
         access_token = await self._get_access_token()

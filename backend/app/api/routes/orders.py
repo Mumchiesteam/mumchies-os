@@ -30,6 +30,7 @@ from app.services.shiprocket import ShiprocketAPIError, ShiprocketConfigurationE
 from app.services.shopify import ShopifyConfigurationError, ShopifyService, ShopifySyncError
 from app.services.shopify_fulfillment import ShopifyFulfillmentSynchronizer, ShopifyFulfillmentSyncError
 from app.services.order_read_models import cache_orders
+from app.services.runtime_metrics import background_job
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 RECONCILIATION_SNAPSHOT_KEY = "reconciliation"
@@ -1186,8 +1187,9 @@ def _safe_refresh_error(error: Exception) -> str:
 async def _refresh_reconciliation_snapshot() -> None:
     global _reconciliation_refresh_task
     try:
-        with SessionLocal() as db:
-            result = await _build_reconciliation_summary(db)
+        async with background_job("reconciliation_refresh", heavy=True):
+            with SessionLocal() as db:
+                result = await _build_reconciliation_summary(db)
         ReportSnapshotStore.save_success(RECONCILIATION_SNAPSHOT_KEY, result)
     except Exception as error:  # noqa: BLE001 - preserve stale data for any provider/runtime failure
         ReportSnapshotStore.save_error(RECONCILIATION_SNAPSHOT_KEY, _safe_refresh_error(error))

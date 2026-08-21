@@ -10,6 +10,8 @@ def test_health_check() -> None:
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
     assert response.json()["ndr_mode"] == "github_import"
+    assert "rss_mb" in response.json()
+    assert response.json()["active_background_jobs"] == {}
     assert isinstance(response.json()["ndr_import_enabled"], bool)
     assert "git_sha" in response.json()
 
