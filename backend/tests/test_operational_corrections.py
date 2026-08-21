@@ -436,6 +436,55 @@ async def test_unused_shiprocket_cleanup_allows_empty_placeholder_from_fresh_det
 
 
 @pytest.mark.anyio
+async def test_cleanup_allows_real_325270_empty_placeholder_shape_without_channel_cancellation(tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    fresh = {
+        "id": 1523194617, "channel_order_id": "325270", "status": "new", "status_code": 1,
+        "shipments": {"id": None, "shipment_id": None, "status": 0, "awb": None, "courier": None,
+                      "manifest_id": None, "pickup_id": None, "shipped_date": None},
+    }
+    calls: list[dict] = []
+    detail_responses = iter((fresh, {**fresh, "status": "CANCELED", "status_code": 5}))
+    monkeypatch.setattr(couriers.ShiprocketService, "find_existing_order", lambda *_args: _async_value(fresh))
+    monkeypatch.setattr(couriers.ShiprocketService, "order_details", lambda *_args: _async_value(next(detail_responses)))
+    async def cancel(_self, upstream):
+        calls.append({"ids": [upstream["id"]], "cancel_on_channel": False})
+        return {"http_status": 200, "response": {"success": True}, "classification": "accepted"}
+    monkeypatch.setattr(couriers.ShiprocketService, "cancel_unbooked_order", cancel)
+
+    result = await couriers._cleanup_unused_shiprocket_order("internal-325270", "325270", "Operator")
+
+    diagnostic = result["cleanup_diagnostics"]
+    assert diagnostic["guards"]["provider_payload_unambiguous"] is True
+    assert diagnostic["final_guard_decision"] == "eligible_for_cleanup"
+    assert diagnostic["request_attempted"] is True
+    assert diagnostic["safe_request_flags"] == {"cancel_on_channel": False}
+    assert calls == [{"ids": [1523194617], "cancel_on_channel": False}]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("shipment", [
+    {"status": 0, "awb": "AWB1"},
+    {"status": 0, "courier_id": 12},
+    {"status": 0, "manifest_id": 88},
+    {"status": 0, "pickup_scheduled_date": "2026-08-21 10:00:00"},
+    {"status": 0, "shipped_date": "2026-08-21 10:00:00"},
+    {"status": 0, "unknown_processing_marker": "active"},
+])
+async def test_empty_placeholder_with_usage_or_unknown_nonempty_field_remains_protected(tmp_path, monkeypatch, shipment):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    upstream = {"id": 1523194617, "channel_order_id": "325270", "status": "NEW", "status_code": 1, "shipments": shipment}
+    monkeypatch.setattr(couriers.ShiprocketService, "find_existing_order", lambda *_args: _async_value(upstream))
+    monkeypatch.setattr(couriers.ShiprocketService, "order_details", lambda *_args: _async_value(upstream))
+    monkeypatch.setattr(couriers.ShiprocketService, "cancel_unbooked_order", lambda *_args: pytest.fail("protected shape must not invoke cancellation"))
+
+    result = await couriers._cleanup_unused_shiprocket_order("internal-325270", "325270", "Operator")
+
+    assert result["status"] == "protected"
+    assert result["cleanup_diagnostics"]["request_attempted"] is False
+
+
+@pytest.mark.anyio
 async def test_already_cancelled_cleanup_is_resolved_without_post_and_clears_stale_warning(tmp_path, monkeypatch):
     monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
     OrderOperationsStore.record_timeline_event(

@@ -1323,6 +1323,20 @@ def _shiprocket_cleanup_usage_evidence(order: dict[str, object]) -> tuple[list[s
 
     evidence: list[str] = []
     ambiguous = False
+    known_shipment_fields = {
+        "id", "order_id", "shipment_id", "status", "status_code", "created_at", "updated_at",
+        "awb", "awb_code", "last_mile_awb", "rto_awb", "return_awb", "code",
+        "courier", "courier_id", "sr_courier_name",
+        "manifest_id", "manifest_url",
+        "pickup_id", "pickup_token_number", "pickedup_timestamp", "pickup_generated_date", "pickup_scheduled_date",
+        "awb_assign_date", "shipped_date", "delivered_date", "rto_initiated_date", "rto_delivered_date",
+    }
+
+    def empty_placeholder_value(value: object) -> bool:
+        if value in (None, "", 0, "0", False, [], {}):
+            return True
+        return isinstance(value, str) and value.strip().startswith("0000-00-00")
+
     for shipment in shipments:
         if any(str(shipment.get(key) or "").strip() for key in ("awb", "awb_code", "last_mile_awb", "rto_awb", "return_awb", "code")):
             evidence.append("awb")
@@ -1338,7 +1352,7 @@ def _shiprocket_cleanup_usage_evidence(order: dict[str, object]) -> tuple[list[s
         if any(value and not value.startswith("0000-00-00") for value in progress_dates):
             evidence.append("shipment_progress")
         shipment_status = shipment.get("status")
-        if shipment_status not in (None, ""):
+        if not empty_placeholder_value(shipment_status):
             if isinstance(shipment_status, str) and shipment_status.strip().casefold() in {"new", "canceled", "cancelled"}:
                 pass
             elif isinstance(shipment_status, str) and shipment_status.strip().casefold() in {
@@ -1348,6 +1362,11 @@ def _shiprocket_cleanup_usage_evidence(order: dict[str, object]) -> tuple[list[s
                 evidence.append("shipment_status")
             else:
                 ambiguous = True
+        # Fail closed on provider fields we do not understand when they carry data.
+        # Empty/null additions are harmless schema noise; non-empty unknown structures
+        # may represent provider processing that our explicit evidence guards do not know.
+        if any(key not in known_shipment_fields and not empty_placeholder_value(value) for key, value in shipment.items()):
+            ambiguous = True
     return sorted(set(evidence)), ambiguous
 
 
@@ -1430,7 +1449,7 @@ async def _cleanup_unused_shiprocket_order(order_id: str, channel_order_id: str,
                 diagnostics["final_guard_decision"] = "blocked_not_conclusively_unused_new"
                 result = {"status": "protected", "awb": awb, "shipment_id": shipment_id, "shiprocket_status": status, "usage_evidence": usage_evidence, "ambiguous": ambiguous, "error": "The Shiprocket order was not cancelled because it is not conclusively an unused New order."}
             else:
-                diagnostics["final_guard_decision"] = "cancellation_allowed"
+                diagnostics["final_guard_decision"] = "eligible_for_cleanup"
                 diagnostics["request_attempted"] = True
                 cancellation = await service.cancel_unbooked_order(upstream)
                 diagnostics["http_status"] = cancellation.get("http_status")
