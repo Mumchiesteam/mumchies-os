@@ -95,6 +95,8 @@ class ShiprocketService:
     _token_cache: dict[str, Any] | None = None
     _token_lock = asyncio.Lock()
     _new_orders_cache: tuple[float, list[dict[str, Any]]] | None = None
+    # Never propagate OS cleanup to Shopify/the connected sales channel.
+    CANCEL_UNUSED_ORDER_ON_CHANNEL = False
 
     def __init__(self, email: str | None = None, password: str | None = None, pickup_location: str | None = None) -> None:
         self.email = email or settings.shiprocket_email
@@ -515,7 +517,7 @@ class ShiprocketService:
             raise ShiprocketAPIError("A booked or shipped Shiprocket order requires a separate explicit shipment-cancellation workflow.", safe_details={"operation": "cancel_order", "protected": True, "awb": awb, "shipment_id": shipment_id})
         response = await self._post(
             "https://apiv2.shiprocket.in/v1/external/orders/cancel",
-            {"ids": [int(order_id)], "cancel_on_channel": False},
+            {"ids": [int(order_id)], "cancel_on_channel": self.CANCEL_UNUSED_ORDER_ON_CHANNEL},
         )
         try:
             body: Any = response.json()

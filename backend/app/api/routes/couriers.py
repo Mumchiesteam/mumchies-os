@@ -117,11 +117,6 @@ async def _run_post_booking_work(
 ) -> None:
     """Persist visible, retryable downstream results without extending booking latency."""
     started = time.perf_counter()
-    cleanup_ms = 0.0
-    if provider in {"delhivery", "shadowfax"}:
-        cleanup_started = time.perf_counter()
-        await _cleanup_unused_shiprocket_order(order_id, order_number, operator)
-        cleanup_ms = (time.perf_counter() - cleanup_started) * 1000
     fulfillment_started = time.perf_counter()
     with SessionLocal() as background_db:
         try:
@@ -134,8 +129,8 @@ async def _run_post_booking_work(
     OrderOperationsStore.record_timeline_event(order_id, "shipment_booked", operator=operator, details={"provider": provider})
     timeline_ms = (time.perf_counter() - timeline_started) * 1000
     LOGGER.info(
-        "post_booking order_id=%s provider=%s shopify_fulfillment_ms=%.2f shiprocket_cleanup_ms=%.2f timeline_ms=%.2f total_ms=%.2f",
-        order_id, provider, fulfillment_ms, cleanup_ms, timeline_ms, (time.perf_counter() - started) * 1000,
+        "post_booking order_id=%s provider=%s shopify_fulfillment_ms=%.2f timeline_ms=%.2f total_ms=%.2f",
+        order_id, provider, fulfillment_ms, timeline_ms, (time.perf_counter() - started) * 1000,
     )
 
 
@@ -844,10 +839,8 @@ async def temporary_shadowfax_direct_test_324663(
         order.order_id, "shiprocket_cleanup", operator=actor,
         details={"status": "pending", "reason": "confirmed_shadowfax_direct_booking"},
     )
-    background_tasks.add_task(
-        _run_post_booking_work, order.order_id, order.order_number,
-        order.shopify_graphql_id, "shadowfax", actor,
-    )
+    cleanup = await _cleanup_unused_shiprocket_order(order.order_id, order.order_number, actor)
+    background_tasks.add_task(_run_post_booking_work, order.order_id, order.order_number, order.shopify_graphql_id, "shadowfax", actor)
     OrderOperationsStore.update_shadowfax_direct_test(
         order.order_id, tracking_started_at=datetime.now(timezone.utc).isoformat(), final_test_state="tracking_in_progress",
     )
@@ -877,6 +870,7 @@ async def temporary_shadowfax_direct_test_324663(
             "status": booking.status.value, "service": booking.service,
         },
         "tracking": tracking_summary,
+        "shiprocket_cleanup": cleanup,
     }
 
 
@@ -1185,8 +1179,14 @@ async def shiprocket_book_shipment(
                     order_id, "shiprocket_cleanup", operator=actor,
                     details={"status": "pending", "reason": "confirmed_delhivery_booking"},
                 )
+                cleanup_started = time.perf_counter()
+                cleanup = await _cleanup_unused_shiprocket_order(order_id, order.order_number, actor)
+                stages["shiprocket_cleanup"] = (time.perf_counter() - cleanup_started) * 1000
                 background_tasks.add_task(_run_post_booking_work, order_id, order.order_number, order.shopify_graphql_id, "delhivery", actor)
-            return _finish_booking_response(order_id, "delhivery", result, canonical, stages, request_started, response)
+            else:
+                cleanup = {"status": "not_scheduled"}
+            response_result = {**result, "shiprocket_cleanup": cleanup, "warning": cleanup.get("error")}
+            return _finish_booking_response(order_id, "delhivery", response_result, canonical, stages, request_started, response)
 
         order_payload = _build_shiprocket_order_payload(context.order, _context_operations(context), context.package)
         _assert_booking_payload(context, "shiprocket", order_payload)

@@ -99,20 +99,19 @@ def test_courier_lookup_clears_stored_selection_before_returning_quotes() -> Non
     assert '"eligible": eligibility.eligible' in source
 
 
-def test_booking_returns_before_noncritical_post_booking_work() -> None:
+def test_booking_completes_critical_cleanup_before_noncritical_post_booking_work() -> None:
     source = inspect.getsource(couriers.shiprocket_book_shipment)
     assert "background_tasks.add_task(_run_post_booking_work" in source
     assert "await _sync_shopify_after_booking" not in source
-    assert "await _cleanup_unused_shiprocket_order" not in source
+    assert "await _cleanup_unused_shiprocket_order" in source
     assert "OrderOperationsStore.save_selected_courier(order_id, selected)" not in source
 
 
 def test_post_booking_failures_remain_persisted_and_actionable() -> None:
     source = inspect.getsource(couriers._run_post_booking_work)
     assert "ShopifyFulfillmentSynchronizer().sync" in source
-    assert "_cleanup_unused_shiprocket_order" in source
+    assert "_cleanup_unused_shiprocket_order" not in source
     assert "OrderOperationsStore.record_timeline_event" in source
-    assert 'provider in {"delhivery", "shadowfax"}' in source
 
 
 def test_direct_cleanup_is_pending_before_background_work_and_retry_uses_shopify_number() -> None:

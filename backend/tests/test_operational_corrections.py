@@ -332,7 +332,9 @@ async def test_shiprocket_cancel_disables_channel_and_protects_awb(monkeypatch):
         return httpx.Response(200, json={"ok": True})
     monkeypatch.setattr(service, "_post", post)
     await service.cancel_unbooked_order({"id": 7, "status": "NEW", "shipments": []})
+    assert seen["url"] == "https://apiv2.shiprocket.in/v1/external/orders/cancel"
     assert seen["payload"] == {"ids": [7], "cancel_on_channel": False}
+    assert ShiprocketService.CANCEL_UNUSED_ORDER_ON_CHANNEL is False
     with pytest.raises(ShiprocketAPIError, match="separate explicit"):
         await service.cancel_unbooked_order({"id": 8, "status": "NEW", "shipments": [{"awb": "AWB1"}]})
 
@@ -496,8 +498,24 @@ async def test_accepted_cleanup_invalidates_shiprocket_new_cache(tmp_path, monke
 
 def test_delhivery_cleanup_precedes_shopify_fulfillment_sync():
     import inspect
-    source = inspect.getsource(couriers._run_post_booking_work)
-    assert source.index("_cleanup_unused_shiprocket_order") < source.index("ShopifyFulfillmentSynchronizer().sync")
+    booking = inspect.getsource(couriers.shiprocket_book_shipment)
+    post_booking = inspect.getsource(couriers._run_post_booking_work)
+    assert "await _cleanup_unused_shiprocket_order" in booking
+    assert "ShopifyFulfillmentSynchronizer().sync" not in booking
+    assert "_cleanup_unused_shiprocket_order" not in post_booking
+    assert "ShopifyFulfillmentSynchronizer().sync" in post_booking
+
+
+def test_unused_shiprocket_cleanup_has_no_shopify_cancellation_path():
+    import inspect
+    cleanup = inspect.getsource(couriers._cleanup_unused_shiprocket_order)
+    retry = inspect.getsource(couriers.retry_unused_shiprocket_cleanup)
+    cancellation = inspect.getsource(ShiprocketService.request_unbooked_order_cancellation)
+    combined = cleanup + retry + cancellation
+    assert "cancel_order(" not in combined
+    assert "cancel_fulfillment" not in combined
+    assert "financial_status" not in combined
+    assert '"cancel_on_channel": self.CANCEL_UNUSED_ORDER_ON_CHANNEL' in cancellation
 
 
 @pytest.mark.anyio
