@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 from types import SimpleNamespace
 
 import httpx
@@ -429,7 +430,9 @@ async def test_unused_shiprocket_cleanup_allows_empty_placeholder_from_fresh_det
     result = await couriers._cleanup_unused_shiprocket_order("1", "323160", "Operator")
 
     assert result["status"] == "cancelled"
-    assert calls == {"details": 1, "cancel": 1}
+    assert calls == {"details": 2, "cancel": 1}
+    assert result["cleanup_diagnostics"]["request_attempted"] is True
+    assert result["cleanup_diagnostics"]["post_cancellation_verification"] == "still_new"
 
 
 @pytest.mark.anyio
@@ -448,13 +451,64 @@ async def test_already_cancelled_cleanup_is_resolved_without_post_and_clears_sta
 
     result = await couriers._cleanup_unused_shiprocket_order("1", "323160", "Operator")
 
-    assert result == {
+    assert {key: result[key] for key in ("status", "cancel_on_channel", "shiprocket_order_id", "shiprocket_status", "already_cancelled")} == {
         "status": "resolved", "cancel_on_channel": False, "shiprocket_order_id": "9",
         "shiprocket_status": "canceled", "already_cancelled": True,
     }
     latest = OrderOperationsStore.get("1")["timeline_events"][-1]["details"]
     assert latest == result
     assert "error" not in latest
+
+
+@pytest.mark.anyio
+async def test_cleanup_diagnostics_persist_guard_block_without_request(tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    upstream = {"id": 9, "channel_order_id": "325557", "status": "NEW", "status_code": 1, "shipments": [{"id": 77, "awb": "AWB1"}]}
+    monkeypatch.setattr(couriers.ShiprocketService, "find_existing_order", lambda *_args: _async_value(upstream))
+    monkeypatch.setattr(couriers.ShiprocketService, "order_details", lambda *_args: _async_value(upstream))
+    monkeypatch.setattr(couriers.ShiprocketService, "cancel_unbooked_order", lambda *_args: pytest.fail("cancellation transport must not run"))
+
+    result = await couriers._cleanup_unused_shiprocket_order("1", "325557", "Operator")
+    diagnostic = result["cleanup_diagnostics"]
+    assert result["status"] == "protected"
+    assert diagnostic["request_attempted"] is False
+    assert diagnostic["guards"]["no_awb_evidence"] is False
+    assert diagnostic["final_guard_decision"] == "blocked_not_conclusively_unused_new"
+    assert diagnostic["shiprocket_order_id"] == "9"
+    assert diagnostic["visible_channel_order_number"] == "325557"
+
+
+@pytest.mark.anyio
+async def test_cleanup_diagnostics_persist_safe_transport_and_post_verification(tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    fresh = {"id": 9, "channel_order_id": "325557", "status": "NEW", "status_code": 1, "shipments": {"id": 77}}
+    cancelled = {**fresh, "status": "CANCELED", "status_code": 5}
+    detail_responses = iter((fresh, cancelled))
+    async def find(*_args): return fresh
+    async def details(*_args): return next(detail_responses)
+    async def post(_self, url, payload):
+        assert url == "https://apiv2.shiprocket.in/v1/external/orders/cancel"
+        assert payload == {"ids": [9], "cancel_on_channel": False}
+        return httpx.Response(200, json={"success": True, "message": "Order cancelled for private@example.com 9999999999", "token": "secret", "customer_email": "private@example.com"})
+    monkeypatch.setattr(couriers.ShiprocketService, "find_existing_order", find)
+    monkeypatch.setattr(couriers.ShiprocketService, "order_details", details)
+    monkeypatch.setattr(couriers.ShiprocketService, "_post", post)
+
+    result = await couriers._cleanup_unused_shiprocket_order("1", "325557", "Operator")
+    diagnostic = result["cleanup_diagnostics"]
+    assert diagnostic["request_attempted"] is True
+    assert diagnostic["safe_request_flags"] == {"cancel_on_channel": False}
+    assert diagnostic["http_status"] == 200
+    assert diagnostic["sanitized_shiprocket_response"] == {"success": True, "message": "Order cancelled for [REDACTED_EMAIL] [REDACTED_NUMBER]", "error": None, "detail": None, "status": None, "status_code": None}
+    assert diagnostic["fresh_post_cancellation_status"] == "canceled"
+    assert diagnostic["post_cancellation_verification"] == "cancelled"
+    serialized = json.dumps(result)
+    assert "secret" not in serialized
+    assert "private@example.com" not in serialized
+
+
+async def _async_value(value):
+    return value
 
 
 @pytest.mark.anyio

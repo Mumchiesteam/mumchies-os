@@ -511,7 +511,10 @@ class ShiprocketService:
         if int(result["http_status"]) >= 400 or result.get("classification") == "rejected":
             body = result.get("response") or {}
             message = str(body.get("message") or body.get("error") or "Shiprocket rejected the cancellation request.") if isinstance(body, dict) else "Shiprocket rejected the cancellation request."
-            raise ShiprocketAPIError(message, status_code=int(result["http_status"]), safe_details={"operation": "cancel_order"})
+            raise ShiprocketAPIError(
+                message, status_code=int(result["http_status"]),
+                safe_details={"operation": "cancel_order", **result},
+            )
         return result
 
     async def request_unbooked_order_cancellation(self, order: dict[str, Any]) -> dict[str, Any]:
@@ -531,11 +534,33 @@ class ShiprocketService:
         except Exception:
             body = {"message": "Shiprocket returned a non-JSON response."}
         sanitized = self.sanitize_response(body)
+        safe_diagnostic_response = self.sanitize_cancellation_response(body)
         return {
             "http_status": response.status_code,
-            "response": sanitized,
+            "response": safe_diagnostic_response,
             "classification": self.classify_cancellation_response(sanitized),
         }
+
+    @classmethod
+    def sanitize_cancellation_response(cls, value: Any) -> dict[str, Any]:
+        """Allowlist non-PII cancellation fields for durable cleanup diagnostics."""
+        if not isinstance(value, dict):
+            return {"response_type": type(value).__name__}
+        safe: dict[str, Any] = {}
+        for key in ("success", "status", "status_code", "message", "error", "detail"):
+            item = value.get(key)
+            if isinstance(item, str):
+                text = re.sub(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", "[REDACTED_EMAIL]", item, flags=re.IGNORECASE)
+                text = re.sub(r"(?<!\d)\d{10,13}(?!\d)", "[REDACTED_NUMBER]", text)
+                safe[key] = text[:500]
+            elif isinstance(item, (int, float, bool)) or item is None:
+                safe[key] = item
+        errors = value.get("errors")
+        if isinstance(errors, dict):
+            safe["error_fields"] = sorted(str(key)[:100] for key in errors)
+        elif isinstance(errors, list):
+            safe["error_count"] = len(errors)
+        return safe
 
     @classmethod
     def sanitize_response(cls, value: Any) -> Any:

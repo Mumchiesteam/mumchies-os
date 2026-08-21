@@ -1352,13 +1352,38 @@ def _shiprocket_cleanup_usage_evidence(order: dict[str, object]) -> tuple[list[s
 
 
 async def _cleanup_unused_shiprocket_order(order_id: str, channel_order_id: str, operator: str) -> dict[str, object]:
+    endpoint = "https://apiv2.shiprocket.in/v1/external/orders/cancel"
+    diagnostics: dict[str, object] = {
+        "visible_channel_order_number": str(channel_order_id),
+        "shiprocket_order_id": None,
+        "fresh_shiprocket_status": None,
+        "fresh_shiprocket_status_code": None,
+        "shipment_id": None,
+        "shipment_placeholder_present": False,
+        "evidence": {
+            "awb": False, "courier": False, "manifest": False,
+            "pickup": False, "processing_or_progress": False,
+        },
+        "guards": {},
+        "final_guard_decision": "lookup_not_completed",
+        "request_attempted": False,
+        "request_endpoint": endpoint,
+        "safe_request_flags": {"cancel_on_channel": False},
+        "http_status": None,
+        "sanitized_shiprocket_response": None,
+        "final_cleanup_classification": None,
+        "fresh_post_cancellation_status": None,
+        "post_cancellation_verification": "not_attempted",
+    }
     try:
         service = ShiprocketService()
         matched = await service.find_existing_order(channel_order_id)
         if not matched:
+            diagnostics["final_guard_decision"] = "no_matching_shiprocket_order"
             result = {"status": "not_applicable"}
         else:
             shiprocket_order_id = matched.get("id")
+            diagnostics["shiprocket_order_id"] = str(shiprocket_order_id) if shiprocket_order_id is not None else None
             if shiprocket_order_id is None:
                 raise ShiprocketAPIError("Shiprocket returned an ambiguous order without an ID; cleanup was blocked.")
             upstream = await service.order_details(shiprocket_order_id)
@@ -1366,27 +1391,81 @@ async def _cleanup_unused_shiprocket_order(order_id: str, channel_order_id: str,
             shipment_id, awb = service._upstream_shipment(upstream)
             status = str(upstream.get("status") or "").strip().casefold()
             usage_evidence, ambiguous = _shiprocket_cleanup_usage_evidence(upstream)
+            shipment_value = upstream.get("shipments")
+            evidence = {
+                "awb": bool(awb or "awb" in usage_evidence),
+                "courier": "courier" in usage_evidence,
+                "manifest": "manifest" in usage_evidence,
+                "pickup": "pickup" in usage_evidence,
+                "processing_or_progress": bool({"shipment_progress", "shipment_status"}.intersection(usage_evidence)),
+            }
+            guards = {
+                "exact_channel_match": exact_match,
+                "already_cancelled": status in {"canceled", "cancelled"},
+                "status_is_new": status == "new",
+                "no_awb_evidence": not evidence["awb"],
+                "no_courier_evidence": not evidence["courier"],
+                "no_manifest_evidence": not evidence["manifest"],
+                "no_pickup_evidence": not evidence["pickup"],
+                "no_processing_or_progress_evidence": not evidence["processing_or_progress"],
+                "provider_payload_unambiguous": not ambiguous,
+            }
+            diagnostics.update({
+                "fresh_shiprocket_status": status,
+                "fresh_shiprocket_status_code": upstream.get("status_code"),
+                "shipment_id": shipment_id,
+                "shipment_placeholder_present": shipment_value not in (None, [], {}),
+                "evidence": evidence,
+                "guards": guards,
+            })
             if not exact_match:
+                diagnostics["final_guard_decision"] = "blocked_channel_order_mismatch"
                 result = {"status": "protected", "shiprocket_status": status, "error": "Shiprocket returned a non-matching channel order; cleanup was blocked."}
             elif status in {"canceled", "cancelled"}:
+                diagnostics["final_guard_decision"] = "already_cancelled"
+                diagnostics["post_cancellation_verification"] = "already_cancelled"
                 ShiprocketService._new_orders_cache = None
                 result = {"status": "resolved", "cancel_on_channel": False, "shiprocket_order_id": str(shiprocket_order_id), "shiprocket_status": status, "already_cancelled": True}
             elif status != "new" or awb or usage_evidence or ambiguous:
+                diagnostics["final_guard_decision"] = "blocked_not_conclusively_unused_new"
                 result = {"status": "protected", "awb": awb, "shipment_id": shipment_id, "shiprocket_status": status, "usage_evidence": usage_evidence, "ambiguous": ambiguous, "error": "The Shiprocket order was not cancelled because it is not conclusively an unused New order."}
             else:
+                diagnostics["final_guard_decision"] = "cancellation_allowed"
+                diagnostics["request_attempted"] = True
                 cancellation = await service.cancel_unbooked_order(upstream)
+                diagnostics["http_status"] = cancellation.get("http_status")
+                diagnostics["sanitized_shiprocket_response"] = cancellation.get("response")
+                diagnostics["final_cleanup_classification"] = cancellation.get("classification")
                 if cancellation.get("classification") == "accepted":
                     ShiprocketService._new_orders_cache = None
                     result = {"status": "cancelled", "cancel_on_channel": False, "shiprocket_order_id": str(upstream.get("id"))}
                 else:
                     result = {"status": "ambiguous", "cancel_on_channel": False, "error": "Shiprocket did not conclusively accept cleanup; no retry was attempted."}
+                try:
+                    verified = await service.order_details(shiprocket_order_id)
+                    verified_status = str(verified.get("status") or "").strip().casefold()
+                    diagnostics["fresh_post_cancellation_status"] = verified_status
+                    diagnostics["post_cancellation_verification"] = "cancelled" if verified_status in {"canceled", "cancelled"} else f"still_{verified_status or 'unknown'}"
+                except (ShiprocketAPIError, ShiprocketConfigurationError, httpx.HTTPError) as verification_error:
+                    diagnostics["post_cancellation_verification"] = f"verification_failed:{type(verification_error).__name__}"
     except (ShiprocketAPIError, ShiprocketConfigurationError, httpx.HTTPError) as error:
+        if isinstance(error, ShiprocketAPIError):
+            safe = error.safe_details
+            if diagnostics["request_attempted"] or safe.get("operation") == "cancel_order":
+                diagnostics["request_attempted"] = True
+                diagnostics["http_status"] = safe.get("http_status", error.status_code)
+                diagnostics["sanitized_shiprocket_response"] = safe.get("response")
+                diagnostics["final_cleanup_classification"] = safe.get("classification", "rejected")
+        diagnostics["final_guard_decision"] = str(diagnostics["final_guard_decision"] if diagnostics["final_guard_decision"] != "lookup_not_completed" else "lookup_or_detail_failed")
         result = {"status": "failed", "cancel_on_channel": False, "error": str(error)}
     except Exception as error:  # noqa: BLE001 - persist unexpected background failures for safe retry
         LOGGER.exception("shiprocket_cleanup_unexpected_failure order_id=%s", order_id)
+        diagnostics["final_guard_decision"] = "unexpected_failure"
         result = {"status": "failed", "cancel_on_channel": False, "error": f"Unexpected cleanup failure: {error}"}
-    OrderOperationsStore.record_timeline_event(order_id, "shiprocket_cleanup", operator=operator, details=result)
-    return result
+    diagnostics["final_cleanup_classification"] = diagnostics["final_cleanup_classification"] or result.get("status")
+    persisted = {**result, "cleanup_diagnostics": diagnostics}
+    OrderOperationsStore.record_timeline_event(order_id, "shiprocket_cleanup", operator=operator, details=persisted)
+    return persisted
 
 
 @router.post("/shiprocket/orders/{order_id}/cleanup-unused")
