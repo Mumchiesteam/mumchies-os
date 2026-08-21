@@ -665,7 +665,10 @@ function App() {
       console.info('courier_lookup_frontend_timing', { orderId, request_and_render_ms: performance.now() - lookupStarted, backend_ms: result.timings_ms })
     } catch (err) {
       if (generation !== drawerGenerationRef.current) return
-      setCourierError((err as Error).message)
+      const message = (err as Error).message
+      setCourierError(message === 'Failed to fetch'
+        ? 'Courier lookup request failed before reaching the server. Check the connection and retry.'
+        : message)
     } finally {
       if (courierRequestOrderRef.current === orderId) courierRequestOrderRef.current = null
       if (generation === drawerGenerationRef.current) setCourierLoading(false)

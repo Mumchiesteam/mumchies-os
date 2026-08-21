@@ -38,6 +38,8 @@ describe('Orders latency regressions', () => {
     expect(flow).toContain('courierRequestOrderRef.current = null')
     expect(flow).toContain('setCourierLoading(false)')
     expect(flow).toContain("result.lookup_status === 'manual_only'")
+    expect(flow).toContain("message === 'Failed to fetch'")
+    expect(flow).toContain('Courier lookup request failed before reaching the server.')
   })
 
   it('does not wait for eligibility after persisting a courier selection', () => {
