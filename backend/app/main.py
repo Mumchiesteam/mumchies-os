@@ -57,13 +57,17 @@ async def require_authentication(request: Request, call_next):
         return response
     session_ms = (time.perf_counter() - auth_started) * 1000
     auth_db_started = time.perf_counter()
-    with request.app.state.session_factory() as db:
-        user = db.scalar(select(User).where(User.username == session.username))
-        if user is None or not user.is_active:
-            response = JSONResponse(status_code=401, content={"detail": "Authentication required."})
-            response.delete_cookie(settings.auth_cookie_name, path="/")
-            return response
-        db.expunge(user)
+    def load_user() -> User | None:
+        with request.app.state.session_factory() as db:
+            value = db.scalar(select(User).where(User.username == session.username))
+            if value is not None:
+                db.expunge(value)
+            return value
+    user = await asyncio.to_thread(load_user)
+    if user is None or not user.is_active:
+        response = JSONResponse(status_code=401, content={"detail": "Authentication required."})
+        response.delete_cookie(settings.auth_cookie_name, path="/")
+        return response
     auth_db_ms = (time.perf_counter() - auth_db_started) * 1000
     if request.method not in {"GET", "HEAD"} and not hmac.compare_digest(
         request.headers.get("X-CSRF-Token", ""),
