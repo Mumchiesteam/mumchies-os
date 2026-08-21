@@ -54,11 +54,11 @@ describe('Orders latency regressions', () => {
     expect(guard).toContain('selectedCourierPersisted')
   })
 
-  it('shows saved address before the secondary eligibility refresh', () => {
+  it('applies saved address and awaits authoritative eligibility before completing Save & Verify', () => {
     const flow = source.slice(source.indexOf('const saveAndVerifyAddress'), source.indexOf('const checkCouriers'))
     expect(flow).toContain('setNotice(result.verified')
-    expect(flow).toContain('void getBookingEligibility(orderId)')
-    expect(flow).not.toContain('await getBookingEligibility(orderId)')
+    expect(flow).toContain('await getBookingEligibility(orderId)')
+    expect(flow).toContain('setBookingEligibility(freshEligibility)')
   })
 
   it('shows booked before the secondary canonical readback', () => {

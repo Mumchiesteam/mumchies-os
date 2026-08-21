@@ -348,6 +348,33 @@ export const apiFetch = async (input: RequestInfo | URL, init: RequestInit = {})
   return response
 }
 
+const apiErrorText = (value: unknown): string[] => {
+  if (typeof value === 'string') return value.trim() ? [value.trim()] : []
+  if (Array.isArray(value)) return value.flatMap(apiErrorText)
+  if (!value || typeof value !== 'object') return []
+  const record = value as Record<string, unknown>
+  const direct = ['message', 'error', 'msg'].flatMap(key => apiErrorText(record[key]))
+  const location = Array.isArray(record.loc) ? record.loc.map(String).filter(value => value !== 'body').join('.') : ''
+  return location && direct.length ? direct.map(message => `${location}: ${message}`) : direct
+}
+
+export function readableApiError(body: unknown, fallback = 'Request failed.'): string {
+  const record = body && typeof body === 'object' ? body as Record<string, unknown> : null
+  const messages = apiErrorText(record?.detail ?? record?.message ?? record?.error ?? body)
+  const joined = [...new Set(messages)].join('; ')
+  const normalized = joined.toLowerCase()
+  if (normalized.includes('address changed in another session') || normalized.includes('stale_address_revision') || normalized.includes('expected_revision')) {
+    return 'Address changed since this drawer was opened. Reload and verify again.'
+  }
+  if (normalized.includes('draft identity could not be verified') || normalized.includes('draft_token')) {
+    return 'Address verification token expired. Reload the order.'
+  }
+  if (normalized.includes('different order') || normalized.includes('order identity mismatch') || normalized.includes('draft_order_id')) {
+    return 'Address belongs to a different order. Reload the order before verifying.'
+  }
+  return joined || fallback
+}
+
 const formatDate = (value: string) => new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(value))
 
 const toMoney = (value: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value)
@@ -700,7 +727,11 @@ export async function addAddressConfirmationComment(orderId: string, comment: st
 export async function saveAndVerifyOrderAddress(orderId: string, payload: Record<string, string | number | null>): Promise<{ operations: OrderOperations; validation: { status: string; blockers: string[]; warnings: string[]; shiprocket_message: string }; verified: boolean }> {
   const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/address/save-verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
   const body = await response.json().catch(() => null)
-  if (!response.ok) throw new Error(body?.detail || 'Could not save and verify address.')
+  if (!response.ok) {
+    const message = readableApiError(body, 'Unable to verify address. Please retry.')
+    console.warn('save_verify_address_failed', { orderId, status: response.status, message })
+    throw new Error(message)
+  }
   return body
 }
 

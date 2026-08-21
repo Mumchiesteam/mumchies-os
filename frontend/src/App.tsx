@@ -621,11 +621,14 @@ function App() {
       setNotice(result.verified ? (result.validation.warnings.length ? `Address verified with advisories: ${result.validation.warnings.join('; ')}` : 'Address saved and verified') : `Address saved but not verified: ${result.validation.blockers.join('; ')}`)
       const successRendered = performance.now()
       console.info('save_verify_frontend_timing', { orderId, click_to_request_ms: requestStarted - clickStarted, request_ms: responseReceived - requestStarted, post_response_ms: successRendered - responseReceived, total_ms: successRendered - clickStarted })
-      void getBookingEligibility(orderId).then(freshEligibility => {
-        if (generation === drawerGenerationRef.current && selectedOrderId === orderId) setBookingEligibility(freshEligibility)
-      }).catch(() => undefined)
+      setBookingEligibility(null)
+      const freshEligibility = await getBookingEligibility(orderId)
+      if (generation === drawerGenerationRef.current && selectedOrderId === orderId) setBookingEligibility(freshEligibility)
       return result
-    } catch (err) { setNotice((err as Error).message) }
+    } catch (err) {
+      setNotice((err as Error).message)
+      throw err
+    }
   }
 
 
@@ -1254,6 +1257,7 @@ const OrderDrawer = memo(function OrderDrawer({
   }))
   const [addressReview, setAddressReview] = useState<{ status: string; blockers: string[]; warnings: string[]; shiprocket_message: string } | null>(null)
   const [addressReviewLoading, setAddressReviewLoading] = useState(false)
+  const [addressSaveState, setAddressSaveState] = useState<'ready' | 'saving' | 'verified' | 'failed'>('ready')
   const [workflowError, setWorkflowError] = useState('')
   const [showShadowfaxForm, setShowShadowfaxForm] = useState(false)
   const [manualShadowfax, setManualShadowfax] = useState({ awb: '', provider_id: '', service_name: '', booked_at: new Date().toISOString().slice(0, 16), freight: '', note: '' })
@@ -1379,7 +1383,7 @@ const OrderDrawer = memo(function OrderDrawer({
               </div>
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
-              <button onClick={() => { setAddressReviewLoading(true); void onSaveAddress().then(result => { if (result) setAddressReview(result.validation) }).finally(() => setAddressReviewLoading(false)) }} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white">{addressReviewLoading ? 'Saving & Verifying…' : 'Save & Verify Address'}</button>
+              <button disabled={addressReviewLoading} onClick={() => { setAddressReviewLoading(true); setAddressSaveState('saving'); void onSaveAddress().then(result => { if (result) { setAddressReview(result.validation); setAddressSaveState(result.verified ? 'verified' : 'failed') } else setAddressSaveState('failed') }).catch(() => setAddressSaveState('failed')).finally(() => setAddressReviewLoading(false)) }} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{{ ready: 'Save & Verify Address', saving: 'Saving...', verified: 'Verified', failed: 'Failed - retry' }[addressSaveState]}</button>
               <button onClick={() => { const query = [addressDraft.address_line1, addressDraft.address_line2, addressDraft.landmark, addressDraft.city, addressDraft.state, addressDraft.pincode, 'India'].filter(Boolean).join(', '); window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`, '_blank', 'noopener,noreferrer') }} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600">Open in Google Maps</button>
             </div>
             </fieldset>
