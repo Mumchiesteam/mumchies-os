@@ -95,6 +95,7 @@ class ShiprocketService:
     _token_cache: dict[str, Any] | None = None
     _token_lock = asyncio.Lock()
     _new_orders_cache: tuple[float, list[dict[str, Any]]] | None = None
+    _pickup_location_cache: tuple[float, str, dict[str, Any] | None] | None = None
     # Never propagate OS cleanup to Shopify/the connected sales channel.
     CANCEL_UNUSED_ORDER_ON_CHANNEL = False
 
@@ -193,10 +194,16 @@ class ShiprocketService:
         return data.get("shipping_address", []) or []
 
     async def pickup_location_details(self) -> dict[str, Any] | None:
+        cache = self.__class__._pickup_location_cache
+        pickup_key = str(self.pickup_location or "").strip().casefold()
+        if cache and cache[0] > time.monotonic() and cache[1] == pickup_key:
+            return dict(cache[2]) if cache[2] else None
         pickup_locations = await self._pickup_locations()
         for location in pickup_locations:
             if str(location.get("pickup_location", "")).strip().lower() == str(self.pickup_location).strip().lower():
+                self.__class__._pickup_location_cache = (time.monotonic() + 900, pickup_key, dict(location))
                 return location
+        self.__class__._pickup_location_cache = (time.monotonic() + 60, pickup_key, None)
         return None
 
     async def health(self) -> ShiprocketHealthResult:

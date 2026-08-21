@@ -81,6 +81,13 @@ describe('provider-neutral courier client', () => {
     expect(result.couriers[0].courier_id).toBe('43')
   })
 
+  it('replaces browser Failed to fetch with a safe actionable lookup message', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('Failed to fetch'))
+    await expect(checkShiprocketCouriers('1', { weight_kg: 0.5, courier_payment_mode: 'Prepaid' }))
+      .rejects.toThrow('Courier lookup request failed before reaching the server. Check the connection and retry.')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
   it('omits operator when current-user identity is unavailable', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ provider: 'shadowfax' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
     await bookShiprocketShipment('1', { provider: 'shadowfax', courier_name: 'Shadowfax Direct', courier_id: 'Regular', weight_kg: 0.5, draft_order_id: '1', address_revision: 0, booking_context_hash: 'hash' })

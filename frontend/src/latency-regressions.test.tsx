@@ -31,6 +31,15 @@ describe('Orders latency regressions', () => {
     expect(flow).not.toContain('!sorted.some')
   })
 
+  it('keeps one lookup in flight, clears loading, and rejects stale drawer responses', () => {
+    const flow = source.slice(source.indexOf('const checkCouriers'), source.indexOf('const selectCourier'))
+    expect(flow).toContain('if (courierRequestOrderRef.current === orderId) return')
+    expect(flow).toContain('if (generation !== drawerGenerationRef.current) return')
+    expect(flow).toContain('courierRequestOrderRef.current = null')
+    expect(flow).toContain('setCourierLoading(false)')
+    expect(flow).toContain("result.lookup_status === 'manual_only'")
+  })
+
   it('does not wait for eligibility after persisting a courier selection', () => {
     const flow = source.slice(source.indexOf('const selectCourier'), source.indexOf('const bookShipment'))
     expect(flow).not.toContain('refreshEligibility(')

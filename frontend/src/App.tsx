@@ -643,6 +643,7 @@ function App() {
     // backend clears it so a refreshed quote with the same courier ID cannot appear selected.
     setSelectedCourierId(null)
     setOperations(previous => previous ? { ...previous, selected_courier: null } : previous)
+    const lookupStarted = performance.now()
     try {
       await saveOrderPackage(orderId, packageNumbers)
       const result = await checkShiprocketCouriers(orderId, {
@@ -658,8 +659,10 @@ function App() {
       const sorted = [...(result.couriers ?? [])].sort((a, b) => a.total_estimated_shipping_cost - b.total_estimated_shipping_cost)
       setCourierOptions(sorted)
       setCourierWarnings(result.provider_warnings ?? [])
-      if (sorted.length === 0) setCourierError('No courier services are currently available. Check the package and address, then retry.')
+      if (result.lookup_status === 'manual_only') setCourierError('Courier lookup failed: both rate providers are unavailable. Retry lookup.')
+      else if (sorted.length === 0) setCourierError('No courier services are currently available. Check the package and address, then retry.')
       setNotice('Courier options loaded')
+      console.info('courier_lookup_frontend_timing', { orderId, request_and_render_ms: performance.now() - lookupStarted, backend_ms: result.timings_ms })
     } catch (err) {
       if (generation !== drawerGenerationRef.current) return
       setCourierError((err as Error).message)

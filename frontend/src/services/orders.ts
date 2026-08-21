@@ -783,6 +783,9 @@ export async function checkShiprocketCouriers(orderId: string, payload: {
   payment_mode: string
   weight_kg: number
   provider_warnings: string[]
+  provider_failures: Record<string, string>
+  lookup_status: 'complete' | 'partial' | 'manual_only'
+  timings_ms: Record<string, number>
   booking_readiness: {
     eligible: boolean
     missing_requirements: string[]
@@ -809,11 +812,19 @@ export async function checkShiprocketCouriers(orderId: string, payload: {
     rate_note: string
   }>
 }> {
-  const response = await apiFetch(`${apiBase}/api/v1/couriers/shiprocket/orders/${orderId}/couriers/check`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
+  let response: Response
+  try {
+    response = await apiFetch(`${apiBase}/api/v1/couriers/shiprocket/orders/${orderId}/couriers/check`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('Courier lookup was interrupted. Retry lookup.', { cause: error })
+    }
+    throw new Error('Courier lookup request failed before reaching the server. Check the connection and retry.', { cause: error })
+  }
   if (!response.ok) {
     const body = await response.json().catch(() => null)
     throw new Error(body?.detail?.message || body?.detail || 'Could not check couriers.')
@@ -823,6 +834,7 @@ export async function checkShiprocketCouriers(orderId: string, payload: {
   return {
     ...result,
     provider_warnings: Array.isArray(result?.provider_warnings) ? result.provider_warnings : [],
+    provider_failures: result?.provider_failures && typeof result.provider_failures === 'object' ? result.provider_failures : {},
     couriers: couriers.map((quote: { courier_id: unknown }) => ({
       ...quote,
       courier_id: quote.courier_id == null ? null : String(quote.courier_id),

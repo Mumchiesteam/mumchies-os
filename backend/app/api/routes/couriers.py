@@ -576,8 +576,13 @@ async def booking_eligibility(order_id: str, db: Session = Depends(get_db)) -> d
 @router.post("/orders/{order_id}/couriers/check")
 async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload, db: Session = Depends(get_db)) -> dict[str, object]:
     provider_warnings: list[str] = []
+    provider_failures: dict[str, str] = {}
     request_started = time.perf_counter()
     context_started = request_started
+    context_ms = pickup_ms = 0.0
+    provider_timings: dict[str, float] = {}
+    shiprocket_result: object = None
+    delhivery_result: object = None
     try:
         order, operations, shipment = await _load_context(order_id, db)
         context_ms = (time.perf_counter() - context_started) * 1000
@@ -593,24 +598,44 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
         if not eligibility.eligible:
             raise HTTPException(status_code=400, detail={"message": "Order is not eligible for courier lookup.", "missing_requirements": eligibility.missing_requirements})
         pickup_started = time.perf_counter()
-        pickup_postcode, delivery_postcode, cod = await _serviceability_query(order, operations, package, payload.courier_payment_mode)
+        delivery_postcode = ShiprocketService().delivery_postcode(order, operations) or ""
+        cod = payload.courier_payment_mode.upper() == "COD"
+        try:
+            pickup_postcode, delivery_postcode, cod = await asyncio.wait_for(
+                _serviceability_query(order, operations, package, payload.courier_payment_mode), timeout=10.0,
+            )
+        except asyncio.TimeoutError:
+            pickup_postcode = ""
+            provider_failures["shiprocket"] = "pickup_timeout"
+            provider_failures["delhivery"] = "pickup_unavailable"
+        except (ShiprocketAPIError, ShiprocketConfigurationError, httpx.HTTPError, HTTPException):
+            pickup_postcode = ""
+            provider_failures["shiprocket"] = "pickup_unavailable"
+            provider_failures["delhivery"] = "pickup_unavailable"
         pickup_ms = (time.perf_counter() - pickup_started) * 1000
         delhivery = DelhiveryService()
-        provider_timings: dict[str, float] = {}
         async def shiprocket_quotes():
+            if not pickup_postcode:
+                return []
             started = time.perf_counter()
             try:
-                return await ShiprocketService().serviceability(pickup_postcode, delivery_postcode, package.weight_kg, cod)
+                return await asyncio.wait_for(
+                    ShiprocketService().serviceability(pickup_postcode, delivery_postcode, package.weight_kg, cod), timeout=15.0,
+                )
             finally:
                 provider_timings["shiprocket"] = (time.perf_counter() - started) * 1000
 
         async def delhivery_quotes():
+            if not pickup_postcode:
+                return []
             if not delhivery.configured:
                 provider_timings["delhivery"] = 0
                 return None
             started = time.perf_counter()
             try:
-                return await delhivery.serviceability(pickup_postcode, delivery_postcode, package.weight_kg, cod)
+                return await asyncio.wait_for(
+                    delhivery.serviceability(pickup_postcode, delivery_postcode, package.weight_kg, cod), timeout=18.0,
+                )
             finally:
                 provider_timings["delhivery"] = (time.perf_counter() - started) * 1000
 
@@ -619,15 +644,23 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
         )
         normalized_quotes = []
         if isinstance(shiprocket_result, Exception):
-            provider_warnings.append("Shiprocket is temporarily unavailable.")
+            provider_failures["shiprocket"] = "timeout" if isinstance(shiprocket_result, asyncio.TimeoutError) else "unavailable"
         else:
             normalized_quotes.extend(asdict(quote) for quote in shiprocket_result)
         if delhivery_result is None:
+            provider_failures["delhivery"] = "not_configured"
             provider_warnings.append("Direct Delhivery booking is not configured.")
         elif isinstance(delhivery_result, Exception):
-            provider_warnings.append("Direct Delhivery is temporarily unavailable.")
+            provider_failures["delhivery"] = "timeout" if isinstance(delhivery_result, asyncio.TimeoutError) else "unavailable"
         else:
             normalized_quotes.extend(asdict(quote) for quote in delhivery_result)
+        rate_provider_quotes = len(normalized_quotes)
+        if "shiprocket" in provider_failures:
+            provider_warnings.append("Shiprocket lookup failed. Available courier results are shown." if rate_provider_quotes else "Shiprocket lookup failed. Retry lookup.")
+        if "delhivery" in provider_failures and provider_failures["delhivery"] != "not_configured":
+            provider_warnings.append("Delhivery lookup failed. Available courier results are shown." if rate_provider_quotes else "Delhivery lookup failed. Retry lookup.")
+        if all(provider in provider_failures for provider in ("shiprocket", "delhivery")):
+            provider_warnings.append("Courier lookup failed: both rate providers are unavailable. Shadowfax manual remains available.")
         normalized_quotes.append({
             "courier_id": "shadowfax:manual", "courier_name": "Shadowfax", "rate": 0,
             "cod_charge": None, "total_estimated_shipping_cost": 0,
@@ -653,6 +686,14 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
         "payment_mode": "COD" if cod else "Prepaid",
         "weight_kg": package.weight_kg,
         "provider_warnings": provider_warnings,
+        "provider_failures": provider_failures,
+        "lookup_status": "manual_only" if all(provider in provider_failures for provider in ("shiprocket", "delhivery")) else "partial" if provider_failures else "complete",
+        "timings_ms": {
+            "order_context": round(context_ms, 2), "pickup": round(pickup_ms, 2),
+            "shiprocket": round(provider_timings.get("shiprocket", 0), 2),
+            "delhivery": round(provider_timings.get("delhivery", 0), 2),
+            "total_backend": round((time.perf_counter() - request_started) * 1000, 2),
+        },
         "couriers": sorted(normalized_quotes, key=lambda quote: float(quote["total_estimated_shipping_cost"])),
         # This is the authoritative eligibility snapshot after package persistence.
         # The drawer must not keep using the pre-package snapshot that was loaded
