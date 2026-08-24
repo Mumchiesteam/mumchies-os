@@ -7,10 +7,10 @@ import { displayedOrderNumber, orderNumberClipboardValue, stopCopyPropagation } 
 describe('operations-first Orders layout', () => {
   it('renders only the required top navigation and daily operation menus', () => {
     const html = renderToStaticMarkup(<App />)
-    for (const item of ['Dashboard', 'Orders', 'NDR', 'Reconciliation', 'Fresh Orders', 'Previous Pending Orders', 'Ready to Ship', 'Manifested']) {
+    for (const item of ['Dashboard', 'Orders', 'NDR', 'Reconciliation', 'Reports', 'Fresh Orders', 'Previous Pending Orders', 'Ready to Ship', 'Manifested']) {
       expect(html).toContain(item)
     }
-    for (const removed of ['Customers', 'Reports', 'Settings', 'All Orders', 'Awaiting Confirmation', 'Shiprocket Cleanup Pending']) {
+    for (const removed of ['Customers', 'Settings', 'All Orders', 'Awaiting Confirmation', 'Shiprocket Cleanup Pending']) {
       expect(html).not.toContain(`>${removed}<`)
     }
     expect(html).not.toContain('Pending Booking')

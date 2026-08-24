@@ -208,7 +208,8 @@ const formatOrderDateTime = (value: string) => {
 }
 function App() {
   const authUser = useAuth()
-  const initialReportPath = window.location.pathname.startsWith('/reports') ? window.location.pathname : ''
+  const currentPath = typeof window === 'undefined' ? '' : window.location.pathname
+  const initialReportPath = currentPath.startsWith('/reports') ? currentPath : ''
   const [activePage, setActivePage] = useState<typeof navItems[number]>(initialReportPath ? 'Reports' : 'Dashboard')
   const [reportPath, setReportPath] = useState(initialReportPath || '/reports')
   const [reconciliationSection, setReconciliationSection] = useState<'reconciliation' | 'courier_issues'>('reconciliation')

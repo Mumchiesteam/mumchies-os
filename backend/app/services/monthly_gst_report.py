@@ -16,6 +16,7 @@ from app.services.shopify import ShopifyService
 INDIA = ZoneInfo("Asia/Kolkata")
 CENT = Decimal("0.01")
 CSV_HEADERS = ["Place of Supply", "GST Rate", "Orders", "Taxable Value", "CGST", "SGST", "IGST", "Total Invoice Value"]
+GST_REPORT_METHODOLOGY_VERSION = "delivery-date-b2cs-v1"
 FILING_EXCLUSIONS = {"REFUNDED", "PARTIALLY_REFUNDED", "VOIDED"}
 JULY_VALIDATED_BASELINE = {
     "orders": Decimal("2659"), "taxable_value": Decimal("1420171.32"),
@@ -84,12 +85,14 @@ class GstReport:
     reconciliation: dict[str, object]
     adjustments: dict[str, object]
     baseline_comparison: dict[str, object] | None
+    population: dict[str, object]
 
     def payload(self) -> dict[str, object]:
         return {
             "month": self.month, "summary": self.summary, "rows": self.rows,
             "exceptions": self.exceptions, "reconciliation": self.reconciliation,
             "adjustments": self.adjustments, "baseline_comparison": self.baseline_comparison,
+            "population": self.population,
         }
 
     def csv_bytes(self) -> bytes:
@@ -131,6 +134,11 @@ class MonthlyGstReportService:
         report = calculate_monthly_gst_report(orders, month)
         self._cache[cache_key] = (time.time() + self._cache_ttl_seconds, report)
         return report
+
+    @classmethod
+    def cached(cls, month: date) -> GstReport | None:
+        cached = cls._cache.get(month.replace(day=1).strftime("%Y-%m"))
+        return cached[1] if cached and cached[0] > time.time() else None
 
     async def _fetch_orders(self, month: date) -> list[dict]:
         after: str | None = None
@@ -250,7 +258,12 @@ def calculate_monthly_gst_report(orders: list[dict], month: date) -> GstReport:
     }
     adjustments = {"original_shopify_gst": _round(original_gst), "shipping_gst": _round(shipping_gst), "product_gst_corrections": _round(product_corrections)}
     baseline = compare_with_july_baseline(summary) if month == date(2026, 7, 1) else None
-    return GstReport(month.strftime("%Y-%m"), summary, rows, exceptions, reconciliation, adjustments, baseline)
+    population = {
+        "raw_delivered_order_numbers": [str(order["name"]).lstrip("#") for order, _ in delivered],
+        "filing_eligible_order_numbers": [str(order["name"]).lstrip("#") for order, _ in eligible],
+        "excluded_order_numbers": [str(order["name"]).lstrip("#") for order, _ in excluded],
+    }
+    return GstReport(month.strftime("%Y-%m"), summary, rows, exceptions, reconciliation, adjustments, baseline, population)
 
 
 def compare_with_july_baseline(summary: dict[str, object]) -> dict[str, object]:
