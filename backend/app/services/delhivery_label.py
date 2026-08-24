@@ -358,7 +358,7 @@ def _render_portal_reference_label(fields: dict[str, Any]) -> bytes:
     barcode_area_width = width - 66
     barcode = Code128(
         fields["awb"], barHeight=39,
-        barWidth=max(0.45, min(1.05, (barcode_area_width - 20) / max(len(fields["awb"]) * 11, 1))),
+        barWidth=max(0.45, min(1.18, 1.125 * (barcode_area_width - 20) / max(len(fields["awb"]) * 11, 1))),
     )
     # Ten-point quiet zones on both sides of the centred scan target.
     barcode_x = left + 33 + max((barcode_area_width - barcode.width) / 2, 0)
@@ -415,7 +415,7 @@ def _render_portal_reference_label(fields: dict[str, Any]) -> bytes:
         order_width = right - split - 8
         order_barcode = Code128(
             fields["order_ref"], barHeight=25,
-            barWidth=max(0.4, min(0.86, (order_width - 16) / max(len(fields["order_ref"]) * 11, 1))),
+            barWidth=max(0.4, min(0.91, 1.075 * (order_width - 16) / max(len(fields["order_ref"]) * 11, 1))),
         )
         # ReportLab's Code128 retains its built-in quiet zones around the larger symbol.
         order_barcode.drawOn(pdf, split + 4 + max((order_width - order_barcode.width) / 2, 0), address_bottom - 44)

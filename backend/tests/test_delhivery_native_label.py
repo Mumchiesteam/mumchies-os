@@ -288,12 +288,15 @@ def test_barcodes_encode_exact_authoritative_awb_and_order_reference(monkeypatch
 
     monkeypatch.setattr(label_module, "Code128", capture)
 
-    render_delhivery_label(base_package(wbn="38290012345678", oid="325850"))
+    render_delhivery_label(base_package(wbn="4829510031953", oid="325825"))
 
-    assert encoded == ["38290012345678", "325850"]
+    assert encoded == ["4829510031953", "325825"]
+    assert barcodes[0].barWidth == pytest.approx(1.18)
+    assert barcodes[0].width < (PAGE_WIDTH - 14 - 66)
     # The order-reference symbol is slightly taller than before while fitting inside its
     # reserved width with Code128's built-in quiet zones intact.
     assert barcodes[1].height == pytest.approx(25)
+    assert barcodes[1].barWidth == pytest.approx(0.91)
     order_area_width = (PAGE_WIDTH - 14) * 0.40 - 8
     assert barcodes[1].width <= order_area_width
     assert barcodes[1].lquiet >= 8 and barcodes[1].rquiet >= 8
