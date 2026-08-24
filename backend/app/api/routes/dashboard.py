@@ -27,6 +27,13 @@ from app.services.runtime_metrics import background_job
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 IST = ZoneInfo("Asia/Kolkata")
+# Team Activity -> Orders is deliberately narrower than general operator activity: only a
+# timestamped event proving that the order reached a confirmed provider shipment belongs here.
+# Preparatory work remains visible in the order audit trail but must not inflate shipped orders.
+SUCCESSFUL_SHIPMENT_ACTIONS = {
+    "shipment_booked", "courier_booked", "courier_booking_reconciled",
+    "shadowfax_manual_shipment_recorded", "shadowfax_direct_test_324663_booked",
+}
 MEANINGFUL_ORDER_ACTIONS = {
     "call_logged", "address_corrected", "address_verified", "address_confirmation_commented",
     "package_details_saved", "order_cancelled", "shipment_booked", "courier_booked",
@@ -86,7 +93,7 @@ def _order_activity(operations: dict[str, dict], start: datetime, end: datetime,
     for order_id, record in operations.items():
         events = [*(record.get("human_actions") or []), *(record.get("timeline_events") or [])]
         for event in events:
-            if str(event.get("action") or "") not in MEANINGFUL_ORDER_ACTIONS: continue
+            if str(event.get("action") or "") not in SUCCESSFUL_SHIPMENT_ACTIONS: continue
             occurred = _at(event.get("timestamp")); actor = _operator(event.get("operator"), operators)
             if actor and occurred and start <= occurred < end: result[actor].add(str(order_id))
     return result

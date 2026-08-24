@@ -122,6 +122,120 @@ class _LabelCanvas:
         self.gap(gap_after)
 
 
+def _render_hierarchical_label(fields: dict[str, Any]) -> bytes:
+    """Render a dense thermal layout using only already-normalized authoritative fields."""
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=(PAGE_WIDTH, PAGE_HEIGHT))
+    left, right = MARGIN, PAGE_WIDTH - MARGIN
+    width = right - left
+
+    def rule(y: float, weight: float = 0.7) -> None:
+        pdf.setLineWidth(weight)
+        pdf.line(left, y, right, y)
+
+    def wrapped(text: str, x: float, y: float, max_width: float, *, size: float = 7.2,
+                font: str = _FONT, max_lines: int = 3, leading: float = 8.3) -> float:
+        for line in _wrap_lines(text, font, size, max_width, max_lines):
+            pdf.setFont(font, size)
+            pdf.drawString(x, y, line)
+            y -= leading
+        return y
+
+    awb, pin = fields["awb"], fields["pin"]
+    y = PAGE_HEIGHT - MARGIN
+    pdf.setFont(_FONT_BOLD, 11)
+    pdf.drawString(left, y - 10, "Mumchies")
+    pdf.setFont(_FONT_BOLD, 10)
+    pdf.drawRightString(right, y - 10, "DELHIVERY")
+    y -= 15
+    rule(y, 1)
+    y -= 11
+    pdf.setFont(_FONT_BOLD, 10)
+    pdf.drawString(left, y, f"AWB {awb}")
+    quiet_width = width - 16
+    barcode = Code128(awb, barHeight=42, barWidth=max(0.45, min(1.15, quiet_width / max(len(awb) * 11, 1))))
+    barcode.drawOn(pdf, left + 8 + max((quiet_width - barcode.width) / 2, 0), y - 48)
+    y -= 53
+    rule(y, 1)
+
+    y -= 6
+    pdf.setFont(_FONT_BOLD, 17)
+    pdf.drawString(left, y - 12, f"PIN {pin}")
+    pdf.setFont(_FONT_BOLD, 8)
+    pdf.drawRightString(right, y - 4, _truncate_to_width(fields["destination"], _FONT_BOLD, 8, width * 0.42))
+    pdf.setFont(_FONT, 7)
+    pdf.drawRightString(right, y - 15, _truncate_to_width(f"Sort: {fields['sort_code']}" if fields["sort_code"] else "", _FONT, 7, width * 0.42))
+    y -= 23
+    rule(y)
+
+    block_top, split = y, left + width * 0.66
+    block_bottom = block_top - 101
+    pdf.line(split, block_top, split, block_bottom)
+    pdf.setFont(_FONT_BOLD, 7)
+    pdf.drawString(left + 3, block_top - 10, "SHIP TO")
+    pdf.setFont(_FONT_BOLD, 9)
+    pdf.drawString(left + 3, block_top - 22, _truncate_to_width(fields["name"], _FONT_BOLD, 9, split - left - 7))
+    address_y = wrapped(fields["address"], left + 3, block_top - 33, split - left - 7, size=7.4, max_lines=4, leading=8.5)
+    address_y = wrapped(fields["locality"], left + 3, address_y - 1, split - left - 7, size=7, max_lines=2, leading=8)
+    pdf.setFont(_FONT_BOLD, 10)
+    pdf.drawString(left + 3, max(block_bottom + 14, address_y - 3), pin)
+    if fields["phone"]:
+        pdf.setFont(_FONT, 6.5)
+        pdf.drawString(left + 3, block_bottom + 4, _truncate_to_width(f"Ph: {fields['phone']}", _FONT, 6.5, split - left - 7))
+
+    rx = split + 4
+    pdf.setFont(_FONT_BOLD, 13)
+    pdf.drawString(rx, block_top - 16, fields["payment_type"] or "-")
+    if fields["payment_type"] == "COD" and fields["cod_amount"]:
+        pdf.setFont(_FONT_BOLD, 10)
+        pdf.drawString(rx, block_top - 31, _truncate_to_width(f"COD: Rs {fields['cod_amount']}", _FONT_BOLD, 10, right - rx))
+    pdf.setFont(_FONT_BOLD, 6.5)
+    pdf.drawString(rx, block_top - 48, "SERVICE")
+    pdf.setFont(_FONT, 7)
+    pdf.drawString(rx, block_top - 58, _truncate_to_width(fields["service_mode"] or "-", _FONT, 7, right - rx))
+    if fields["order_date"]:
+        pdf.setFont(_FONT_BOLD, 6.5)
+        pdf.drawString(rx, block_top - 75, "ORDER DATE")
+        pdf.setFont(_FONT, 6.5)
+        pdf.drawString(rx, block_top - 85, _truncate_to_width(f"Order Date: {fields['order_date']}", _FONT, 6.5, right - rx))
+    y = block_bottom
+    rule(y)
+
+    seller_bottom = y - 64
+    pdf.setFont(_FONT_BOLD, 6.5)
+    pdf.drawString(left + 3, y - 10, "SELLER / PICKUP")
+    wrapped(fields["seller"], left + 3, y - 20, width * 0.54, size=6.5, max_lines=3, leading=7.4)
+    order_ref = fields["order_ref"]
+    if order_ref:
+        ox = left + width * 0.57
+        pdf.setFont(_FONT_BOLD, 7.5)
+        pdf.drawString(ox, y - 11, _truncate_to_width(f"ORDER {order_ref}", _FONT_BOLD, 7.5, right - ox))
+        order_width = right - ox - 8
+        order_barcode = Code128(order_ref, barHeight=23, barWidth=max(0.4, min(0.75, order_width / max(len(order_ref) * 11, 1))))
+        order_barcode.drawOn(pdf, ox + 4 + max((order_width - order_barcode.width) / 2, 0), y - 42)
+    y = seller_bottom
+    rule(y)
+
+    product_bottom = y - 55
+    pdf.setFont(_FONT_BOLD, 6.5)
+    pdf.drawString(left + 3, y - 10, "CONTENTS")
+    py = y - 20
+    for product in fields["product_lines"][:2]:
+        py = wrapped(product, left + 3, py, width - 6, size=7, max_lines=1, leading=9)
+    if fields["summary"]:
+        pdf.setFont(_FONT_BOLD, 6.5)
+        pdf.drawString(left + 3, product_bottom + 5, _truncate_to_width(fields["summary"], _FONT_BOLD, 6.5, width - 6))
+    y = product_bottom
+    rule(y)
+
+    pdf.setFont(_FONT_BOLD, 6.5)
+    pdf.drawString(left + 3, y - 10, "RETURN TO")
+    wrapped(fields["return_text"], left + 3, y - 20, width - 6, size=6.2, max_lines=3, leading=7)
+    pdf.showPage()
+    pdf.save()
+    return buffer.getvalue()
+
+
 def render_delhivery_label(data: dict[str, Any], order: Any | None = None) -> bytes:
     """Draw one exact 100x150mm label page from a Delhivery packing-slip "packages[0]"
     record, enriched with the matching Mumchies OS/Shopify order (product price, order total,
@@ -180,6 +294,34 @@ def render_delhivery_label(data: dict[str, Any], order: Any | None = None) -> by
             order_date = datetime.fromisoformat(str(created).replace("Z", "+00:00")).strftime("%d %b %Y")
         except ValueError:
             order_date = _text(created)
+
+    product_lines: list[str] = []
+    if products:
+        for item in products[:2]:
+            name = _text(getattr(item, "product_name", None))
+            qty = _text(getattr(item, "quantity", None))
+            price = _text(getattr(item, "price", None))
+            if name:
+                product_lines.append(f"{name} | Qty: {qty or '-'}" + (f" | Rs {price}" if price else ""))
+    elif fallback_product:
+        product_lines.append(f"{fallback_product} | Qty: {fallback_qty or '-'}")
+    summary = "   ".join(part for part in (
+        f"Order Total: Rs {order_total}" if order_total else "",
+        f"Weight: {weight}" if weight else "",
+        f"HSN: {hsn_code}" if hsn_code else "",
+    ) if part)
+    return_locality = ", ".join(part for part in (return_city, return_state, return_pin) if part)
+    return_text = ", ".join(part for part in (return_address, return_locality) if part) or "Same as seller"
+    return _render_hierarchical_label({
+        "awb": awb, "pin": pin, "destination": destination or consignee_city,
+        "sort_code": sort_code, "name": consignee_name, "address": consignee_address,
+        "locality": ", ".join(part for part in (consignee_city, consignee_state) if part),
+        "phone": phone, "payment_type": payment_type, "cod_amount": cod_amount,
+        "service_mode": _text(data.get("mot")) or _text(data.get("service_type")) or _text(data.get("mode")),
+        "order_date": order_date, "seller": f"{seller_name}, {seller_address}" if seller_address else seller_name,
+        "order_ref": order_ref, "product_lines": product_lines, "summary": summary,
+        "return_text": return_text,
+    })
 
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=(PAGE_WIDTH, PAGE_HEIGHT))

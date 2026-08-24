@@ -206,12 +206,19 @@ def test_code128_barcode_is_actually_drawn():
 
 
 def test_authoritative_awb_order_reference_weight_and_routing_fields_are_preserved():
-    result = render_delhivery_label(base_package(weight="0.50 Kg"))
+    result = render_delhivery_label(base_package(weight="0.50 Kg", mot="Surface"))
     text = _text(result)
-    for expected in ("38290012345678", "MUM-100234", "Weight: 0.50 Kg", "PNQ/AAA", "Pune Hub"):
+    for expected in ("38290012345678", "MUM-100234", "Weight: 0.50 Kg", "PNQ/AAA", "Pune Hub", "Surface"):
         assert expected in text
     # AWB plus authoritative order reference each produce a Code128 barcode.
     assert _rect_fill_count(result) > 30
+
+
+def test_thermal_hierarchy_keeps_pin_payment_ship_to_seller_contents_and_return_sections():
+    text = _text(render_delhivery_label(base_package(mot="Surface"), order=fake_order()))
+    headings = ["AWB 38290012345678", "PIN 411001", "SHIP TO", "COD", "SELLER / PICKUP", "ORDER MUM-100234", "CONTENTS", "RETURN TO"]
+    positions = [text.index(heading) for heading in headings]
+    assert positions == sorted(positions)
 
 
 def test_barcodes_encode_exact_authoritative_awb_and_order_reference(monkeypatch):

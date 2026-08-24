@@ -28,14 +28,21 @@ def test_dashboard_date_periods_use_ist_business_days() -> None:
     assert (custom_end - custom_start).days == 30
 
 
-def test_order_activity_uses_action_timestamp_and_unique_orders() -> None:
+def test_order_activity_counts_unique_successfully_shipped_orders_only() -> None:
     operations = {
         "old-order": {"human_actions": [
             {"action": "call_logged", "timestamp": "2026-08-09T03:00:00", "operator": "Ajit"},
             {"action": "address_verified", "timestamp": "2026-08-09T04:00:00+00:00", "operator": "Ajit"},
+        ], "timeline_events": [
+            {"action": "courier_booked", "timestamp": "2026-08-09T05:00:00+00:00", "operator": "Ajit"},
+            {"action": "shipment_booked", "timestamp": "2026-08-09T05:01:00+00:00", "operator": "Ajit"},
         ]},
         "outside": {"human_actions": [{"action": "call_logged", "timestamp": "2026-08-08T03:00:00+00:00", "operator": "Ajit"}]},
         "rupesh": {"timeline_events": [{"action": "shipment_booked", "timestamp": "2026-08-09T05:00:00+00:00", "operator": "Rupesh"}]},
+        "preparatory-only": {"timeline_events": [
+            {"action": "package_details_saved", "timestamp": "2026-08-09T05:00:00+00:00", "operator": "Ajit"},
+            {"action": "courier_selected", "timestamp": "2026-08-09T05:01:00+00:00", "operator": "Ajit"},
+        ]},
     }
     result = _order_activity(operations, datetime(2026, 8, 9, tzinfo=timezone.utc), datetime(2026, 8, 10, tzinfo=timezone.utc), {"ajit": "Ajit", "rupesh": "Rupesh"})
     assert result == {"Ajit": {"old-order"}, "Rupesh": {"rupesh"}}
@@ -52,7 +59,7 @@ def test_ndr_activity_is_unique_and_attributed() -> None:
     assert result == {"Ajit": {"case-1"}, "Rupesh": {"case-3"}}
 
 
-def test_team_activity_includes_sushil_only_when_meaningful_activity_exists() -> None:
+def test_team_activity_does_not_count_sushil_preparatory_activity() -> None:
     start = datetime(2026, 8, 9, tzinfo=timezone.utc)
     end = datetime(2026, 8, 10, tzinfo=timezone.utc)
     operators = {"ajit": "Ajit", "sushil": "Sushil", "sushil.login": "Sushil"}
@@ -63,7 +70,7 @@ def test_team_activity_includes_sushil_only_when_meaningful_activity_exists() ->
 
     result = _order_activity(operations, start, end, operators)
 
-    assert result == {"Sushil": {"325829"}}
+    assert result == {}
 
 
 def test_active_operator_roster_includes_zero_activity_users_and_excludes_inactive() -> None:
