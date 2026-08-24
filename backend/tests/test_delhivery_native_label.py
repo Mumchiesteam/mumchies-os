@@ -85,9 +85,9 @@ def test_order_enrichment_adds_price_total_date_and_partial_cod_amount():
     text = _text(result)
     assert "Choco Bites" in text and "Rs 650.0" in text
     assert "Order Total: Rs 1500.0" in text
-    assert "Order Date: 18 Jul 2026" in text
+    assert "Date" in text and "18 Jul 2026" in text
     # Our own partial-COD collectable amount wins over Delhivery's raw cod figure.
-    assert "COD: Rs 250.0" in text
+    assert "COD" in text and "INR 250.0" in text
 
 
 def test_order_enrichment_prepaid_shows_no_cod_amount():
@@ -171,7 +171,7 @@ def test_multiple_products_in_one_field_render_without_crashing():
     ))
     text = _text(result)
     assert "Choco Bites" in text
-    assert "Qty: 3" in text
+    assert "Qty." in text and "3" in text
 
 
 def test_missing_optional_fields_do_not_crash():
@@ -214,9 +214,14 @@ def test_authoritative_awb_order_reference_weight_and_routing_fields_are_preserv
     assert _rect_fill_count(result) > 30
 
 
+def test_provider_surface_mode_code_is_rendered_as_surface():
+    text = _text(render_delhivery_label(base_package(mot="S")))
+    assert "Surface" in text
+
+
 def test_thermal_hierarchy_keeps_pin_payment_ship_to_seller_contents_and_return_sections():
     text = _text(render_delhivery_label(base_package(mot="Surface"), order=fake_order()))
-    headings = ["AWB 38290012345678", "PIN 411001", "SHIP TO", "COD", "SELLER / PICKUP", "ORDER MUM-100234", "CONTENTS", "RETURN TO"]
+    headings = ["AWB# 38290012345678", "Ship to -", "COD", "Seller:", "MUM-100234", "Product Name", "Return Address:"]
     positions = [text.index(heading) for heading in headings]
     assert positions == sorted(positions)
 

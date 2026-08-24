@@ -236,6 +236,143 @@ def _render_hierarchical_label(fields: dict[str, Any]) -> bytes:
     return buffer.getvalue()
 
 
+def _render_portal_reference_label(fields: dict[str, Any]) -> bytes:
+    """Reproduce Delhivery One's A6 information architecture on exact 100x150mm stock."""
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=(PAGE_WIDTH, PAGE_HEIGHT))
+    edge = 7.0
+    left, right, bottom, top = edge, PAGE_WIDTH - edge, edge, PAGE_HEIGHT - edge
+    width = right - left
+    split = left + width * 0.60
+
+    def rule(y: float, x1: float = left, x2: float = right, weight: float = 0.75) -> None:
+        pdf.setLineWidth(weight)
+        pdf.line(x1, y, x2, y)
+
+    def wrapped(text: str, x: float, y: float, max_width: float, *, size: float = 7,
+                font: str = _FONT, max_lines: int = 3, leading: float = 8.2) -> float:
+        for line in _wrap_lines(text, font, size, max_width, max_lines):
+            pdf.setFont(font, size)
+            pdf.drawString(x, y, line)
+            y -= leading
+        return y
+
+    pdf.setLineWidth(1.05)
+    pdf.rect(left, bottom, width, top - bottom, stroke=1, fill=0)
+
+    # Portal header.
+    header_bottom = top - 36
+    pdf.setFont(_FONT, 9)
+    pdf.drawString(left + 4, top - 20, _truncate_to_width(fields["seller_name"], _FONT, 9, width * 0.48))
+    pdf.setFont(_FONT_BOLD, 14)
+    pdf.drawRightString(right - 4, top - 20, "DELHIVERY")
+    rule(header_bottom, left + 4, right - 4, 0.65)
+
+    # AWB block: text, dominant barcode, then PIN / human-readable AWB / sort code routing row.
+    awb_bottom = header_bottom - 78
+    pdf.setFont(_FONT, 9)
+    pdf.drawString(left + 4, header_bottom - 15, f"AWB# {fields['awb']}")
+    barcode_area_width = width - 66
+    barcode = Code128(
+        fields["awb"], barHeight=39,
+        barWidth=max(0.45, min(1.05, (barcode_area_width - 20) / max(len(fields["awb"]) * 11, 1))),
+    )
+    # Ten-point quiet zones on both sides of the centred scan target.
+    barcode_x = left + 33 + max((barcode_area_width - barcode.width) / 2, 0)
+    barcode.drawOn(pdf, barcode_x, header_bottom - 60)
+    pdf.setFont(_FONT, 6.5)
+    pdf.drawString(left + 4, awb_bottom + 5, fields["pin"])
+    pdf.setFont(_FONT_BOLD, 6.5)
+    pdf.drawCentredString((left + right) / 2, awb_bottom + 5, f"AWB# {fields['awb']}")
+    pdf.setFont(_FONT, 6.5)
+    pdf.drawRightString(right - 4, awb_bottom + 5, _truncate_to_width(fields["sort_code"], _FONT, 6.5, width * 0.24))
+    rule(awb_bottom, left + 4, right - 4, 0.65)
+
+    # Ship-to and payment/date block with the same approximate 60/40 portal split.
+    address_bottom = awb_bottom - 83
+    pdf.line(split, awb_bottom - 4, split, address_bottom + 5)
+    x = left + 4
+    pdf.setFont(_FONT, 9)
+    pdf.drawString(x, awb_bottom - 17, "Ship to -")
+    pdf.setFont(_FONT_BOLD, 9)
+    pdf.drawString(x + 34, awb_bottom - 17, _truncate_to_width(fields["name"], _FONT_BOLD, 9, split - x - 38))
+    ay = wrapped(fields["address"], x, awb_bottom - 29, split - x - 4, size=7, max_lines=3, leading=8)
+    ay = wrapped(fields["destination"], x, ay - 1, split - x - 4, size=8.2, font=_FONT_BOLD, max_lines=2, leading=9.5)
+    pdf.setFont(_FONT_BOLD, 9.5)
+    pdf.drawString(x, max(address_bottom + 10, ay - 1), f"PIN - {fields['pin']}")
+
+    rx = split + 4
+    payment_heading = fields["payment_type"]
+    if fields["service_mode"]:
+        payment_heading = f"{payment_heading} - {fields['service_mode']}" if payment_heading else fields["service_mode"]
+    pdf.setFont(_FONT_BOLD, 7.5)
+    pdf.drawString(rx, awb_bottom - 29, _truncate_to_width(payment_heading, _FONT_BOLD, 7.5, right - rx - 4))
+    amount = fields["cod_amount"] or fields["order_total"]
+    if amount:
+        pdf.setFont(_FONT_BOLD, 9)
+        pdf.drawString(rx, awb_bottom - 43, _truncate_to_width(f"INR {amount}", _FONT_BOLD, 9, right - rx - 4))
+    rule(awb_bottom - 49, rx, right - 4, 0.55)
+    if fields["order_date"]:
+        pdf.setFont(_FONT_BOLD, 6.5)
+        pdf.drawString(rx, awb_bottom - 61, "Date")
+        pdf.setFont(_FONT, 6.2)
+        pdf.drawString(rx, awb_bottom - 71, _truncate_to_width(fields["order_date"], _FONT, 6.2, right - rx - 4))
+    rule(address_bottom, left + 4, right - 4, 0.65)
+
+    # Seller and order reference barcode row.
+    seller_bottom = address_bottom - 51
+    pdf.setFont(_FONT, 6.8)
+    pdf.drawString(left + 4, address_bottom - 16, "Seller:")
+    pdf.setFont(_FONT_BOLD, 6.8)
+    pdf.drawString(left + 31, address_bottom - 16, _truncate_to_width(fields["seller_name"], _FONT_BOLD, 6.8, split - left - 35))
+    wrapped(fields["seller_address"], left + 4, address_bottom - 28, split - left - 8, size=6.3, max_lines=3, leading=7.2)
+    if fields["order_ref"]:
+        pdf.setFont(_FONT, 9)
+        pdf.drawString(split + 2, address_bottom - 15, _truncate_to_width(fields["order_ref"], _FONT, 9, right - split - 6))
+        order_width = right - split - 12
+        order_barcode = Code128(
+            fields["order_ref"], barHeight=22,
+            barWidth=max(0.4, min(0.8, (order_width - 12) / max(len(fields["order_ref"]) * 11, 1))),
+        )
+        order_barcode.drawOn(pdf, split + 6 + max((order_width - order_barcode.width) / 2, 0), address_bottom - 42)
+    rule(seller_bottom, left + 4, right - 4, 0.65)
+
+    # Portal-style product table, followed by deliberate flexible whitespace for long products.
+    product_top = seller_bottom
+    pdf.setFont(_FONT_BOLD, 6.3)
+    pdf.drawString(left + 4, product_top - 12, "Product Name")
+    pdf.drawRightString(right - 69, product_top - 12, "Qty.")
+    pdf.drawRightString(right - 36, product_top - 12, "Price")
+    pdf.drawRightString(right - 4, product_top - 12, "Total")
+    py = product_top - 23
+    for product in fields["products"][:4]:
+        py = wrapped(product["name"], left + 4, py, width - 96, size=6.2, max_lines=2, leading=7.2)
+        pdf.setFont(_FONT, 6.2)
+        pdf.drawRightString(right - 69, py + 7.2, product["qty"])
+        pdf.drawRightString(right - 36, py + 7.2, product["price"])
+        pdf.drawRightString(right - 4, py + 7.2, product["total"])
+
+    # Compact return footer, fixed to the bottom like Delhivery One.
+    footer_top = bottom + 24
+    summary = "   ".join(part for part in (
+        f"Order Total: Rs {fields['order_total']}" if fields["order_total"] else "",
+        f"Weight: {fields['weight']}" if fields["weight"] else "",
+        f"HSN: {fields['hsn_code']}" if fields["hsn_code"] else "",
+    ) if part)
+    if summary:
+        pdf.setFont(_FONT_BOLD, 5.8)
+        pdf.drawString(left + 4, footer_top + 7, _truncate_to_width(summary, _FONT_BOLD, 5.8, width - 8))
+    rule(footer_top, left + 4, right - 4, 0.65)
+    pdf.setFont(_FONT, 5.8)
+    return_text = f"Return Address: {fields['return_text']}"
+    wrapped(return_text, left + 4, footer_top - 9, width - 45, size=5.2, max_lines=2, leading=6)
+    pdf.drawRightString(right - 4, bottom + 4, "Page 1 of 1")
+
+    pdf.showPage()
+    pdf.save()
+    return buffer.getvalue()
+
+
 def render_delhivery_label(data: dict[str, Any], order: Any | None = None) -> bytes:
     """Draw one exact 100x150mm label page from a Delhivery packing-slip "packages[0]"
     record, enriched with the matching Mumchies OS/Shopify order (product price, order total,
@@ -251,7 +388,7 @@ def render_delhivery_label(data: dict[str, Any], order: Any | None = None) -> by
         raise DelhiveryLabelError(f"Delhivery label data is missing required field(s): {', '.join(missing)}.")
 
     awb = _text(data.get("wbn"))
-    seller_name = "Mumchies"
+    seller_name = _text(data.get("snm")) or "Mumchies"
     seller_address = _text(data.get("sadd"))
     consignee_name = _text(data.get("name"))
     consignee_address = _text(data.get("address"))
@@ -294,6 +431,12 @@ def render_delhivery_label(data: dict[str, Any], order: Any | None = None) -> by
             order_date = datetime.fromisoformat(str(created).replace("Z", "+00:00")).strftime("%d %b %Y")
         except ValueError:
             order_date = _text(created)
+    elif data.get("cd"):
+        raw_date = _text(data.get("cd"))
+        try:
+            order_date = datetime.fromisoformat(raw_date.replace("Z", "+00:00")).strftime("%d-%b-%Y | %I:%M %p")
+        except ValueError:
+            order_date = raw_date
 
     product_lines: list[str] = []
     if products:
@@ -312,15 +455,30 @@ def render_delhivery_label(data: dict[str, Any], order: Any | None = None) -> by
     ) if part)
     return_locality = ", ".join(part for part in (return_city, return_state, return_pin) if part)
     return_text = ", ".join(part for part in (return_address, return_locality) if part) or "Same as seller"
-    return _render_hierarchical_label({
+    product_rows: list[dict[str, str]] = []
+    if products:
+        for item in products[:4]:
+            name = _text(getattr(item, "product_name", None))
+            qty = _text(getattr(item, "quantity", None))
+            price = _text(getattr(item, "price", None))
+            if name:
+                try:
+                    total = _text(float(price) * float(qty)) if price and qty else price
+                except ValueError:
+                    total = price
+                product_rows.append({"name": name, "qty": qty or "-", "price": f"Rs {price}" if price else "-", "total": f"Rs {total}" if total else "-"})
+    elif fallback_product:
+        product_rows.append({"name": fallback_product, "qty": fallback_qty or "-", "price": "-", "total": "-"})
+    service_mode = _text(data.get("mot")) or _text(data.get("service_type")) or _text(data.get("mode"))
+    service_mode = {"s": "Surface", "e": "Express"}.get(service_mode.casefold(), service_mode)
+    return _render_portal_reference_label({
         "awb": awb, "pin": pin, "destination": destination or consignee_city,
         "sort_code": sort_code, "name": consignee_name, "address": consignee_address,
-        "locality": ", ".join(part for part in (consignee_city, consignee_state) if part),
-        "phone": phone, "payment_type": payment_type, "cod_amount": cod_amount,
-        "service_mode": _text(data.get("mot")) or _text(data.get("service_type")) or _text(data.get("mode")),
-        "order_date": order_date, "seller": f"{seller_name}, {seller_address}" if seller_address else seller_name,
-        "order_ref": order_ref, "product_lines": product_lines, "summary": summary,
-        "return_text": return_text,
+        "payment_type": payment_type.upper() if payment_type else "", "cod_amount": cod_amount,
+        "service_mode": service_mode,
+        "order_date": order_date, "seller_name": seller_name, "seller_address": seller_address,
+        "order_ref": order_ref, "products": product_rows, "order_total": order_total,
+        "weight": weight, "hsn_code": hsn_code, "return_text": return_text,
     })
 
     buffer = BytesIO()
