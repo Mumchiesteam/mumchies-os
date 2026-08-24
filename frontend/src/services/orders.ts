@@ -613,8 +613,8 @@ export const shouldRemoveCleanupRecord = (result: ShiprocketCancellationResult) 
 
 export const formatMoney = toMoney
 
-export async function getOrderOperations(orderId: string): Promise<OrderOperations> {
-  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/operations`)
+export async function getOrderOperations(orderId: string, signal?: AbortSignal): Promise<OrderOperations> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/operations`, { signal })
   if (!response.ok) {
     throw new Error('Could not load order operations.')
   }
@@ -784,7 +784,7 @@ export async function saveOrderPackage(orderId: string, payload: {
   return response.json()
 }
 
-export async function getBookingEligibility(orderId: string): Promise<{
+export async function getBookingEligibility(orderId: string, signal?: AbortSignal): Promise<{
   provider: string
   eligible: boolean
   missing_requirements: string[]
@@ -794,7 +794,7 @@ export async function getBookingEligibility(orderId: string): Promise<{
   shipment_status: string | null
   shipment: Order['shipment']
 }> {
-  const response = await apiFetch(`${apiBase}/api/v1/couriers/shiprocket/orders/${orderId}/eligibility`)
+  const response = await apiFetch(`${apiBase}/api/v1/couriers/shiprocket/orders/${orderId}/eligibility`, { signal })
   if (!response.ok) {
     throw new Error('Could not check booking eligibility.')
   }

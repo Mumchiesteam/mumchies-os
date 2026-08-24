@@ -7,6 +7,16 @@ describe('Orders latency regressions', () => {
     expect(dependencyLine).not.toContain('selectedOrderId')
   })
 
+  it('loads drawer reads in parallel and aborts the prior order on switch', () => {
+    const parallelRead = source.indexOf('const [ops, eligibility]')
+    const flow = source.slice(source.lastIndexOf('useEffect', parallelRead), source.indexOf('const openOrder', parallelRead))
+    expect(flow).toContain('const controller = new AbortController()')
+    expect(flow).toContain('await Promise.all([')
+    expect(flow).toContain('getOrderOperations(orderId, controller.signal)')
+    expect(flow).toContain('getBookingEligibility(orderId, controller.signal)')
+    expect(flow).toContain('return () => controller.abort()')
+  })
+
   it('does not wait for full Orders reload before call-save success', () => {
     const flow = source.slice(source.indexOf('const saveCallLog'), source.indexOf('const saveAddressConfirmation'))
     expect(flow).toContain("setNotice('Call attempt saved')")

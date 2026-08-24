@@ -422,7 +422,7 @@ function App() {
 
   useEffect(() => {
     if (!selectedOrder) return
-    let active = true
+    const controller = new AbortController()
     const generation = drawerGenerationRef.current
     const orderId = selectedOrder.internalId
     void (async () => {
@@ -433,8 +433,11 @@ function App() {
       setSelectedCourierId(null)
       setCourierError('')
       setCancellationPreflight(null)
-      const ops = await getOrderOperations(orderId)
-      if (!active || !isCurrentDrawerRequest({ orderId, generation }, selectedOrderId, drawerGenerationRef.current)) return
+      const [ops, eligibility] = await Promise.all([
+        getOrderOperations(orderId, controller.signal),
+        getBookingEligibility(orderId, controller.signal),
+      ])
+      if (controller.signal.aborted || !isCurrentDrawerRequest({ orderId, generation }, selectedOrderId, drawerGenerationRef.current)) return
       setOperations(ops)
       applyCanonicalShipment(selectedOrder.internalId, ops.shipment)
       setCallResult('No Answer')
@@ -453,15 +456,13 @@ function App() {
       setAddressDraftGeneration(generation)
       setAddressInitializing(false)
       setSelectedCourierId(ops.selected_courier?.courier_id ?? null)
-      const eligibility = await getBookingEligibility(orderId)
-      if (!active || !isCurrentDrawerRequest({ orderId, generation }, selectedOrderId, drawerGenerationRef.current)) return
       setBookingEligibility(eligibility)
     })().catch((err) => {
-      if (!active) return
+      if (controller.signal.aborted) return
       setOperations(null)
       setCourierError((err as Error).message || 'Could not load order operations and courier eligibility.')
     })
-    return () => { active = false }
+    return () => controller.abort()
     // Drawer refresh is keyed only by identity. Local row updates after a save
     // must not re-run Shopify-backed drawer reads.
     // eslint-disable-next-line react-hooks/exhaustive-deps
