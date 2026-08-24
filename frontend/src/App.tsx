@@ -833,12 +833,12 @@ function App() {
     }
   }
 
-  const retrieveLabel = (action: 'download' | 'print') => {
+  const retrieveLabel = (action: 'print_4x6' | 'original') => {
     if (!selectedOrder) return
     setCourierError('')
     setLabelLoading(true)
     const opened = window.open(
-      shippingLabelUrl(selectedOrder.internalId, action === 'print' ? 'inline' : 'attachment'),
+      shippingLabelUrl(selectedOrder.internalId, 'inline', action === 'print_4x6'),
       '_blank',
     )
     if (opened) opened.opener = null
@@ -1034,8 +1034,8 @@ function App() {
           onCancelShipment={() => void cancelShipment()}
           onRetryShiprocketCleanup={() => { if (selectedOrder) void retryShiprocketCleanup(selectedOrder.internalId).then(result => { if (['cancelled', 'not_applicable', 'resolved'].includes(result.status)) setCourierError(''); else setCourierError(result.error || `Shiprocket cleanup: ${result.status}`); setOperations(current => current) }).catch(error => setCourierError(error.message)) }}
           onSyncShopifyFulfillment={() => void syncFulfillment()}
-          onDownloadLabel={() => retrieveLabel('download')}
-          onPrintLabel={() => retrieveLabel('print')}
+          onPrintLabel={() => retrieveLabel('print_4x6')}
+          onOpenOriginalLabel={() => retrieveLabel('original')}
           shipmentHistoryPrivileged={['owner', 'admin'].includes(authUser?.role || '')}
         />
       )}
@@ -1161,8 +1161,8 @@ const OrderDrawer = memo(function OrderDrawer({
   onCancelShipment,
   onRetryShiprocketCleanup,
   onSyncShopifyFulfillment,
-  onDownloadLabel,
   onPrintLabel,
+  onOpenOriginalLabel,
   shipmentHistoryPrivileged,
 }: {
   order: Order
@@ -1244,8 +1244,8 @@ const OrderDrawer = memo(function OrderDrawer({
   onCancelShipment: () => void
   onRetryShiprocketCleanup: () => void
   onSyncShopifyFulfillment: () => void
-  onDownloadLabel: () => void
   onPrintLabel: () => void
+  onOpenOriginalLabel: () => void
   shipmentHistoryPrivileged: boolean
 }) {
   const [packageDraft, setPackageDraft] = useState(() => ({
@@ -1632,12 +1632,12 @@ const OrderDrawer = memo(function OrderDrawer({
           {shipment?.awb ? (
             <>
               {shipment.provider ? (
-                <button disabled={labelLoading} onClick={onDownloadLabel} className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-semibold text-white disabled:opacity-60">
+                <button disabled={labelLoading} onClick={onPrintLabel} className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-semibold text-white disabled:opacity-60">
                   <Icon name="truck" size={16} />
-                  {labelLoading ? 'Preparing 4×6 label…' : 'Download 4×6 Label'}
+                  {labelLoading ? 'Preparing 4×6 label…' : 'Print 4×6 Label'}
                 </button>
               ) : <div className="flex flex-1 items-center justify-center rounded-lg bg-slate-100 px-3 py-2.5 text-sm font-semibold text-slate-500">Provider label unavailable</div>}
-              <button disabled={labelLoading} onClick={onPrintLabel} className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700 disabled:opacity-60">Open / Print Label</button>
+              <button disabled={labelLoading} onClick={onOpenOriginalLabel} className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700 disabled:opacity-60">Open Original Label</button>
               <button onClick={() => window.open(shipment.tracking_url || `${apiBase}/api/v1/couriers/shiprocket/orders/${order.internalId}/tracking`, '_blank', 'noopener,noreferrer')} className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-700">Open Tracking</button>
               <button disabled={shipmentRefreshLoading || ['picked_up', 'in_transit', 'out_for_delivery', 'delivered', 'rto'].includes(shipment.normalized_status || '')} onClick={onCancelShipment} className="rounded-lg border border-rose-200 px-3 py-2.5 text-sm font-semibold text-rose-700 disabled:opacity-40">Cancel Shipment</button>
             </>

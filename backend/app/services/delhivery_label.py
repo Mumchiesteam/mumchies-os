@@ -1,4 +1,4 @@
-"""Render a compact A6 Delhivery shipping label directly from Delhivery's own documented
+"""Render a native 100x150mm Delhivery shipping label from Delhivery's documented
 packing-slip JSON (GET /api/p/packing_slip?wbns=<AWB>, no pdf=True) - no A4 PDF is fetched,
 cropped, or transformed. See DelhiveryService.label_data() for the fetch side.
 """
@@ -10,13 +10,14 @@ from io import BytesIO
 from typing import Any
 
 from reportlab.graphics.barcode.code128 import Code128
+from reportlab.lib.units import mm
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas
 
-# True A6 (105mm x 148mm), matching the Delhivery One portal's own compact label - not the
-# literal 4x6in (288x432pt) size, per the desired portal output (~298x420pt).
-PAGE_WIDTH = 298.0
-PAGE_HEIGHT = 420.0
+# Exact TSC TE244 stock size. ReportLab uses PostScript points, so retaining the millimetre
+# conversion makes Actual Size printing 100mm x 150mm rather than rounded A6 or 4x6 inches.
+PAGE_WIDTH = 100 * mm
+PAGE_HEIGHT = 150 * mm
 MARGIN = 10.0
 CONTENT_WIDTH = PAGE_WIDTH - 2 * MARGIN
 
@@ -122,7 +123,7 @@ class _LabelCanvas:
 
 
 def render_delhivery_label(data: dict[str, Any], order: Any | None = None) -> bytes:
-    """Draw one A6 (298x420pt) label page from a single Delhivery packing-slip "packages[0]"
+    """Draw one exact 100x150mm label page from a Delhivery packing-slip "packages[0]"
     record, enriched with the matching Mumchies OS/Shopify order (product price, order total,
     order date, partial-COD-aware collectable amount) where Delhivery's JSON doesn't provide
     them. `order` is best-effort: if it's None (lookup failed/unavailable) the label still
@@ -151,6 +152,7 @@ def render_delhivery_label(data: dict[str, Any], order: Any | None = None) -> by
     return_state = _text(data.get("rst"))
     return_pin = _text(data.get("rpin"))
     hsn_code = _text(data.get("hsn_code"))
+    weight = _text(data.get("weight")) or _text(data.get("wt"))
     order_ref = _text(data.get("oid")) or (_text(getattr(order, "order_number", None)) if order is not None else "")
 
     # Payment mode / collectable amount: prefer Mumchies OS's own partial-COD-aware order data;
@@ -245,6 +247,8 @@ def render_delhivery_label(data: dict[str, Any], order: Any | None = None) -> by
             c.line(f"Qty: {fallback_qty}", size=8, gap_after=6)
     if order_total:
         c.line(f"Order Total: Rs {order_total}", font=_FONT_BOLD, size=8, gap_after=8)
+    if weight:
+        c.line(f"Weight: {weight}", size=7, gap_after=7)
     if hsn_code:
         c.line(f"HSN: {hsn_code}", size=6.5, gap_after=8)
     c.rule()
@@ -259,7 +263,10 @@ def render_delhivery_label(data: dict[str, Any], order: Any | None = None) -> by
     c.block(return_text or "Same as seller", size=6.5, max_lines=2, leading=8, gap_after=2)
 
     if order_ref:
-        c.line(f"Order Ref: {order_ref}", size=7, gap_after=6)
+        c.line(f"Order Ref: {order_ref}", font=_FONT_BOLD, size=7, gap_after=6)
+        order_barcode = Code128(order_ref, barHeight=16, barWidth=max(0.35, min(0.7, (CONTENT_WIDTH - 4) / max(len(order_ref) * 11, 1))))
+        order_barcode.drawOn(pdf, MARGIN + max((CONTENT_WIDTH - order_barcode.width) / 2, 0), c.y - 16)
+        c.gap(19)
     if order_date:
         c.line(f"Order Date: {order_date}", size=7, gap_after=8)
 

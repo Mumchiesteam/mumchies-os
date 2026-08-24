@@ -13,7 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from app.db.base import Base
 from app.models.shiprocket import ShiprocketShipment
 from app.repositories.shiprocket import upsert_shipment
-from app.services import label_printing
+from app.services import delhivery_label as label_module, label_printing
 from app.services.delhivery import DelhiveryError
 from app.services.delhivery_label import (
     CONTENT_WIDTH,
@@ -101,7 +101,7 @@ def test_order_enrichment_prepaid_shows_no_cod_amount():
 def test_missing_order_omits_enrichment_fields_without_crashing():
     result = render_delhivery_label(base_package())
     box = _page(result).mediabox
-    assert (float(box.width), float(box.height)) == (298.0, 420.0)
+    assert (float(box.width), float(box.height)) == pytest.approx((PAGE_WIDTH, PAGE_HEIGHT))
     assert "Order Total" not in _text(result)
 
 
@@ -118,11 +118,12 @@ def _rect_fill_count(pdf_bytes: bytes, index: int = 0) -> int:
     return content.count(b" re")
 
 
-def test_page_is_exact_a6_dimensions():
+def test_page_is_exact_100_by_150_mm_dimensions():
     result = render_delhivery_label(base_package())
     box = _page(result).mediabox
-    assert (float(box.width), float(box.height)) == (298.0, 420.0)
-    assert (PAGE_WIDTH, PAGE_HEIGHT) == (298.0, 420.0)
+    assert float(box.width) == pytest.approx(100 / 25.4 * 72)
+    assert float(box.height) == pytest.approx(150 / 25.4 * 72)
+    assert (PAGE_WIDTH, PAGE_HEIGHT) == pytest.approx((100 / 25.4 * 72, 150 / 25.4 * 72))
 
 
 def test_cod_label_shows_amount():
@@ -177,7 +178,7 @@ def test_missing_optional_fields_do_not_crash():
     minimal = {"wbn": "AWB1", "barcode": "AWB1", "name": "Cust", "address": "Addr", "pin": "110001"}
     result = render_delhivery_label(minimal)
     box = _page(result).mediabox
-    assert (float(box.width), float(box.height)) == (298.0, 420.0)
+    assert (float(box.width), float(box.height)) == pytest.approx((PAGE_WIDTH, PAGE_HEIGHT))
 
 
 def test_missing_mandatory_awb_raises_clear_error():
@@ -204,6 +205,30 @@ def test_code128_barcode_is_actually_drawn():
     assert _rect_fill_count(with_barcode) > 15
 
 
+def test_authoritative_awb_order_reference_weight_and_routing_fields_are_preserved():
+    result = render_delhivery_label(base_package(weight="0.50 Kg"))
+    text = _text(result)
+    for expected in ("38290012345678", "MUM-100234", "Weight: 0.50 Kg", "PNQ/AAA", "Pune Hub"):
+        assert expected in text
+    # AWB plus authoritative order reference each produce a Code128 barcode.
+    assert _rect_fill_count(result) > 30
+
+
+def test_barcodes_encode_exact_authoritative_awb_and_order_reference(monkeypatch):
+    encoded: list[str] = []
+    original = label_module.Code128
+
+    def capture(value, *args, **kwargs):
+        encoded.append(value)
+        return original(value, *args, **kwargs)
+
+    monkeypatch.setattr(label_module, "Code128", capture)
+
+    render_delhivery_label(base_package(wbn="38290012345678", oid="MUM-100234"))
+
+    assert encoded == ["38290012345678", "MUM-100234"]
+
+
 def test_shiprocket_labels_are_never_routed_through_delhivery_rendering():
     writer = PdfWriter()
     writer.add_blank_page(width=288, height=432)
@@ -211,14 +236,14 @@ def test_shiprocket_labels_are_never_routed_through_delhivery_rendering():
     writer.write(output)
     already_4x6 = output.getvalue()
     # Shiprocket keeps going through print_ready_pdf's existing box-detection path untouched -
-    # it must never end up on the Delhivery-only 298x420 A6 canvas.
+    # it must never end up on the Delhivery-only 100x150mm canvas.
     result = print_ready_pdf(already_4x6)
     box = _page(result).mediabox
     assert (float(box.width), float(box.height)) == (288.0, 432.0)
 
 
 @pytest.mark.anyio
-async def test_delhivery_batch_renders_native_a6_pdf(db, monkeypatch, tmp_path):
+async def test_delhivery_batch_renders_native_100_by_150_pdf_without_provider_mutation(db, monkeypatch, tmp_path):
     monkeypatch.setattr(label_printing, "LABEL_DIR", tmp_path)
 
     async def fake_order_lookup(_order_id):
@@ -229,12 +254,16 @@ async def test_delhivery_batch_renders_native_a6_pdf(db, monkeypatch, tmp_path):
     async def fake_label_data(_self, _waybill):
         return base_package()
 
+    async def forbidden_mutation(*_args, **_kwargs):
+        raise AssertionError("Native label creation must not make a provider mutation")
+
     monkeypatch.setattr(label_printing.DelhiveryService, "label_data", fake_label_data)
+    monkeypatch.setattr(label_printing.DelhiveryService, "_post", forbidden_mutation)
     upsert_shipment(db, "d1", provider="delhivery", awb="38290012345678", booking_status="booked", label_print_status="not_printed")
     batch = await create_batch(db, ["d1"], "Operator")
     pdf_bytes = (tmp_path / f"{batch.id}.pdf").read_bytes()
     box = _page(pdf_bytes).mediabox
-    assert (float(box.width), float(box.height)) == (298.0, 420.0)
+    assert (float(box.width), float(box.height)) == pytest.approx((PAGE_WIDTH, PAGE_HEIGHT))
     assert db.get(ShiprocketShipment, "d1").label_print_status == "awaiting_confirmation"
 
 
@@ -259,7 +288,7 @@ async def test_delhivery_batch_with_multiple_labels_preserves_order_and_count(db
     assert len(reader.pages) == 3
     for page in reader.pages:
         box = page.mediabox
-        assert (float(box.width), float(box.height)) == (298.0, 420.0)
+        assert (float(box.width), float(box.height)) == pytest.approx((PAGE_WIDTH, PAGE_HEIGHT))
 
 
 @pytest.mark.anyio

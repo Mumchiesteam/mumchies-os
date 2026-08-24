@@ -980,8 +980,8 @@ export async function downloadShippingLabel(orderId: string): Promise<Blob> {
   return response.blob()
 }
 
-export function shippingLabelUrl(orderId: string, disposition: 'attachment' | 'inline' = 'attachment'): string {
-  return `${apiBase}/api/v1/orders/${orderId}/shipment/label?disposition=${disposition}`
+export function shippingLabelUrl(orderId: string, disposition: 'attachment' | 'inline' = 'attachment', printReady = false): string {
+  return `${apiBase}/api/v1/orders/${orderId}/shipment/label?disposition=${disposition}&print_ready=${printReady}`
 }
 
 export async function validateAddress(orderId: string, payload: Record<string, string>): Promise<{ valid: boolean; status: string; blockers: string[]; warnings: string[]; shiprocket_confidence_score: number | null; shiprocket_confidence_category: string | null; shiprocket_message: string }> {

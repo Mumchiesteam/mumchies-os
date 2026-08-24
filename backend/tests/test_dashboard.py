@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.api.routes import dashboard as dashboard_route
-from app.api.routes.dashboard import _business_metrics, _ndr_activity, _order_activity, _period
+from app.api.routes.dashboard import _active_operator_roster, _business_metrics, _ndr_activity, _order_activity, _period
 from app.schemas.orders import OrderProduct, ShopifyOrder
 
 
@@ -64,6 +64,27 @@ def test_team_activity_includes_sushil_only_when_meaningful_activity_exists() ->
     result = _order_activity(operations, start, end, operators)
 
     assert result == {"Sushil": {"325829"}}
+
+
+def test_active_operator_roster_includes_zero_activity_users_and_excludes_inactive() -> None:
+    users = [
+        SimpleNamespace(display_name="Sushil", username="sushil.login", is_active=True),
+        SimpleNamespace(display_name="Ajit", username="ajit", is_active=True),
+        SimpleNamespace(display_name="Rupesh", username="rupesh", is_active=True),
+        SimpleNamespace(display_name="Former", username="former", is_active=False),
+    ]
+
+    roster, identities = _active_operator_roster(users)
+    activity = {"Sushil": {"325829", "325830"}}
+    team = [{"operator": name, "orders_actioned": len(activity.get(name, set())), "ndrs_actioned": 0} for name in roster]
+
+    assert team == [
+        {"operator": "Ajit", "orders_actioned": 0, "ndrs_actioned": 0},
+        {"operator": "Rupesh", "orders_actioned": 0, "ndrs_actioned": 0},
+        {"operator": "Sushil", "orders_actioned": 2, "ndrs_actioned": 0},
+    ]
+    assert "former" not in identities
+    assert len(set().union(*activity.values())) == 2
 
 
 def test_business_metrics_payment_repeat_cancelled_and_products() -> None:

@@ -69,6 +69,18 @@ def _operator(value: object, operators: dict[str, str]) -> str | None:
     return operators.get(str(value or "").strip().casefold())
 
 
+def _active_operator_roster(users: list[User]) -> tuple[list[str], dict[str, str]]:
+    roster = sorted({user.display_name.strip() for user in users if user.is_active and user.display_name.strip()}, key=str.casefold)
+    identities = {
+        alias.strip().casefold(): user.display_name.strip()
+        for user in users
+        if user.is_active and user.display_name.strip()
+        for alias in (user.display_name, user.username)
+        if alias and alias.strip()
+    }
+    return roster, identities
+
+
 def _order_activity(operations: dict[str, dict], start: datetime, end: datetime, operators: dict[str, str]) -> dict[str, set[str]]:
     result: dict[str, set[str]] = defaultdict(set)
     for order_id, record in operations.items():
@@ -129,13 +141,8 @@ def _business_metrics(orders: list, actioned_ids: set[str]) -> dict[str, object]
 
 async def _build_dashboard(preset: str, start_at: datetime, end_at: datetime, label: str, db: Session) -> dict[str, object]:
     operations = OrderOperationsStore.all()
-    users = db.scalars(select(User)).all()
-    operators = {
-        alias.strip().casefold(): user.display_name.strip()
-        for user in users
-        for alias in (user.display_name, user.username)
-        if alias and user.display_name.strip()
-    }
+    users = list(db.scalars(select(User).where(User.is_active.is_(True))).all())
+    roster, operators = _active_operator_roster(users)
     order_activity = _order_activity(operations, start_at, end_at, operators)
     ndr_events = db.scalars(select(NDREvent).where(NDREvent.created_at >= start_at, NDREvent.created_at < end_at)).all()
     ndr_activity = _ndr_activity(list(ndr_events), start_at, end_at, operators)
@@ -166,10 +173,9 @@ async def _build_dashboard(preset: str, start_at: datetime, end_at: datetime, la
         # that expensive provider workflow when App also loaded Reconciliation on startup.
         "reconciliation_exceptions": None,
     }
-    active_operators = sorted(set(order_activity) | set(ndr_activity), key=str.casefold)
     team = [
         {"operator": name, "orders_actioned": len(order_activity[name]), "ndrs_actioned": len(ndr_activity[name])}
-        for name in active_operators
+        for name in roster
     ]
     return {
         "period": {"preset": preset, "start": start_at.astimezone(IST).date().isoformat(), "end": (end_at.astimezone(IST).date() - timedelta(days=1)).isoformat(), "label": label},

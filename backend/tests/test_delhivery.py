@@ -347,6 +347,28 @@ def test_provider_label_endpoint_proxies_exact_official_bytes(monkeypatch, sqlit
     assert inline_response.headers["content-disposition"] == 'inline; filename="delhivery-322700-WB1.pdf"'
 
 
+def test_print_ready_label_is_primary_path_and_original_remains_available(monkeypatch, sqlite_session):
+    from app.services.label_printing import LabelService
+
+    normalized = b"%PDF-1.7\nnormalized-100x150"
+    original = b"%PDF-1.7\nprovider-original"
+    upsert_shipment(sqlite_session, "labels", provider="delhivery", provider_order_id="325844", awb="AWB1", booking_status="booked")
+
+    async def print_ready(_self, _shipment): return normalized
+    async def provider_label(_self, _awb): return Response(None, content=original, headers={"content-type": "application/pdf"})
+    monkeypatch.setattr(LabelService, "print_ready", print_ready)
+    monkeypatch.setattr(DelhiveryService, "label", provider_label)
+    app = FastAPI(); app.include_router(orders_router, prefix="/api/v1")
+    app.dependency_overrides[get_db] = lambda: sqlite_session
+    client = TestClient(app)
+
+    primary = client.get("/api/v1/orders/labels/shipment/label?disposition=inline&print_ready=true")
+    fallback = client.get("/api/v1/orders/labels/shipment/label?disposition=inline&print_ready=false")
+
+    assert primary.content == normalized
+    assert fallback.content == original
+
+
 @pytest.mark.anyio
 async def test_cancellation_contract(monkeypatch):
     client = install(monkeypatch, [Response({"status": True})])

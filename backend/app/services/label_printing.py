@@ -125,7 +125,7 @@ async def _matching_shopify_order(order_id: str):
 
 
 async def _print_ready_page(shipment: ShiprocketShipment) -> bytes:
-    """Dispatch per-provider label preparation. Delhivery is rendered natively from Delhivery's
+    """Dispatch per-provider label preparation. Delhivery is rendered natively at 100x150mm from Delhivery's
     own documented packing-slip JSON (no A4 PDF is fetched at all); every other provider
     (Shiprocket) keeps the original official-PDF + box-detection behaviour unchanged."""
     if shipment.provider in {None, "shiprocket"}:
