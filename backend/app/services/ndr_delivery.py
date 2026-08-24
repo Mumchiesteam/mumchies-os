@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.ndr import NDRCase, NDREvent
@@ -15,7 +15,6 @@ from app.services.shipment_events import normalize_event_status
 def _terminal_outcome(shipment: ShiprocketShipment) -> str | None:
     values = {normalize_event_status(value) for value in (shipment.normalized_status, shipment.terminal_status, shipment.latest_status)}
     if "rto_delivered" in values: return "rto_delivered"
-    if values & {"rto_in_transit", "rto_initiated"}: return "rto_underway"
     if "delivered" in values: return "delivered"
     if "cancelled" in values: return "cancelled"
     return None
@@ -25,9 +24,10 @@ def _event_terminal_outcome(db: Session, case: NDRCase) -> tuple[str | None, Shi
     awb = str(case.awb or "").strip(); order_number = str(case.order_number or case.order_id or "").strip().lstrip("#")
     # An AWB is authoritative. Only fall back to the visible order number when
     # the NDR source supplied no AWB; never blend unrelated order/AWB histories.
-    predicates = [ShipmentEvent.awb == awb] if awb else ([ShipmentEvent.order_number == order_number] if order_number else [])
+    provider = str(case.provider or "").strip().casefold()
+    predicates = [and_(ShipmentEvent.awb == awb, ShipmentEvent.provider == provider)] if awb else ([and_(ShipmentEvent.order_number == order_number, ShipmentEvent.provider == provider)] if order_number else [])
     if not predicates: return None, None
-    terminal = {"delivered":"delivered", "rto_initiated":"rto_underway", "rto_in_transit":"rto_underway", "rto_delivered":"rto_delivered", "cancelled":"cancelled"}
+    terminal = {"delivered":"delivered", "rto_delivered":"rto_delivered", "cancelled":"cancelled"}
     events = db.scalars(select(ShipmentEvent).where(or_(*predicates)).order_by(ShipmentEvent.provider_event_at.desc(), ShipmentEvent.recorded_at.desc())).all()
     event = next((value for value in events if normalize_event_status(value.normalized_status) in terminal), None)
     normalized = normalize_event_status(event.normalized_status) if event else None
@@ -56,7 +56,9 @@ def resolve_if_canonically_terminal(db: Session, case: NDRCase, *, now: datetime
     if outcome is None: outcome, event = _event_terminal_outcome(db, case)
     if outcome is None:
         return False
-    provider_outcome = "delivered" if outcome == "delivered" else "rto_confirmed" if outcome in {"rto_underway", "rto_delivered"} else None
+    provider_outcome = "delivered" if outcome == "delivered" else "rto_confirmed" if outcome == "rto_delivered" else None
+    if provider_outcome is None:
+        return False
     if case.resolution_source == "manual" and case.resolution_outcome and provider_outcome and case.resolution_outcome != provider_outcome:
         already = db.scalar(select(NDREvent.id).where(NDREvent.case_id == case.id, NDREvent.event_type == "provider_outcome_conflict"))
         if not already:

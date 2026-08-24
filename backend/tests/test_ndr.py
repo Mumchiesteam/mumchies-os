@@ -97,8 +97,9 @@ def test_resolution_analytics_excludes_open_and_breaks_down_courier_and_reason(d
     def case(id,outcome,provider,reason,resolved=True): return NDRCase(id=id,source_identity=f"awb:{id}",awb=id,provider=provider,order_number=id,source_lifecycle="resolved" if resolved else "active",current_status="resolved" if resolved else "new",priority="medium",delivery_attempts=1,first_ndr_at=now-timedelta(days=2),last_synced_at=now,resolved_at=now if resolved else None,resolution_outcome=outcome,resolution_source="provider" if outcome else None,failure_reason=reason,products=[],cod_amount=0)
     db.add_all([case("d","delivered","shadowfax","Unavailable"),case("r","rto_confirmed","shadowfax","Unavailable"),case("open",None,"delhivery","Address",False)]);db.commit()
     result=resolution_analytics(period="30d",db=db)
-    assert (result["delivered"],result["rto_confirmed"],result["resolution_percent"],result["open_cases"])==(1,1,50.0,1)
-    shadowfax=next(row for row in result["by_courier"] if row["provider"]=="shadowfax");assert shadowfax["resolution_percent"]==50.0
+    assert (result["delivered"],result["rto_confirmed"],result["recovery_percent"],result["recovery_sample_size"],result["open_cases"])==(1,1,50.0,2,1)
+    assert result["median_resolution_hours"] is not None
+    shadowfax=next(row for row in result["by_courier"] if row["provider"]=="shadowfax");assert (shadowfax["recovery_percent"], shadowfax["recovery_sample_size"]) == (50.0, 2)
     unavailable=next(row for row in result["by_failure_reason"] if row["failure_reason"]=="Unavailable");assert unavailable["resolved_cases"]==2
 
 
@@ -173,7 +174,7 @@ def test_kpi_filters_apply_server_side_and_combine_with_search(db):
     assert [item["id"] for item in list_cases(kpi="over_sla", page=1, page_size=50, db=db)["items"]] == ["courier"]
 
 
-def test_confirmed_canonical_delivery_resolves_active_ndr_and_preserves_history(db):
+def test_case_list_does_not_resolve_from_booking_snapshot(db):
     now = datetime.now(timezone.utc)
     case = NDRCase(id="delivered-ndr", source_identity="awb:DELIVERED1", awb="DELIVERED1", provider="delhivery", order_number="323027", source_lifecycle="active", current_status="courier_pending", priority="high", delivery_attempts=2, first_ndr_at=now, last_synced_at=now, products=[], cod_amount=0)
     db.add_all([
@@ -187,25 +188,25 @@ def test_confirmed_canonical_delivery_resolves_active_ndr_and_preserves_history(
 
     assert active["items"] == []
     db.refresh(case)
-    assert (case.current_status, case.source_lifecycle) == ("resolved", "resolved")
-    assert (case.resolution_outcome, case.resolution_source) == ("delivered", "provider")
-    assert case.resolved_at is not None
+    assert (case.current_status, case.source_lifecycle) == ("courier_pending", "active")
+    assert (case.resolution_outcome, case.resolution_source) == (None, None)
     events = db.scalars(select(NDREvent).where(NDREvent.case_id == case.id)).all()
-    assert {event.event_type for event in events} == {"customer_contacted", "delivered_resolution"}
+    assert {event.event_type for event in events} == {"customer_contacted"}
 
 
-def test_stale_import_cannot_reactivate_canonically_delivered_ndr(db):
+def test_import_enrolls_tracking_without_resolving_from_booking_snapshot(db):
     db.add(ShiprocketShipment(order_id="shopify-2", provider="delhivery", provider_order_id="323223", awb="SR123", normalized_status="delivered"))
     db.commit()
 
     import_ndr(db, payload("delivered-first"))
     case = db.scalar(select(NDRCase).where(NDRCase.source_identity == "awb:SR123"))
-    assert case.current_status == "resolved"
+    assert case.current_status == "new"
+    assert case.tracking_enrolled_at is not None
 
     import_ndr(db, payload("delivered-stale"))
     db.refresh(case)
-    assert (case.current_status, case.source_lifecycle) == ("resolved", "resolved")
-    assert len(db.scalars(select(NDREvent).where(NDREvent.case_id == case.id, NDREvent.event_type == "delivered_resolution")).all()) == 1
+    assert (case.current_status, case.source_lifecycle) == ("new", "active")
+    assert not db.scalars(select(NDREvent).where(NDREvent.case_id == case.id, NDREvent.event_type == "delivered_resolution")).all()
 
 
 def test_shopify_fulfilled_alone_does_not_resolve_ndr_and_unresolved_case_stays_active(db):
@@ -219,26 +220,26 @@ def test_shopify_fulfilled_alone_does_not_resolve_ndr_and_unresolved_case_stays_
 
 
 @pytest.mark.parametrize("status", ["RTO In Transit", "RTO Delivered", "RTO Initiated", "Cancelled"])
-def test_confirmed_terminal_outcome_resolves_ndr_and_preserves_history(db, status):
+def test_case_list_never_reconciles_provider_state(db, status):
     now = datetime.now(timezone.utc)
     case = NDRCase(id=f"terminal-{status}", source_identity=f"awb:{status}", awb=status, provider="delhivery", order_number="322264", source_lifecycle="active", current_status="new", priority="high", delivery_attempts=1, first_ndr_at=now, last_synced_at=now, products=[], cod_amount=0)
     db.add_all([case, NDREvent(id=f"history-{status}", case_id=case.id, event_type="operator_action", description="Preserved", actor_name="Operator"), ShiprocketShipment(order_id=f"shipment-{status}", provider="delhivery", provider_order_id="322264", awb=status, latest_status=status, terminal_status=status)])
     db.commit()
     assert list_cases(kpi="active", page=1, page_size=50, db=db)["items"] == []
-    db.refresh(case); assert case.resolution_source == "provider"
-    assert case.resolution_outcome == ("rto_confirmed" if status.startswith("RTO") else None)
-    assert {event.event_type for event in db.scalars(select(NDREvent).where(NDREvent.case_id == case.id)).all()} == {"operator_action", "terminal_shipment_resolution"}
+    db.refresh(case); assert case.resolution_source is None
+    assert case.resolution_outcome is None
+    assert {event.event_type for event in db.scalars(select(NDREvent).where(NDREvent.case_id == case.id)).all()} == {"operator_action"}
 
-def test_stale_active_322264_resolves_from_canonical_rto_event_and_enriches_product(db):
+def test_case_list_enriches_product_without_reconciling(db):
     now=datetime.now(timezone.utc);case=NDRCase(id="322264",source_identity="awb:4829510010776",awb="4829510010776",provider="delhivery",order_number="322264",source_lifecycle="active",current_status="new",priority="high",delivery_attempts=1,first_ndr_at=now,last_synced_at=now,products=[],cod_amount=0)
     db.add_all([case,ShipmentEvent(id="rto",order_id="6819",order_number="322264",provider="delhivery",awb="4829510010776",normalized_status="rto_delivered",recorded_at=now,source="poll",deduplication_key="rto"),OrderReadModel(order_id="6819",order_number="322264",customer_name="Customer",payment_type="cod",order_value=999,products=[{"product_name":"Roasted Makhana","quantity":1,"price":999}],updated_at=now)]);db.commit()
     assert list_cases(kpi="active",page=1,page_size=50,db=db)["items"]==[]
-    db.refresh(case);assert case.current_status=="resolved"
+    db.refresh(case);assert case.current_status=="new"
 
 @pytest.mark.parametrize("status", ["Delivered", "RTO Initiated", "RTO In Transit", "RTO Delivered", "Returned to Seller", "Return Completed"])
-def test_shadowfax_terminal_labels_resolve_exact_awb_at_active_read(status, db):
+def test_shadowfax_events_do_not_mutate_case_at_active_read(status, db):
     now=datetime.now(timezone.utc); awb=f"SF-{status}"
     case=NDRCase(id=awb,source_identity=f"awb:{awb}",awb=awb,provider="shadowfax",order_number="323027",source_lifecycle="active",current_status="courier_pending",priority="medium",delivery_attempts=2,first_ndr_at=now,last_synced_at=now,products=[],cod_amount=0)
     db.add_all([case,ShipmentEvent(id=f"event-{status}",order_id="shopify-323027",order_number="323027",provider="shadowfax",awb=awb,provider_status_code="opaque-status-id",normalized_status=status,recorded_at=now,source="api_poll",deduplication_key=f"key-{status}")]);db.commit()
     assert list_cases(page=1,page_size=50,db=db)["items"]==[]
-    db.refresh(case);assert case.current_status=="resolved"
+    db.refresh(case);assert case.current_status=="courier_pending"

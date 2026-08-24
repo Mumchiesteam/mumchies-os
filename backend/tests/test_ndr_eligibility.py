@@ -65,10 +65,6 @@ def test_active_read_and_serialization_hide_historical_pre_pickup_case(db):
     assert serialize_case(case)["source_lifecycle"] == "no_longer_reported"
 
 
-def test_summary_and_analytics_do_not_repeat_terminal_reconciliation(db, monkeypatch):
-    def unexpected(_db):
-        raise AssertionError("read-only companion requests must not repeat terminal reconciliation")
-
-    monkeypatch.setattr("app.api.routes.ndr.resolve_active_terminal_cases", unexpected)
+def test_summary_and_analytics_are_read_only(db):
     assert summary(db)["active_ndr"] == 0
     assert resolution_analytics(db=db)["open_cases"] == 0

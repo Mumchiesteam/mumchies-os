@@ -18,7 +18,6 @@ from app.api.routes.orders import (
 from app.db.session import SessionLocal, get_db
 from app.models.ndr import NDRCase, NDREvent
 from app.models.user import User
-from app.services.ndr_delivery import resolve_active_terminal_cases
 from app.services.ndr_eligibility import is_ndr_eligible
 from app.services.order_operations import OrderOperationsStore
 from app.services.report_snapshots import ReportSnapshotStore
@@ -163,7 +162,6 @@ async def _build_dashboard(preset: str, start_at: datetime, end_at: datetime, la
         business_orders = await ShopifyService().get_orders_created_between(start_at, end_at)
     business = _business_metrics(business_orders, _all_actioned_order_ids(operations))
 
-    resolve_active_terminal_cases(db)
     ndr_cases = db.scalars(select(NDRCase)).all()
     now = datetime.now(timezone.utc)
     active_ndr = [case for case in ndr_cases if case.source_lifecycle == "active" and case.current_status != "resolved" and is_ndr_eligible(case.provider_status, case.failure_reason)]

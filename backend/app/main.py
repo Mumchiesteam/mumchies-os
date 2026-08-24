@@ -20,6 +20,7 @@ from app.models.user import User
 from app.services.order_read_models import cache_orders
 from app.services.shopify import ShopifyService
 from app.services.shipment_poller import tracking_poller_loop
+from app.services.ndr_tracking import ndr_tracking_poller_loop
 from app.services.runtime_metrics import active_background_jobs, background_job, event_loop_watchdog, rss_mb
 from sqlalchemy import select
 
@@ -151,6 +152,17 @@ async def start_shipment_tracking_poller() -> None:
             await asyncio.sleep(30)
             await tracking_poller_loop(app.state.session_factory)
         app.state.shipment_tracking_poller_task = asyncio.create_task(deferred_poller())
+
+
+@app.on_event("startup")
+async def start_ndr_tracking_poller() -> None:
+    """Track enrolled NDR AWBs independently of booking records."""
+    if settings.ndr_tracking_poller_enabled:
+        async def deferred_poller() -> None:
+            await app.state.background_warmup_complete.wait()
+            await asyncio.sleep(45)
+            await ndr_tracking_poller_loop(app.state.session_factory)
+        app.state.ndr_tracking_poller_task = asyncio.create_task(deferred_poller())
 
 
 @app.on_event("startup")

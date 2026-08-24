@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     shipment_tracking_poll_batch_size: int = 50
     shipment_tracking_poll_spacing_seconds: float = 1.0
     shadowfax_tracking_poll_enabled: bool = False
+    ndr_tracking_poller_enabled: bool = True
+    ndr_tracking_poll_interval_seconds: int = 1800
+    ndr_tracking_poll_batch_size: int = 40
+    ndr_tracking_active_interval_seconds: int = 1800
+    ndr_tracking_inactive_interval_seconds: int = 7200
+    ndr_tracking_expiry_days: int = 45
+    ndr_tracking_poll_spacing_seconds: float = 1.0
 
     def ndr_configuration(self) -> dict[str, dict[str, str | bool]]:
         """Safe startup/runtime configuration report; never includes secret values."""
