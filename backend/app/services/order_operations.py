@@ -282,6 +282,28 @@ class OrderOperationsStore:
             return record
 
     @classmethod
+    def prepare_courier_lookup(cls, order_id: str, package_details: dict[str, Any], operator: str) -> dict[str, Any]:
+        """Persist the package and invalidate the prior quote in one locked file write."""
+        with cls._lock:
+            data = cls._read_all()
+            record = data.get(order_id, deepcopy(cls._default_record))
+            occurred_at = datetime.now(timezone.utc).isoformat()
+            revision = int(record.get("package_revision") or 0) + 1
+            record["package_details"] = package_details
+            record["package_revision"] = revision
+            record["package_provenance"] = {"order_id": order_id, "saved_at": occurred_at, "operator": operator, "revision": revision}
+            cls._record_action(record, "package_details_saved", occurred_at, operator)
+            record.setdefault("timeline_events", []).append({
+                "action": "package_details_updated", "timestamp": occurred_at,
+                "operator": operator, "details": {},
+            })
+            record["selected_courier"] = None
+            cls._record_action(record, "courier_selected")
+            data[order_id] = record
+            cls._write_all(data)
+            return record
+
+    @classmethod
     def save_selected_courier(cls, order_id: str, selected_courier: dict[str, Any] | None) -> dict[str, Any]:
         with cls._lock:
             data = cls._read_all()

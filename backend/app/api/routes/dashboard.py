@@ -17,6 +17,7 @@ from app.api.routes.orders import (
 )
 from app.db.session import SessionLocal, get_db
 from app.models.ndr import NDRCase, NDREvent
+from app.models.user import User
 from app.services.ndr_delivery import resolve_active_terminal_cases
 from app.services.ndr_eligibility import is_ndr_eligible
 from app.services.order_operations import OrderOperationsStore
@@ -26,7 +27,6 @@ from app.services.runtime_metrics import background_job
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 IST = ZoneInfo("Asia/Kolkata")
-OPERATORS = ("Ajit", "Rupesh")
 MEANINGFUL_ORDER_ACTIONS = {
     "call_logged", "address_corrected", "address_verified", "address_confirmation_commented",
     "package_details_saved", "order_cancelled", "shipment_booked", "courier_booked",
@@ -65,18 +65,17 @@ def _at(value: object) -> datetime | None:
     except ValueError: return None
 
 
-def _operator(value: object) -> str | None:
-    text = str(value or "").strip().casefold()
-    return next((name for name in OPERATORS if name.casefold() in text), None)
+def _operator(value: object, operators: dict[str, str]) -> str | None:
+    return operators.get(str(value or "").strip().casefold())
 
 
-def _order_activity(operations: dict[str, dict], start: datetime, end: datetime) -> dict[str, set[str]]:
-    result = {name: set() for name in OPERATORS}
+def _order_activity(operations: dict[str, dict], start: datetime, end: datetime, operators: dict[str, str]) -> dict[str, set[str]]:
+    result: dict[str, set[str]] = defaultdict(set)
     for order_id, record in operations.items():
         events = [*(record.get("human_actions") or []), *(record.get("timeline_events") or [])]
         for event in events:
             if str(event.get("action") or "") not in MEANINGFUL_ORDER_ACTIONS: continue
-            occurred = _at(event.get("timestamp")); actor = _operator(event.get("operator"))
+            occurred = _at(event.get("timestamp")); actor = _operator(event.get("operator"), operators)
             if actor and occurred and start <= occurred < end: result[actor].add(str(order_id))
     return result
 
@@ -88,10 +87,10 @@ def _all_actioned_order_ids(operations: dict[str, dict]) -> set[str]:
     }
 
 
-def _ndr_activity(events: list[NDREvent], start: datetime, end: datetime) -> dict[str, set[str]]:
-    result = {name: set() for name in OPERATORS}
+def _ndr_activity(events: list[NDREvent], start: datetime, end: datetime, operators: dict[str, str]) -> dict[str, set[str]]:
+    result: dict[str, set[str]] = defaultdict(set)
     for event in events:
-        actor = _operator(event.actor_name); occurred = _at(event.created_at)
+        actor = _operator(event.actor_name, operators); occurred = _at(event.created_at)
         if actor and event.event_type in MEANINGFUL_NDR_ACTIONS and occurred and start <= occurred < end:
             result[actor].add(str(event.case_id))
     return result
@@ -130,9 +129,16 @@ def _business_metrics(orders: list, actioned_ids: set[str]) -> dict[str, object]
 
 async def _build_dashboard(preset: str, start_at: datetime, end_at: datetime, label: str, db: Session) -> dict[str, object]:
     operations = OrderOperationsStore.all()
-    order_activity = _order_activity(operations, start_at, end_at)
+    users = db.scalars(select(User)).all()
+    operators = {
+        alias.strip().casefold(): user.display_name.strip()
+        for user in users
+        for alias in (user.display_name, user.username)
+        if alias and user.display_name.strip()
+    }
+    order_activity = _order_activity(operations, start_at, end_at, operators)
     ndr_events = db.scalars(select(NDREvent).where(NDREvent.created_at >= start_at, NDREvent.created_at < end_at)).all()
-    ndr_activity = _ndr_activity(list(ndr_events), start_at, end_at)
+    ndr_activity = _ndr_activity(list(ndr_events), start_at, end_at, operators)
     operational = await _load_orders(db)
     queues = _operational_queue_partition(operational)
     # Today, yesterday and last-seven-day views are already fully covered by the canonical
@@ -160,9 +166,11 @@ async def _build_dashboard(preset: str, start_at: datetime, end_at: datetime, la
         # that expensive provider workflow when App also loaded Reconciliation on startup.
         "reconciliation_exceptions": None,
     }
-    team = []
-    for name in OPERATORS:
-        team.append({"operator": name, "orders_actioned": len(order_activity[name]), "ndrs_actioned": len(ndr_activity[name])})
+    active_operators = sorted(set(order_activity) | set(ndr_activity), key=str.casefold)
+    team = [
+        {"operator": name, "orders_actioned": len(order_activity[name]), "ndrs_actioned": len(ndr_activity[name])}
+        for name in active_operators
+    ]
     return {
         "period": {"preset": preset, "start": start_at.astimezone(IST).date().isoformat(), "end": (end_at.astimezone(IST).date() - timedelta(days=1)).isoformat(), "label": label},
         "needs_attention": needs,

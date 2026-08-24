@@ -143,6 +143,29 @@ def test_first_human_action_is_persistent_and_automated_sync_does_not_count(tmp_
     assert OrderOperationsStore.get("1")["first_action_at"] == "2026-07-21T10:00:00"
 
 
+def test_courier_lookup_package_and_selection_invalidation_use_one_write(tmp_path, monkeypatch):
+    path = tmp_path / "operations.json"
+    monkeypatch.setattr(order_operations, "OPS_FILE", path)
+    OrderOperationsStore.save_selected_courier("1", {"provider": "shiprocket", "courier_id": "43"})
+    writes = 0
+    original_write = OrderOperationsStore._write_all.__func__
+
+    def count_write(cls, data):
+        nonlocal writes
+        writes += 1
+        return original_write(cls, data)
+
+    monkeypatch.setattr(OrderOperationsStore, "_write_all", classmethod(count_write))
+
+    record = OrderOperationsStore.prepare_courier_lookup("1", {"weight_kg": 0.5}, "Sushil")
+
+    assert writes == 1
+    assert record["package_details"] == {"weight_kg": 0.5}
+    assert record["package_revision"] == 1
+    assert record["package_provenance"]["operator"] == "Sushil"
+    assert record["selected_courier"] is None
+
+
 @pytest.mark.anyio
 async def test_address_hard_blockers_and_advisory_warnings(db):
     missing_pin = await validate_order_address("1", AddressValidationPayload(address_line1="12 Main Road"), db)

@@ -94,7 +94,7 @@ def test_booking_requires_the_same_persisted_canonical_courier() -> None:
 
 def test_courier_lookup_clears_stored_selection_before_returning_quotes() -> None:
     source = inspect.getsource(couriers.shiprocket_serviceability)
-    assert "save_selected_courier(order_id, None)" in source
+    assert "prepare_courier_lookup" in source
     assert '"booking_readiness"' in source
     assert '"eligible": eligibility.eligible' in source
 

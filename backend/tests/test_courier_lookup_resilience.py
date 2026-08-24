@@ -37,7 +37,8 @@ def lookup_context(monkeypatch):
 
     monkeypatch.setattr(couriers, "_load_context", load)
     monkeypatch.setattr(couriers, "_serviceability_query", pickup)
-    monkeypatch.setattr(couriers.OrderOperationsStore, "save_selected_courier", lambda *_args: {})
+    monkeypatch.setattr(couriers.OrderOperationsStore, "prepare_courier_lookup", lambda _order_id, package, _actor: {"address_verified": True, "package_details": package, "selected_courier": None})
+    monkeypatch.setattr(couriers, "current_actor", lambda _request: "Tester")
     monkeypatch.setattr(couriers.ShiprocketService, "evaluate_booking_eligibility", lambda *_args: eligibility())
     return SimpleNamespace(rollback=lambda: None)
 
@@ -53,7 +54,7 @@ async def test_shiprocket_success_delhivery_failure_returns_shiprocket(monkeypat
     monkeypatch.setattr(couriers.ShiprocketService, "serviceability", shiprocket)
     monkeypatch.setattr(couriers.DelhiveryService, "configured", property(lambda _self: True))
     monkeypatch.setattr(couriers.DelhiveryService, "serviceability", delhivery)
-    result = await couriers.shiprocket_serviceability("1", CourierCheckPayload(weight_kg=.5, courier_payment_mode="Prepaid"), lookup_context)
+    result = await couriers.shiprocket_serviceability("1", CourierCheckPayload(weight_kg=.5, courier_payment_mode="Prepaid"), SimpleNamespace(), lookup_context)
     assert any(quote["provider"] == "shiprocket" for quote in result["couriers"])
     assert result["provider_failures"] == {"delhivery": "unavailable"}
     assert result["lookup_status"] == "partial"
@@ -70,7 +71,7 @@ async def test_delhivery_success_shiprocket_failure_returns_delhivery(monkeypatc
     monkeypatch.setattr(couriers.ShiprocketService, "serviceability", shiprocket)
     monkeypatch.setattr(couriers.DelhiveryService, "configured", property(lambda _self: True))
     monkeypatch.setattr(couriers.DelhiveryService, "serviceability", delhivery)
-    result = await couriers.shiprocket_serviceability("1", CourierCheckPayload(weight_kg=.5, courier_payment_mode="Prepaid"), lookup_context)
+    result = await couriers.shiprocket_serviceability("1", CourierCheckPayload(weight_kg=.5, courier_payment_mode="Prepaid"), SimpleNamespace(), lookup_context)
     assert any(quote["provider"] == "delhivery" for quote in result["couriers"])
     assert result["provider_failures"] == {"shiprocket": "unavailable"}
 
@@ -83,7 +84,7 @@ async def test_provider_timeouts_return_manual_option_and_combined_error(monkeyp
     monkeypatch.setattr(couriers.ShiprocketService, "serviceability", timeout)
     monkeypatch.setattr(couriers.DelhiveryService, "configured", property(lambda _self: True))
     monkeypatch.setattr(couriers.DelhiveryService, "serviceability", timeout)
-    result = await couriers.shiprocket_serviceability("1", CourierCheckPayload(weight_kg=.5, courier_payment_mode="Prepaid"), lookup_context)
+    result = await couriers.shiprocket_serviceability("1", CourierCheckPayload(weight_kg=.5, courier_payment_mode="Prepaid"), SimpleNamespace(), lookup_context)
     assert result["lookup_status"] == "manual_only"
     assert result["provider_failures"] == {"shiprocket": "timeout", "delhivery": "timeout"}
     assert [quote["provider"] for quote in result["couriers"]] == ["shadowfax"]

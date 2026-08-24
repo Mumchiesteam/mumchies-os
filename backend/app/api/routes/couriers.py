@@ -574,7 +574,7 @@ async def booking_eligibility(order_id: str, db: Session = Depends(get_db)) -> d
 
 
 @router.post("/orders/{order_id}/couriers/check")
-async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload, db: Session = Depends(get_db)) -> dict[str, object]:
+async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     provider_warnings: list[str] = []
     provider_failures: dict[str, str] = {}
     request_started = time.perf_counter()
@@ -590,10 +590,11 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
         # read transaction before waiting on provider networks.
         db.rollback()
         package = PackageDetailsPayload.model_validate(payload.model_dump())
-        # The package was persisted by the explicit package endpoint immediately
-        # before this lookup. Only clear the prior selection here.
-        OrderOperationsStore.save_selected_courier(order_id, None)
-        operations = {**operations, "selected_courier": None, "package_details": package.model_dump()}
+        # Package persistence and stale-quote invalidation are one atomic operations-file
+        # mutation. This preserves revisions/provenance while avoiding a second 15 MB rewrite.
+        operations = OrderOperationsStore.prepare_courier_lookup(
+            order_id, package.model_dump(), current_actor(request),
+        )
         eligibility = ShiprocketService().evaluate_booking_eligibility(order, operations, shipment)
         if not eligibility.eligible:
             raise HTTPException(status_code=400, detail={"message": "Order is not eligible for courier lookup.", "missing_requirements": eligibility.missing_requirements})

@@ -43,7 +43,6 @@ import {
   reconcileCourierBooking,
   cancelCourierShipment,
   saveAndVerifyOrderAddress,
-  saveOrderPackage,
   selectShiprocketCourier,
   shippingLabelUrl,
   syncShopifyFulfillment,
@@ -649,7 +648,6 @@ function App() {
     setOperations(previous => previous ? { ...previous, selected_courier: null } : previous)
     const lookupStarted = performance.now()
     try {
-      await saveOrderPackage(orderId, packageNumbers)
       const result = await checkShiprocketCouriers(orderId, {
         ...packageNumbers,
         courier_payment_mode: selectedOrder.payment,

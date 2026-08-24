@@ -102,6 +102,25 @@ async def test_configured_direct_delhivery_rate_is_bookable(monkeypatch):
     assert quote.booking_supported is True
 
 
+@pytest.mark.anyio
+async def test_325829_shaped_direct_rate_retains_unknown_eta_when_b2c_response_has_no_tat(monkeypatch):
+    client = install(monkeypatch, [
+        Response({"delivery_codes": [{"postal_code": {"pin": 243502, "cod": "Y", "pre_paid": "Y", "sun_tat": True}}]}),
+        Response([{"status": "Delivered", "zone": "D2", "gross_amount": 37.25, "total_amount": 43.95, "charged_weight": 500}]),
+    ])
+
+    quote = (await DelhiveryService(token="token", pickup="Mumchies Foods").serviceability("560076", "243502", 0.5, False))[0]
+
+    assert quote.total_estimated_shipping_cost == 43.95
+    assert quote.estimated_delivery_days is None
+    assert quote.expected_delivery_date is None
+    assert client.calls[0][2]["params"] == {"filter_codes": "243502"}
+    assert client.calls[1][2]["params"] == {
+        "md": "S", "ss": "Delivered", "o_pin": "560076", "d_pin": "243502",
+        "cgm": 500, "pt": "Pre-paid",
+    }
+
+
 def test_missing_configuration_disables_only_direct_delhivery(monkeypatch):
     monkeypatch.setattr(module.settings, "delhivery_token", None)
     monkeypatch.setattr(module.settings, "delhivery_pickup", None)

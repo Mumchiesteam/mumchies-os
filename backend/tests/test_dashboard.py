@@ -37,7 +37,7 @@ def test_order_activity_uses_action_timestamp_and_unique_orders() -> None:
         "outside": {"human_actions": [{"action": "call_logged", "timestamp": "2026-08-08T03:00:00+00:00", "operator": "Ajit"}]},
         "rupesh": {"timeline_events": [{"action": "shipment_booked", "timestamp": "2026-08-09T05:00:00+00:00", "operator": "Rupesh"}]},
     }
-    result = _order_activity(operations, datetime(2026, 8, 9, tzinfo=timezone.utc), datetime(2026, 8, 10, tzinfo=timezone.utc))
+    result = _order_activity(operations, datetime(2026, 8, 9, tzinfo=timezone.utc), datetime(2026, 8, 10, tzinfo=timezone.utc), {"ajit": "Ajit", "rupesh": "Rupesh"})
     assert result == {"Ajit": {"old-order"}, "Rupesh": {"rupesh"}}
 
 
@@ -48,8 +48,22 @@ def test_ndr_activity_is_unique_and_attributed() -> None:
         SimpleNamespace(case_id="case-2", event_type="import_update", actor_name="Rupesh", created_at=datetime(2026, 8, 9, 3, tzinfo=timezone.utc)),
         SimpleNamespace(case_id="case-3", event_type="customer_contacted", actor_name="Rupesh", created_at=datetime(2026, 8, 9, 4, tzinfo=timezone.utc)),
     ]
-    result = _ndr_activity(events, datetime(2026, 8, 9, tzinfo=timezone.utc), datetime(2026, 8, 10, tzinfo=timezone.utc))
+    result = _ndr_activity(events, datetime(2026, 8, 9, tzinfo=timezone.utc), datetime(2026, 8, 10, tzinfo=timezone.utc), {"ajit": "Ajit", "rupesh": "Rupesh"})
     assert result == {"Ajit": {"case-1"}, "Rupesh": {"case-3"}}
+
+
+def test_team_activity_includes_sushil_only_when_meaningful_activity_exists() -> None:
+    start = datetime(2026, 8, 9, tzinfo=timezone.utc)
+    end = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    operators = {"ajit": "Ajit", "sushil": "Sushil", "sushil.login": "Sushil"}
+    operations = {
+        "325829": {"timeline_events": [{"action": "package_details_saved", "timestamp": "2026-08-09T05:00:00Z", "operator": "sushil.login"}]},
+        "ignored": {"timeline_events": [{"action": "courier_selected", "timestamp": "2026-08-09T05:00:00Z", "operator": "Sushil"}]},
+    }
+
+    result = _order_activity(operations, start, end, operators)
+
+    assert result == {"Sushil": {"325829"}}
 
 
 def test_business_metrics_payment_repeat_cancelled_and_products() -> None:
