@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     shopify_client_secret: str | None = None
     shopify_api_version: str | None = None
     shopify_notify_customer_on_fulfillment: bool = True
+    gst_origin_state: str = "Karnataka"
     shiprocket_email: str | None = None
     shiprocket_password: str | None = None
     shiprocket_pickup: str | None = None

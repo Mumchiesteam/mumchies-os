@@ -64,6 +64,7 @@ import { UsersPage } from './components/UsersPage'
 import { NDRPage } from './components/NDRPage'
 import { DashboardPage } from './components/DashboardPage'
 import { AnalyticsPage } from './components/AnalyticsPage'
+import { ReportsPage } from './components/ReportsPage'
 import { formatDateTime } from './utils/time'
 import { orderContactSectionTitle } from './utils/operations'
 import { EngageCircle, EngageProgress } from './components/EngageStatus'
@@ -98,7 +99,7 @@ type CourierQuote = {
   rate_note: string
 }
 
-const navItems = ['Dashboard', 'Orders', 'Analytics', 'NDR', 'Reconciliation', 'Settings'] as const
+const navItems = ['Dashboard', 'Orders', 'Analytics', 'NDR', 'Reconciliation', 'Reports', 'Settings'] as const
 export const workspaceLoadsForPage = (page: typeof navItems[number]) => ({
   orders: page === 'Orders',
   reconciliation: page === 'Reconciliation',
@@ -207,7 +208,9 @@ const formatOrderDateTime = (value: string) => {
 }
 function App() {
   const authUser = useAuth()
-  const [activePage, setActivePage] = useState<typeof navItems[number]>('Dashboard')
+  const initialReportPath = window.location.pathname.startsWith('/reports') ? window.location.pathname : ''
+  const [activePage, setActivePage] = useState<typeof navItems[number]>(initialReportPath ? 'Reports' : 'Dashboard')
+  const [reportPath, setReportPath] = useState(initialReportPath || '/reports')
   const [reconciliationSection, setReconciliationSection] = useState<'reconciliation' | 'courier_issues'>('reconciliation')
   const [orders, setOrders] = useState<Order[]>([])
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null)
@@ -846,6 +849,26 @@ function App() {
     window.setTimeout(() => setLabelLoading(false), 1_000)
   }
 
+  const navigateReports = useCallback((path: string) => {
+    window.history.pushState({}, '', path)
+    setReportPath(path)
+    setActivePage('Reports')
+  }, [])
+
+  useEffect(() => {
+    const onPopState = () => {
+      const path = window.location.pathname
+      if (path.startsWith('/reports')) {
+        setReportPath(path)
+        setActivePage('Reports')
+      } else {
+        setActivePage('Dashboard')
+      }
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
+
   return (
     <div className="min-h-screen bg-[#f8fafc] text-slate-900">
       <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur">
@@ -859,7 +882,7 @@ function App() {
           </div>
           <nav className="ml-2 hidden flex-1 gap-2 overflow-x-auto md:flex">
             {navItems.filter(item => item !== 'Settings' || authUser?.role === 'owner').map(item => (
-              <button key={item} onClick={() => setActivePage(item)} className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-medium ${item === activePage ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{item}</button>
+              <button key={item} onClick={() => { if (item === 'Reports') navigateReports('/reports'); else { if (window.location.pathname.startsWith('/reports')) window.history.pushState({}, '', '/'); setActivePage(item) } }} className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-medium ${item === activePage ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{item}</button>
             ))}
           </nav>
           <div className="ml-auto flex items-center gap-2">
@@ -883,6 +906,7 @@ function App() {
         {activePage === 'Analytics' && <AnalyticsPage showDiagnostics={['owner', 'admin'].includes(authUser?.role || '')} />}
         {activePage === 'Settings' && authUser?.role === 'owner' && <UsersPage />}
         {activePage === 'NDR' && <NDRPage />}
+        {activePage === 'Reports' && <ReportsPage path={reportPath} navigate={navigateReports} />}
         {activePage === 'Reconciliation' && <div>
           <div className="mb-5"><p className="text-sm font-medium text-[#ff6b35]">Reconciliation</p><h2 className="mt-1 text-2xl font-bold tracking-tight">Order reconciliation</h2></div>
           <div className="mb-5 flex gap-5 border-b border-slate-200"><button onClick={() => setReconciliationSection('reconciliation')} className={`px-1 pb-3 text-sm font-semibold ${reconciliationSection === 'reconciliation' ? 'border-b-2 border-slate-900 text-slate-900' : 'text-slate-500'}`}>Reconciliation</button><button onClick={() => setReconciliationSection('courier_issues')} className={`px-1 pb-3 text-sm font-semibold ${reconciliationSection === 'courier_issues' ? 'border-b-2 border-slate-900 text-slate-900' : 'text-slate-500'}`}>Courier Issues</button></div>
