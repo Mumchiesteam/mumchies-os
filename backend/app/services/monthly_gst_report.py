@@ -26,6 +26,8 @@ JULY_VALIDATED_BASELINE = {
 }
 MANUAL_PLACE_OF_SUPPLY = {"322131": "Bihar", "319899": "Punjab"}
 JULY_FORCE_FIVE_PERCENT = {"320055", "320839", "321243", "320959", "319899"}
+SHOPIFY_SHIPPING_TAX = "SHOPIFY_SHIPPING_TAX"
+HISTORICAL_SHIPPING_ADJUSTMENT = "HISTORICAL_SHIPPING_ADJUSTMENT"
 
 
 def _decimal(value: object) -> Decimal:
@@ -76,6 +78,24 @@ def _line_rate(line: dict) -> Decimal | None:
     return next(iter(rates)) if len(rates) == 1 else None
 
 
+def shipping_tax_treatment(order: dict) -> dict[str, object]:
+    shipping = _money(order, "currentShippingPriceSet")
+    tax_lines = (order.get("shippingLine") or {}).get("taxLines") or []
+    shopify_tax = _round(sum((_decimal(line["priceSet"]["shopMoney"]["amount"]) for line in tax_lines), Decimal("0")))
+    if shopify_tax > 0:
+        tax = shopify_tax
+        classification = SHOPIFY_SHIPPING_TAX
+    else:
+        tax = _round(shipping * Decimal("5") / Decimal("105")) if shipping else Decimal("0")
+        classification = HISTORICAL_SHIPPING_ADJUSTMENT
+    return {
+        "classification": classification,
+        "shipping_value": _round(shipping),
+        "shipping_tax": tax,
+        "taxable_shipping_value": _round(shipping - tax),
+    }
+
+
 @dataclass(frozen=True)
 class GstReport:
     month: str
@@ -116,6 +136,7 @@ class MonthlyGstReportService:
         nodes{name createdAt cancelledAt displayFinancialStatus shippingAddress{province}
           currentSubtotalPriceSet{shopMoney{amount}} currentShippingPriceSet{shopMoney{amount}}
           currentTotalTaxSet{shopMoney{amount}} currentTotalPriceSet{shopMoney{amount}}
+          shippingLine{discountedPriceSet{shopMoney{amount}} taxLines{title ratePercentage priceSet{shopMoney{amount}}}}
           lineItems(first:100){nodes{name taxable taxLines{title ratePercentage priceSet{shopMoney{amount}}}}}
           fulfillments(first:50){deliveredAt events(first:50){nodes{status happenedAt}}}}
         pageInfo{hasNextPage endCursor}}
@@ -180,7 +201,8 @@ def calculate_monthly_gst_report(orders: list[dict], month: date) -> GstReport:
         "orders": 0, "taxable": Decimal("0"), "tax": Decimal("0"), "invoice": Decimal("0"),
     })
     exceptions: list[dict[str, object]] = []
-    original_gst = shipping_gst = product_corrections = Decimal("0")
+    original_gst = shipping_gst = shopify_shipping_gst = historical_shipping_gst = product_corrections = Decimal("0")
+    shipping_treatments: dict[str, dict[str, object]] = {}
     for order, delivered_date in eligible:
         number = str(order["name"]).lstrip("#")
         state = MANUAL_PLACE_OF_SUPPLY.get(number, str((order.get("shippingAddress") or {}).get("province") or "").strip())
@@ -189,6 +211,11 @@ def calculate_monthly_gst_report(orders: list[dict], month: date) -> GstReport:
         original_tax = _money(order, "currentTotalTaxSet")
         invoice = _money(order, "currentTotalPriceSet")
         original_gst += original_tax
+        shipping_treatment = shipping_tax_treatment(order)
+        shipping_treatments[number] = shipping_treatment
+        order_shipping_gst = Decimal(str(shipping_treatment["shipping_tax"]))
+        uses_shopify_shipping_tax = shipping_treatment["classification"] == SHOPIFY_SHIPPING_TAX
+        shopify_product_tax = original_tax - order_shipping_gst if uses_shopify_shipping_tax else original_tax
         rates = {rate for line in order["lineItems"]["nodes"] if (rate := _line_rate(line)) is not None}
         if number in JULY_FORCE_FIVE_PERCENT or any("FINGER MILLET (RAGI)" in str(line["name"]).upper() for line in order["lineItems"]["nodes"]):
             rates.add(Decimal("5"))
@@ -205,18 +232,21 @@ def calculate_monthly_gst_report(orders: list[dict], month: date) -> GstReport:
             exceptions.append({"order_number": number, "reason": f"Shipping allocation requires review for {rate}% supply", "invoice_value": _round(invoice), "delivered_date": delivered_date.isoformat()})
             continue
         missing_tax_lines = [line for line in order["lineItems"]["nodes"] if _line_rate(line) is None]
-        product_tax = original_tax
+        product_tax = shopify_product_tax
         if number in JULY_FORCE_FIVE_PERCENT:
             product_tax = _round(subtotal * Decimal("5") / Decimal("105"))
         elif missing_tax_lines:
             expected = _round(subtotal * rate / (Decimal("100") + rate))
-            taxable_from_tax = original_tax / (rate / Decimal("100")) if original_tax and rate else Decimal("0")
-            residual = (subtotal - original_tax) - taxable_from_tax
-            if original_tax == 0 or abs(residual) > Decimal("1"):
+            taxable_from_tax = shopify_product_tax / (rate / Decimal("100")) if shopify_product_tax and rate else Decimal("0")
+            residual = (subtotal - shopify_product_tax) - taxable_from_tax
+            if shopify_product_tax == 0 or abs(residual) > Decimal("1"):
                 product_tax = expected
-        product_corrections += product_tax - original_tax
-        order_shipping_gst = _round(shipping * Decimal("5") / Decimal("105")) if shipping else Decimal("0")
+        product_corrections += product_tax - shopify_product_tax
         shipping_gst += order_shipping_gst
+        if uses_shopify_shipping_tax:
+            shopify_shipping_gst += order_shipping_gst
+        else:
+            historical_shipping_gst += order_shipping_gst
         final_tax = product_tax + order_shipping_gst
         bucket = groups[(state, rate)]
         bucket["orders"] += 1
@@ -256,12 +286,17 @@ def calculate_monthly_gst_report(orders: list[dict], month: date) -> GstReport:
         "previous_month_created_delivered": {"orders": len(previous_created), "value": _round(sum((_money(order, "currentTotalPriceSet") for order in previous_created), Decimal("0")))},
         "selected_month_created_delivered_following": {"orders": len(following_deliveries), "value": _round(sum((_money(order, "currentTotalPriceSet") for order in following_deliveries), Decimal("0")))},
     }
-    adjustments = {"original_shopify_gst": _round(original_gst), "shipping_gst": _round(shipping_gst), "product_gst_corrections": _round(product_corrections)}
+    adjustments = {
+        "original_shopify_gst": _round(original_gst), "shipping_gst": _round(shipping_gst),
+        "shopify_shipping_gst": _round(shopify_shipping_gst), "historical_shipping_gst": _round(historical_shipping_gst),
+        "product_gst_corrections": _round(product_corrections),
+    }
     baseline = compare_with_july_baseline(summary) if month == date(2026, 7, 1) else None
     population = {
         "raw_delivered_order_numbers": [str(order["name"]).lstrip("#") for order, _ in delivered],
         "filing_eligible_order_numbers": [str(order["name"]).lstrip("#") for order, _ in eligible],
         "excluded_order_numbers": [str(order["name"]).lstrip("#") for order, _ in excluded],
+        "shipping_tax_treatments": shipping_treatments,
     }
     return GstReport(month.strftime("%Y-%m"), summary, rows, exceptions, reconciliation, adjustments, baseline, population)
 
