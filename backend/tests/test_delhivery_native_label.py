@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -83,11 +85,11 @@ def fake_order(**overrides):
 def test_order_enrichment_adds_price_total_date_and_partial_cod_amount():
     result = render_delhivery_label(base_package(pt="COD", cod=999999), order=fake_order())
     text = _text(result)
-    assert "Choco Bites" in text and "Rs 650.0" in text
-    assert "Order Total: Rs 1500.0" in text
-    assert "Date" in text and "18 Jul 2026" in text
+    assert "Choco Bites" in text and "Rs 650" in text
+    assert "Order Total: Rs 1500" in text
+    assert "Date" in text and "18 Jul 2026 | 10:30 AM" in text
     # Our own partial-COD collectable amount wins over Delhivery's raw cod figure.
-    assert "COD" in text and "INR 250.0" in text
+    assert "COD" in text and "INR 250" in text
 
 
 def test_order_enrichment_prepaid_shows_no_cod_amount():
@@ -208,7 +210,7 @@ def test_code128_barcode_is_actually_drawn():
 def test_authoritative_awb_order_reference_weight_and_routing_fields_are_preserved():
     result = render_delhivery_label(base_package(weight="0.50 Kg", mot="Surface"))
     text = _text(result)
-    for expected in ("38290012345678", "MUM-100234", "Weight: 0.50 Kg", "PNQ/AAA", "Pune Hub", "Surface"):
+    for expected in ("38290012345678", "MUM-100234", "Weight: 0.5 Kg", "PNQ/AAA", "Pune Hub", "Surface"):
         assert expected in text
     # AWB plus authoritative order reference each produce a Code128 barcode.
     assert _rect_fill_count(result) > 30
@@ -217,6 +219,53 @@ def test_authoritative_awb_order_reference_weight_and_routing_fields_are_preserv
 def test_provider_surface_mode_code_is_rendered_as_surface():
     text = _text(render_delhivery_label(base_package(mot="S")))
     assert "Surface" in text
+
+
+def test_discounted_product_values_reconcile_exactly_to_order_total():
+    order = fake_order(
+        order_total=531,
+        products=[SimpleNamespace(product_name="Dry Fruit Laddu", quantity=1, price=549)],
+    )
+    text = _text(render_delhivery_label(base_package(), order=order))
+    assert "Rs 531" in text
+    assert "Rs 549" not in text
+    assert text.count("Rs 531") >= 2  # product total and authoritative order total
+
+
+def test_money_display_drops_non_meaningful_decimal_zeroes():
+    order = fake_order(
+        order_total=Decimal("531.00"),
+        payment_type="prepaid",
+        products=[SimpleNamespace(product_name="Dry Fruit Laddu", quantity=1, price=Decimal("549.00"))],
+    )
+    text = _text(render_delhivery_label(base_package(), order=order))
+    assert "INR 531" in text and "INR 531.00" not in text
+    assert "Order Total: Rs 531" in text and "Order Total: Rs 531.00" not in text
+
+
+def test_multiple_discounted_product_totals_sum_to_order_total():
+    rows = label_module._discounted_product_rows(fake_order().products, 1351)
+    totals = [Decimal(row["total"].removeprefix("Rs ")) for row in rows]
+    assert sum(totals) == Decimal("1351")
+
+
+def test_weight_drops_redundant_decimal_and_adds_grams_unit():
+    text = _text(render_delhivery_label(base_package(weight="490.0")))
+    assert "Weight: 490 g" in text
+    assert "490.0" not in text
+
+
+def test_authoritative_booking_date_and_time_override_order_creation_date():
+    booked_at = datetime(2026, 8, 24, 16, 42)
+    text = _text(render_delhivery_label(base_package(), order=fake_order(), booked_at=booked_at))
+    assert "24 Aug 2026 | 04:42 PM" in text
+    assert "18 Jul 2026" not in text
+
+
+def test_official_delhivery_wordmark_is_embedded_as_an_image_not_font_text():
+    page = _page(render_delhivery_label(base_package()))
+    assert "DELHIVERY" not in (page.extract_text() or "")
+    assert len(page.images) >= 1
 
 
 def test_thermal_hierarchy_keeps_pin_payment_ship_to_seller_contents_and_return_sections():
@@ -228,17 +277,26 @@ def test_thermal_hierarchy_keeps_pin_payment_ship_to_seller_contents_and_return_
 
 def test_barcodes_encode_exact_authoritative_awb_and_order_reference(monkeypatch):
     encoded: list[str] = []
+    barcodes = []
     original = label_module.Code128
 
     def capture(value, *args, **kwargs):
         encoded.append(value)
-        return original(value, *args, **kwargs)
+        barcode = original(value, *args, **kwargs)
+        barcodes.append(barcode)
+        return barcode
 
     monkeypatch.setattr(label_module, "Code128", capture)
 
-    render_delhivery_label(base_package(wbn="38290012345678", oid="MUM-100234"))
+    render_delhivery_label(base_package(wbn="38290012345678", oid="325850"))
 
-    assert encoded == ["38290012345678", "MUM-100234"]
+    assert encoded == ["38290012345678", "325850"]
+    # The order-reference symbol is slightly taller than before while fitting inside its
+    # reserved width with Code128's built-in quiet zones intact.
+    assert barcodes[1].height == pytest.approx(25)
+    order_area_width = (PAGE_WIDTH - 14) * 0.40 - 8
+    assert barcodes[1].width <= order_area_width
+    assert barcodes[1].lquiet >= 8 and barcodes[1].rquiet >= 8
 
 
 def test_shiprocket_labels_are_never_routed_through_delhivery_rendering():

@@ -6,10 +6,13 @@ cropped, or transformed. See DelhiveryService.label_data() for the fetch side.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 
 from reportlab.graphics.barcode.code128 import Code128
+from reportlab.lib.utils import ImageReader
 from reportlab.lib.units import mm
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas
@@ -35,6 +38,7 @@ _MANDATORY_FIELDS = ("wbn", "name", "address", "pin")
 
 _FONT = "Helvetica"
 _FONT_BOLD = "Helvetica-Bold"
+_DELHIVERY_WORDMARK = Path(__file__).resolve().parent.parent / "assets" / "delhivery_wordmark.png"
 
 
 class DelhiveryLabelError(RuntimeError):
@@ -46,6 +50,81 @@ def _text(value: Any) -> str:
         return ""
     text = str(value).strip()
     return "" if text.casefold() in {"none", "null", "nan"} else text
+
+
+def _money(value: Decimal) -> str:
+    value = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def _money_text(value: Any) -> str:
+    text = _text(value)
+    if not text:
+        return ""
+    try:
+        return _money(Decimal(text))
+    except InvalidOperation:
+        return text
+
+
+def _weight_text(value: Any) -> str:
+    text = _text(value)
+    if not text:
+        return ""
+    try:
+        return f"{_money(Decimal(text))} g"
+    except InvalidOperation:
+        parts = text.split(maxsplit=1)
+        try:
+            number = _money(Decimal(parts[0]))
+        except InvalidOperation:
+            return text
+        return f"{number} {parts[1]}" if len(parts) == 2 else number
+
+
+def _discounted_product_rows(products: list[Any], order_total: Any) -> list[dict[str, str]]:
+    """Allocate the authoritative post-discount order total across displayed line items.
+
+    Shopify's line-item ``price`` is pre-order-discount in the current read model. Printing it
+    beside the post-discount order total is misleading, so allocation is proportional to each
+    line's gross value and the final row absorbs any paise rounding remainder.
+    """
+    source: list[tuple[str, Decimal, Decimal]] = []
+    for item in products[:4]:
+        name = _text(getattr(item, "product_name", None))
+        if not name:
+            continue
+        try:
+            qty = Decimal(_text(getattr(item, "quantity", None)) or "1")
+            unit = Decimal(_text(getattr(item, "price", None)) or "0")
+        except InvalidOperation:
+            qty, unit = Decimal("1"), Decimal("0")
+        source.append((name, qty, unit))
+    if not source:
+        return []
+    try:
+        payable = Decimal(_text(order_total))
+    except InvalidOperation:
+        payable = sum((qty * unit for _, qty, unit in source), Decimal("0"))
+    gross = sum((qty * unit for _, qty, unit in source), Decimal("0"))
+    remaining = payable.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    rows: list[dict[str, str]] = []
+    for index, (name, qty, unit) in enumerate(source):
+        if index == len(source) - 1:
+            line_total = remaining
+        elif gross:
+            line_total = (payable * qty * unit / gross).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            remaining -= line_total
+        else:
+            line_total = Decimal("0")
+        discounted_unit = line_total / qty if qty else line_total
+        rows.append({
+            "name": name,
+            "qty": _money(qty),
+            "price": f"Rs {_money(discounted_unit)}",
+            "total": f"Rs {_money(line_total)}",
+        })
+    return rows
 
 
 def _truncate_to_width(text: str, font: str, size: float, max_width: float) -> str:
@@ -264,8 +343,12 @@ def _render_portal_reference_label(fields: dict[str, Any]) -> bytes:
     header_bottom = top - 36
     pdf.setFont(_FONT, 9)
     pdf.drawString(left + 4, top - 20, _truncate_to_width(fields["seller_name"], _FONT, 9, width * 0.48))
-    pdf.setFont(_FONT_BOLD, 14)
-    pdf.drawRightString(right - 4, top - 20, "DELHIVERY")
+    logo_width = 78.0
+    logo_height = logo_width * 217 / 1398
+    pdf.drawImage(
+        ImageReader(_DELHIVERY_WORDMARK), right - 4 - logo_width, top - 9 - logo_height,
+        width=logo_width, height=logo_height, preserveAspectRatio=True, mask="auto",
+    )
     rule(header_bottom, left + 4, right - 4, 0.65)
 
     # AWB block: text, dominant barcode, then PIN / human-readable AWB / sort code routing row.
@@ -329,12 +412,13 @@ def _render_portal_reference_label(fields: dict[str, Any]) -> bytes:
     if fields["order_ref"]:
         pdf.setFont(_FONT, 9)
         pdf.drawString(split + 2, address_bottom - 15, _truncate_to_width(fields["order_ref"], _FONT, 9, right - split - 6))
-        order_width = right - split - 12
+        order_width = right - split - 8
         order_barcode = Code128(
-            fields["order_ref"], barHeight=22,
-            barWidth=max(0.4, min(0.8, (order_width - 12) / max(len(fields["order_ref"]) * 11, 1))),
+            fields["order_ref"], barHeight=25,
+            barWidth=max(0.4, min(0.86, (order_width - 16) / max(len(fields["order_ref"]) * 11, 1))),
         )
-        order_barcode.drawOn(pdf, split + 6 + max((order_width - order_barcode.width) / 2, 0), address_bottom - 42)
+        # ReportLab's Code128 retains its built-in quiet zones around the larger symbol.
+        order_barcode.drawOn(pdf, split + 4 + max((order_width - order_barcode.width) / 2, 0), address_bottom - 44)
     rule(seller_bottom, left + 4, right - 4, 0.65)
 
     # Portal-style product table, followed by deliberate flexible whitespace for long products.
@@ -373,7 +457,7 @@ def _render_portal_reference_label(fields: dict[str, Any]) -> bytes:
     return buffer.getvalue()
 
 
-def render_delhivery_label(data: dict[str, Any], order: Any | None = None) -> bytes:
+def render_delhivery_label(data: dict[str, Any], order: Any | None = None, booked_at: Any | None = None) -> bytes:
     """Draw one exact 100x150mm label page from a Delhivery packing-slip "packages[0]"
     record, enriched with the matching Mumchies OS/Shopify order (product price, order total,
     order date, partial-COD-aware collectable amount) where Delhivery's JSON doesn't provide
@@ -403,7 +487,7 @@ def render_delhivery_label(data: dict[str, Any], order: Any | None = None) -> by
     return_state = _text(data.get("rst"))
     return_pin = _text(data.get("rpin"))
     hsn_code = _text(data.get("hsn_code"))
-    weight = _text(data.get("weight")) or _text(data.get("wt"))
+    weight = _weight_text(data.get("weight") if data.get("weight") is not None else data.get("wt"))
     order_ref = _text(data.get("oid")) or (_text(getattr(order, "order_number", None)) if order is not None else "")
 
     # Payment mode / collectable amount: prefer Mumchies OS's own partial-COD-aware order data;
@@ -411,26 +495,27 @@ def render_delhivery_label(data: dict[str, Any], order: Any | None = None) -> by
     order_payment_type = _text(getattr(order, "payment_type", None)) if order is not None else ""
     if order_payment_type in {"cod", "partial_cod"}:
         payment_type = "COD"
-        cod_amount = _text(getattr(order, "cod_collectable_amount", None))
+        cod_amount = _money_text(getattr(order, "cod_collectable_amount", None))
     elif order_payment_type == "prepaid":
         payment_type, cod_amount = "PREPAID", ""
     else:
         payment_type = _text(data.get("pt")).upper()
-        cod_amount = _text(data.get("cod")) if payment_type == "COD" else ""
+        cod_amount = _money_text(data.get("cod")) if payment_type == "COD" else ""
 
     # Product/quantity/price: prefer the structured Shopify line items (they carry price, which
     # Delhivery's JSON doesn't); fall back to Delhivery's own opaque description/qty strings.
     products = list(getattr(order, "products", None) or []) if order is not None else []
     fallback_product = _text(data.get("prd"))
     fallback_qty = _text(data.get("qty"))
-    order_total = _text(getattr(order, "order_total", None)) if order is not None else ""
+    order_total = _money_text(getattr(order, "order_total", None)) if order is not None else ""
     order_date = ""
-    created = getattr(order, "created_date", None) if order is not None else None
-    if created:
+    authoritative_date = booked_at or (getattr(order, "created_date", None) if order is not None else None)
+    if authoritative_date:
         try:
-            order_date = datetime.fromisoformat(str(created).replace("Z", "+00:00")).strftime("%d %b %Y")
-        except ValueError:
-            order_date = _text(created)
+            parsed = authoritative_date if isinstance(authoritative_date, datetime) else datetime.fromisoformat(str(authoritative_date).replace("Z", "+00:00"))
+            order_date = parsed.strftime("%d %b %Y | %I:%M %p")
+        except (TypeError, ValueError):
+            order_date = _text(authoritative_date)
     elif data.get("cd"):
         raw_date = _text(data.get("cd"))
         try:
@@ -457,16 +542,7 @@ def render_delhivery_label(data: dict[str, Any], order: Any | None = None) -> by
     return_text = ", ".join(part for part in (return_address, return_locality) if part) or "Same as seller"
     product_rows: list[dict[str, str]] = []
     if products:
-        for item in products[:4]:
-            name = _text(getattr(item, "product_name", None))
-            qty = _text(getattr(item, "quantity", None))
-            price = _text(getattr(item, "price", None))
-            if name:
-                try:
-                    total = _text(float(price) * float(qty)) if price and qty else price
-                except ValueError:
-                    total = price
-                product_rows.append({"name": name, "qty": qty or "-", "price": f"Rs {price}" if price else "-", "total": f"Rs {total}" if total else "-"})
+        product_rows = _discounted_product_rows(products, order_total)
     elif fallback_product:
         product_rows.append({"name": fallback_product, "qty": fallback_qty or "-", "price": "-", "total": "-"})
     service_mode = _text(data.get("mot")) or _text(data.get("service_type")) or _text(data.get("mode"))

@@ -101,7 +101,11 @@ class LabelService:
             if not shipment.awb: raise LabelPrintError("Shipment has no AWB.")
             try:
                 data = await DelhiveryService().label_data(shipment.awb)
-                return render_delhivery_label(data, await _matching_shopify_order(shipment.order_id))
+                return render_delhivery_label(
+                    data,
+                    await _matching_shopify_order(shipment.order_id),
+                    booked_at=shipment.booked_at,
+                )
             except (DelhiveryError, DelhiveryLabelError) as error:
                 raise LabelPrintError(str(error)) from error
         try:
