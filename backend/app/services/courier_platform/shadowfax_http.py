@@ -210,6 +210,9 @@ class ShadowfaxHTTPTransport:
             except ValueError: parsed_timestamp = None
         return {
             "status": str(order.get("status") or latest.get("status_id") or ""),
+            "client_order_id": str(order.get("client_order_id") or order.get("order_id") or order.get("reference_id") or "") or None,
+            "provider_order_id": str(order.get("id") or order.get("order_uuid") or "") or None,
+            "awb": str(order.get("awb_number") or order.get("awb") or awb),
             "latest_scan": str(latest.get("location") or "") or None,
             "timestamp": parsed_timestamp,
             "tracking_url": str(order.get("customer_track_url") or "") or None,

@@ -98,6 +98,72 @@ class ManualShadowfaxPayload(BaseModel):
     note: str | None = None
 
 
+def _shopify_shadowfax_tracking(order: ShopifyOrder) -> tuple[str, str | None] | None:
+    tracking = getattr(order, "external_tracking", None)
+    if tracking is None or "shadowfax" not in str(tracking.provider or "").casefold():
+        return None
+    awb = str(tracking.awb or "").strip()
+    return (awb, str(tracking.tracking_url or "").strip() or None) if awb else None
+
+
+def _shadowfax_tracking_order_id(raw: object) -> str | None:
+    if not isinstance(raw, dict):
+        return None
+    direct = raw.get("client_order_id") or raw.get("order_id") or raw.get("reference_id")
+    if direct:
+        return str(direct).strip()
+    provider = raw.get("provider_response") if isinstance(raw.get("provider_response"), dict) else {}
+    details = provider.get("order_details") if isinstance(provider.get("order_details"), dict) else {}
+    value = details.get("client_order_id") or details.get("order_id") or details.get("reference_id")
+    return str(value).strip() if value else None
+
+
+async def _validate_shadowfax_awb(order: ShopifyOrder, requested_awb: str | None) -> dict[str, object]:
+    shopify_tracking = _shopify_shadowfax_tracking(order)
+    if shopify_tracking:
+        shopify_awb, tracking_url = shopify_tracking
+        if requested_awb and requested_awb.casefold() != shopify_awb.casefold():
+            raise HTTPException(status_code=409, detail="The entered AWB does not match the Shadowfax AWB attached to this Shopify order.")
+        provider_warning = None
+        provider_status = "confirmed"
+        try:
+            tracked = await ShadowfaxAdapter().track_shipment({"awb": shopify_awb})
+            provider_status = tracked.provider_status or tracked.status.value
+            association = _shadowfax_tracking_order_id(tracked.raw_response)
+            if association and association.lstrip("#") != order.order_number.lstrip("#"):
+                raise HTTPException(status_code=409, detail="Shadowfax returned this AWB for a different order. Nothing was recorded.")
+        except HTTPException:
+            raise
+        except ProviderError as error:
+            # The Shadowfax Shopify app already wrote this exact carrier/AWB pair onto this
+            # exact Shopify order. That remains authoritative even when the standalone Unified
+            # API credential cannot see the channel-order object.
+            provider_warning = str(error)
+        return {
+            "awb": shopify_awb, "tracking_url": tracking_url,
+            "validation_source": "shopify_shadowfax_fulfillment",
+            "provider_status": provider_status, "provider_warning": provider_warning,
+        }
+
+    if not requested_awb:
+        raise HTTPException(status_code=404, detail="Could not find a Shadowfax shipment on this Shopify order. Enter the Shadowfax AWB to validate it.")
+    try:
+        tracked = await ShadowfaxAdapter().track_shipment({"awb": requested_awb})
+    except ProviderError as error:
+        raise HTTPException(status_code=409, detail=f"The Shadowfax AWB could not be validated: {error}") from error
+    association = _shadowfax_tracking_order_id(tracked.raw_response)
+    if not association:
+        raise HTTPException(status_code=409, detail="Shadowfax did not return an order reference for this AWB. Nothing was recorded.")
+    if association.lstrip("#") != order.order_number.lstrip("#"):
+        raise HTTPException(status_code=409, detail="Shadowfax returned this AWB for a different order. Nothing was recorded.")
+    return {
+        "awb": requested_awb, "tracking_url": tracked.tracking_url,
+        "validation_source": "shadowfax_tracking_api",
+        "provider_status": tracked.provider_status or tracked.status.value,
+        "provider_warning": None,
+    }
+
+
 async def _sync_shopify_after_booking(db: Session, order: ShopifyOrder) -> dict[str, object] | None:
     """Best-effort secondary sync; courier persistence is never rolled back."""
     shipment = get_shipment(db, order.order_id)
@@ -723,37 +789,47 @@ async def shiprocket_book_shipment_route(
 
 @booking_router.post("/{order_id}/shadowfax/manual")
 async def save_manual_shadowfax_shipment(order_id: str, payload: ManualShadowfaxPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
-    awb = str(payload.awb or "").strip() or None
-    provider_id = str(payload.provider_id or "").strip() or None
-    if not awb and not provider_id:
-        raise HTTPException(status_code=422, detail="Enter an AWB or Shadowfax shipment/order ID.")
+    requested_awb = str(payload.awb or "").strip() or None
     order, operations, shipment = await _load_context(order_id, db)
     if order.cancelled_at or str(order.shopify_status or "").strip().casefold() in {"cancelled", "canceled"}:
         raise HTTPException(status_code=409, detail="Cancelled Shopify orders cannot be marked as shipped through Shadowfax.")
     existing = get_shipment(db, order_id)
     if existing and has_persisted_provider_booking_evidence(shipment_snapshot(existing)):
         raise HTTPException(status_code=409, detail="An active shipment already exists for this order.")
-    if has_existing_shipment_evidence(order, operations, shipment):
+    validation = await _validate_shadowfax_awb(order, requested_awb)
+    awb = str(validation["awb"])
+    shopify_tracking = _shopify_shadowfax_tracking(order)
+    if has_existing_shipment_evidence(order, operations, shipment) and not shopify_tracking:
         raise HTTPException(status_code=409, detail="An active shipment or fulfilment already exists for this order.")
     selected = operations.get("selected_courier")
-    if not isinstance(selected, dict) or str(selected.get("provider") or "").casefold() != "shadowfax":
+    if not shopify_tracking and (not isinstance(selected, dict) or str(selected.get("provider") or "").casefold() != "shadowfax"):
         raise HTTPException(status_code=400, detail="Select the manual Shadowfax courier option first.")
     actor = current_actor(request)
     booked_at = payload.booked_at or datetime.now(timezone.utc)
     service = str(payload.service_name or "").strip() or None
     saved = upsert_shipment(
-        db, order_id, provider="shadowfax", provider_order_id=provider_id,
-        shipment_id=provider_id, awb=awb, courier_name=service, courier_service=service,
-        booking_status="booked", booking_mode="manual", booked_at=booked_at,
-        latest_status="Booked manually", normalized_status="booked",
+        db, order_id, provider="shadowfax", provider_order_id=None,
+        shipment_id=awb, awb=awb, courier_name=service or "Shadowfax", courier_service=service,
+        booking_status="booked", booking_mode="shopify_reconciled" if shopify_tracking else "manual_validated", booked_at=booked_at,
+        latest_status=str(validation["provider_status"]), normalized_status="booked",
+        tracking_url=validation.get("tracking_url"),
         booking_confidence="confirmed", reconciliation_status="confirmed",
         booking_freight=payload.freight, booking_operator=actor,
         booking_note=str(payload.note or "").strip() or None,
     )
-    OrderOperationsStore.record_timeline_event(order_id, "shadowfax_manual_shipment_recorded", operator=actor)
+    OrderOperationsStore.record_timeline_event(
+        order_id, "shadowfax_manual_shipment_recorded", operator=actor,
+        details={"validation_source": validation["validation_source"], "awb": awb},
+    )
     cleanup = await _cleanup_unused_shiprocket_order(order_id, order.order_number, actor)
     synchronized = await _sync_shopify_after_booking(db, order) if awb else shipment_snapshot(saved)
-    return {"provider": "shadowfax", "shipment": synchronized or shipment_snapshot(saved), "shiprocket_cleanup": cleanup, "warning": cleanup.get("error")}
+    return {
+        "provider": "shadowfax", "shipment": synchronized or shipment_snapshot(saved),
+        "shiprocket_cleanup": cleanup, "warning": cleanup.get("error"),
+        "provider_warning": validation.get("provider_warning"),
+        "validation_source": validation["validation_source"],
+        "message": "Shadowfax shipment found and recorded.",
+    }
 
 
 @booking_router.post("/shadowfax-test-324663")

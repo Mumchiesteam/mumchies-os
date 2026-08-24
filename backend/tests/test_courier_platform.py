@@ -165,7 +165,7 @@ async def test_official_shadowfax_http_transport_contract():
             assert __import__("json").loads(request.content) == official_booking_payload()
             return httpx.Response(200, json={"message": "Success", "errors": None, "data": {"id": 42, "client_order_id": "STAGE-1", "awb_number": "SF-STAGE-1", "status": "new", "customer_track_url": "https://exp.shadowfax.in/test"}})
         if request.url.path.endswith("/track/"):
-            return httpx.Response(200, json={"message": "Success", "order_details": {"awb_number": "SF-STAGE-1", "status": "ofd", "customer_track_url": "https://exp.shadowfax.in/test"}, "tracking_details": [{"created": "2026-07-27T10:00:00Z", "location": "BLR Hub", "status_id": "ofd", "remarks": "Item OFD"}]})
+            return httpx.Response(200, json={"message": "Success", "order_details": {"client_order_id": "STAGE-1", "awb_number": "SF-STAGE-1", "status": "ofd", "customer_track_url": "https://exp.shadowfax.in/test"}, "tracking_details": [{"created": "2026-07-27T10:00:00Z", "location": "BLR Hub", "status_id": "ofd", "remarks": "Item OFD"}]})
         if request.url.path.endswith("/cancel/"):
             assert __import__("json").loads(request.content) == {"request_id": "SF-STAGE-1", "cancel_remarks": "Request cancelled by customer"}
             return httpx.Response(200, json={"responseMsg": "Request has been marked as cancelled", "responseCode": 200})
@@ -182,6 +182,7 @@ async def test_official_shadowfax_http_transport_contract():
         assert booking["provider_order_id"] != booking["provider_response"]["data"]["client_order_id"]
         tracking = await transport.track_shipment({"awb": "SF-STAGE-1"})
         assert tracking["status"] == "ofd" and tracking["latest_scan"] == "BLR Hub"
+        assert tracking["client_order_id"] == "STAGE-1" and tracking["awb"] == "SF-STAGE-1"
         cancellation = await transport.cancel_booking({"awb": "SF-STAGE-1"})
         assert cancellation["cancelled"] is True
     assert [request.method for request in requests] == ["GET", "GET", "POST", "GET", "POST"]

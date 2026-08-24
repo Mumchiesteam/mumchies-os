@@ -367,9 +367,13 @@ async def test_cancelled_unfulfilled_order_cannot_create_manual_shadowfax_eviden
 
 
 @pytest.mark.anyio
-async def test_eligible_order_can_create_manual_shadowfax_evidence(monkeypatch):
-    order = SimpleNamespace(order_number="324663", cancelled_at=None, shopify_status="open", fulfillment_status="unfulfilled", tags=[], payment_status="pending")
-    operations = {"selected_courier": {"provider": "shadowfax"}}
+async def test_325837_shopify_shadowfax_fulfillment_is_reconciled_without_duplicate_booking(monkeypatch):
+    order = SimpleNamespace(
+        order_number="325837", cancelled_at=None, shopify_status="open", fulfillment_status="fulfilled",
+        tags=[], payment_status="paid",
+        external_tracking=SimpleNamespace(provider="Shadowfax", awb="SF38749690458", tracking_url="https://tracker.shadowfax.in/#/awb/SF38749690458/"),
+    )
+    operations = {"selected_courier": None}
     async def context(_order_id, _db): return order, operations, None
     saved = {}
     def persist(_db, order_id, **values): saved.update(order_id=order_id, **values); return saved
@@ -378,14 +382,50 @@ async def test_eligible_order_can_create_manual_shadowfax_evidence(monkeypatch):
     monkeypatch.setattr(couriers, "upsert_shipment", persist)
     monkeypatch.setattr(couriers, "shipment_snapshot", lambda value: dict(value))
     monkeypatch.setattr(OrderOperationsStore, "record_timeline_event", lambda *_args, **_kwargs: {})
+    async def track_unavailable(_self, _request):
+        raise couriers.ProviderError("read credential cannot see channel order", provider="shadowfax", operation="tracking")
+    monkeypatch.setattr(couriers.ShadowfaxAdapter, "track_shipment", track_unavailable)
+    async def sync(_db, _order): return dict(saved)
+    monkeypatch.setattr(couriers, "_sync_shopify_after_booking", sync)
     cleanup_calls = []
     async def cleanup(order_id, order_number, operator): cleanup_calls.append((order_id, order_number, operator)); return {"status": "not_applicable"}
     monkeypatch.setattr(couriers, "_cleanup_unused_shiprocket_order", cleanup)
-    result = await couriers.save_manual_shadowfax_shipment("1", ManualShadowfaxPayload(provider_id="SFX-1"), authenticated_request(), None)
+    result = await couriers.save_manual_shadowfax_shipment("1", ManualShadowfaxPayload(), authenticated_request(), None)
     assert result["shipment"]["provider"] == "shadowfax"
-    assert result["shipment"]["booking_mode"] == "manual"
-    assert result["shipment"]["provider_order_id"] == "SFX-1"
-    assert cleanup_calls == [("1", "324663", "Authenticated Operator")]
+    assert result["shipment"]["booking_mode"] == "shopify_reconciled"
+    assert result["shipment"]["awb"] == "SF38749690458"
+    assert result["validation_source"] == "shopify_shadowfax_fulfillment"
+    assert cleanup_calls == [("1", "325837", "Authenticated Operator")]
+
+
+@pytest.mark.anyio
+async def test_shadowfax_reconciliation_rejects_awb_that_differs_from_exact_shopify_order(monkeypatch):
+    order = SimpleNamespace(
+        order_number="325837", cancelled_at=None, shopify_status="open", fulfillment_status="fulfilled",
+        external_tracking=SimpleNamespace(provider="Shadowfax", awb="SF38749690458", tracking_url=None),
+    )
+    async def context(_order_id, _db): return order, {"selected_courier": None}, None
+    monkeypatch.setattr(couriers, "_load_context", context)
+    monkeypatch.setattr(couriers, "get_shipment", lambda *_args: None)
+    monkeypatch.setattr(couriers, "upsert_shipment", lambda *_args, **_kwargs: pytest.fail("mismatched AWB was persisted"))
+    with pytest.raises(orders.HTTPException, match="does not match") as error:
+        await couriers.save_manual_shadowfax_shipment("1", ManualShadowfaxPayload(awb="SF-WRONG"), authenticated_request(), None)
+    assert error.value.status_code == 409
+
+
+@pytest.mark.anyio
+async def test_shadowfax_manual_fallback_requires_validated_exact_order_association(monkeypatch):
+    order = SimpleNamespace(order_number="325837", cancelled_at=None, shopify_status="open", fulfillment_status="unfulfilled", external_tracking=None)
+    async def context(_order_id, _db): return order, {"selected_courier": {"provider": "shadowfax"}}, None
+    async def track(_self, _request):
+        return SimpleNamespace(provider_status="booked", status=SimpleNamespace(value="booked"), tracking_url=None, raw_response={"client_order_id": "325999"})
+    monkeypatch.setattr(couriers, "_load_context", context)
+    monkeypatch.setattr(couriers, "get_shipment", lambda *_args: None)
+    monkeypatch.setattr(couriers.ShadowfaxAdapter, "track_shipment", track)
+    monkeypatch.setattr(couriers, "upsert_shipment", lambda *_args, **_kwargs: pytest.fail("cross-order AWB was persisted"))
+    with pytest.raises(orders.HTTPException, match="different order") as error:
+        await couriers.save_manual_shadowfax_shipment("1", ManualShadowfaxPayload(awb="SF-OTHER"), authenticated_request(), None)
+    assert error.value.status_code == 409
 
 
 @pytest.mark.anyio
