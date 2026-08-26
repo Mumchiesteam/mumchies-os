@@ -371,7 +371,7 @@ class ShopifyService:
                     return list(cached[1])
 
             orders = await self._fetch_orders(limit)
-            history = await self._get_order_identity_history(force_refresh=force_refresh)
+            history = await self._get_order_identity_history(orders, force_refresh=force_refresh)
             orders = mark_repeat_customers(orders, history)
             if limit is None:
                 self._orders_cache[cache_key] = (
@@ -383,7 +383,7 @@ class ShopifyService:
     async def _fetch_orders(self, limit: int | None = None) -> list[ShopifyOrder]:
         return await self._fetch_orders_for_enrichment(limit, include_transactions=True)
 
-    async def _get_order_identity_history(self, *, force_refresh: bool = False) -> list[dict[str, Any]]:
+    async def _get_order_identity_history(self, orders: list[ShopifyOrder], *, force_refresh: bool = False) -> list[dict[str, Any]]:
         cache_key = (self.store, self.api_version or "")
         cached = self._identity_cache.get(cache_key)
         if not force_refresh and cached and cached[0] > time.monotonic():
@@ -392,31 +392,58 @@ class ShopifyService:
             cached = self._identity_cache.get(cache_key)
             if not force_refresh and cached and cached[0] > time.monotonic():
                 return list(cached[1])
-            history = await self._fetch_order_identity_history()
+            history = await self._fetch_order_identity_history(orders)
             self._identity_cache[cache_key] = (time.monotonic() + self._identity_cache_ttl_seconds, list(history))
             return history
 
-    async def _fetch_order_identity_history(self) -> list[dict[str, Any]]:
-        """Fetch identity-only order history in bulk; never makes per-order requests."""
-        url = f"https://{self.store}/admin/api/{self.api_version}/orders.json"
-        params: dict[str, str] | None = {
-            "status": "any", "limit": "250", "order": "created_at desc",
-            "fields": "id,created_at,customer,email,phone,shipping_address,cancelled_at,tags,test",
-        }
-        headers = {"X-Shopify-Access-Token": await self._get_access_token()}
-        history: list[dict[str, Any]] = []
-        seen_urls: set[str] = set()
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            while url:
-                if url in seen_urls:
-                    raise ShopifyConfigurationError("Shopify identity pagination repeated a page URL.")
-                seen_urls.add(url)
-                response = await client.get(url, params=params, headers=headers)
-                response.raise_for_status()
-                history.extend(value for value in response.json().get("orders", []) if isinstance(value, dict))
-                url = self._next_page_url(response.headers.get("link")) or ""
-                params = None
-        return history
+    async def _fetch_order_identity_history(self, orders: list[ShopifyOrder]) -> list[dict[str, Any]]:
+        """Fetch history for current identities in bounded GraphQL batches; never per order."""
+        customer_ids = sorted({value.customer_id for value in orders if value.customer_id})
+        fallback_terms = sorted({
+            term
+            for value in orders if not value.customer_id
+            for term in (
+                f"phone:{''.join(character for character in str(value.phone or '') if character.isdigit())[-10:]}" if value.phone else None,
+                f'email:"{str(value.email).strip().replace(chr(34), "")}"' if value.email else None,
+            )
+            if term and not term.endswith(":")
+        })
+        terms = [f"customer_id:{value}" for value in customer_ids] + fallback_terms
+        if not terms:
+            return []
+
+        query = """query RepeatCustomerHistory($query: String!, $after: String) {
+          orders(first: 250, after: $after, query: $query, sortKey: CREATED_AT, reverse: true) {
+            nodes { legacyResourceId createdAt cancelledAt test tags email phone customer { id } shippingAddress { phone } }
+            pageInfo { hasNextPage endCursor }
+          }
+        }"""
+
+        async def fetch_chunk(chunk: list[str]) -> list[dict[str, Any]]:
+            rows: list[dict[str, Any]] = []
+            cursor: str | None = None
+            while True:
+                data = await self.graphql(query, {"query": " OR ".join(chunk), "after": cursor})
+                connection = data.get("orders") or {}
+                for node in connection.get("nodes") or []:
+                    customer_gid = ((node.get("customer") or {}).get("id") or "")
+                    rows.append({
+                        "id": str(node.get("legacyResourceId") or ""), "created_at": node.get("createdAt"),
+                        "cancelled_at": node.get("cancelledAt"), "test": node.get("test"),
+                        "tags": ",".join(node.get("tags") or []), "email": node.get("email"), "phone": node.get("phone"),
+                        "customer": {"id": customer_gid.rsplit("/", 1)[-1]} if customer_gid else None,
+                        "shipping_address": node.get("shippingAddress") or {},
+                    })
+                page_info = connection.get("pageInfo") or {}
+                if not page_info.get("hasNextPage"):
+                    return rows
+                cursor = page_info.get("endCursor")
+                if not cursor:
+                    raise ShopifyConfigurationError("Shopify identity pagination omitted its cursor.")
+
+        chunks = [terms[start:start + 250] for start in range(0, len(terms), 250)]
+        pages = await asyncio.gather(*(fetch_chunk(chunk) for chunk in chunks))
+        return [row for page in pages for row in page]
 
     async def get_orders_for_ndr_enrichment(self) -> list[ShopifyOrder]:
         """Read recent orders without per-order transaction calls; NDR needs identity and fulfilment data only."""

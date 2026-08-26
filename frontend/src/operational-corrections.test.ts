@@ -10,6 +10,7 @@ describe('operational corrections UI', () => {
   it('renders UTC 13:31 and legacy offset-less UTC as 19:01 IST', () => {
     expect(formatDateTime('2026-08-26T13:31:00Z')).toBe('26 Aug 2026, 07:01 PM IST')
     expect(formatDateTime('2026-08-26T13:31:00')).toBe('26 Aug 2026, 07:01 PM IST')
+    expect(formatDateTime('2026-08-26T19:01:00+05:30')).toBe('26 Aug 2026, 07:01 PM IST')
   })
 
   it('removes the COD workflow for prepaid orders', () => {

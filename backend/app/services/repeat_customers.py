@@ -59,10 +59,12 @@ def mark_repeat_customers(orders: Iterable[ShopifyOrder], history: Iterable[dict
         created = _instant(order.created_date)
         phone = normalize_indian_phone(order.phone)
         email = normalize_email(order.email)
-        repeat = (
-            bool(order.customer_id and any(value < created for value in by_customer.get(order.customer_id, [])))
-            or bool(phone and any(value < created for value in by_phone.get(phone, [])))
-            or bool(email and any(value < created for value in by_email.get(email, [])))
-        )
+        if order.customer_id:
+            repeat = any(value < created for value in by_customer.get(order.customer_id, []))
+        else:
+            repeat = bool(
+                (phone and any(value < created for value in by_phone.get(phone, [])))
+                or (email and any(value < created for value in by_email.get(email, [])))
+            )
         result.append(order.model_copy(update={"is_repeat_customer": repeat}))
     return result

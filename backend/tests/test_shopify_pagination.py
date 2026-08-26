@@ -43,7 +43,7 @@ async def test_shopify_service_follows_link_header_pagination(monkeypatch: pytes
     monkeypatch.setattr(services.shopify.settings, "shopify_client_secret", "client-secret")
     monkeypatch.setattr(services.shopify.settings, "shopify_api_version", "2025-07")
     monkeypatch.setattr(ShopifyService, "_get_access_token", lambda self: __import__("asyncio").sleep(0, result="token"))
-    monkeypatch.setattr(ShopifyService, "_get_order_identity_history", lambda self, force_refresh=False: __import__("asyncio").sleep(0, result=[]))
+    monkeypatch.setattr(ShopifyService, "_get_order_identity_history", lambda self, orders, force_refresh=False: __import__("asyncio").sleep(0, result=[]))
 
     recent = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat().replace("+00:00", "Z")
     first = _FakeResponse(

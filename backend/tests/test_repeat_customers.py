@@ -37,7 +37,7 @@ def test_325670_shape_is_repeat_from_earlier_fulfilled_customer_order():
 
 
 def test_identity_hierarchy_falls_back_to_phone_then_email_without_name_matching():
-    current_phone = order("2", "2026-08-22T00:00:00Z", customer_id="new", phone="+91 98710 64928", email=None)
+    current_phone = order("2", "2026-08-22T00:00:00Z", customer_id=None, phone="+91 98710 64928", email=None)
     current_email = order("3", "2026-08-22T00:00:00Z", customer_id=None, phone=None, email=" Person@Example.com ")
     rows = [history("1", "2026-08-01T00:00:00Z", customer_id="old", phone="919871064928"), history("0", "2026-07-01T00:00:00Z", email="person@example.com")]
     assert [value.is_repeat_customer for value in mark_repeat_customers([current_phone, current_email], rows)] == [True, True]
@@ -51,4 +51,10 @@ def test_current_future_cancelled_and_test_orders_do_not_make_repeat():
         history("0", "2026-08-01T00:00:00Z", customer_id="c1", cancelled=True),
         history("-1", "2026-07-01T00:00:00Z", customer_id="c1", test=True),
     ]
+    assert mark_repeat_customers([current], rows)[0].is_repeat_customer is False
+
+
+def test_customer_id_is_authoritative_over_reused_phone_and_email():
+    current = order("2", "2026-08-22T00:00:00Z", customer_id="new", phone="9871064928", email="same@example.com")
+    rows = [history("1", "2026-08-01T00:00:00Z", customer_id="old", phone="9871064928", email="same@example.com")]
     assert mark_repeat_customers([current], rows)[0].is_repeat_customer is False
