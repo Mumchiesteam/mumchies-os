@@ -82,6 +82,7 @@ import { CourierIssuesPage } from './components/CourierIssuesPage'
 import { DispatchQueueModal } from './components/DispatchQueueModal'
 import { QueueDateFilterControl } from './components/QueueDateFilterControl'
 import { matchesOrderQueueFilters, type QueueDateFilter } from './utils/queueDateFilter'
+import { quoteAddressesMatch, quoteContextKey, quoteSelectionGate, type QuoteAddress, type QuotePackage } from './utils/quoteContext'
 
 type IconName = 'grid' | 'bag' | 'alert' | 'users' | 'chart' | 'settings' | 'search' | 'bell' | 'filter' | 'chevron' | 'more' | 'eye' | 'truck' | 'calendar' | 'close' | 'copy' | 'phone' | 'external' | 'repeat' | 'tag' | 'edit' | 'call'
 type TabKey = 'fresh' | 'previous' | 'all' | 'ready_to_ship' | 'manifested' | 'printed_today' | 'shiprocket_cleanup'
@@ -275,12 +276,16 @@ function App() {
   const [courierLoading, setCourierLoading] = useState(false)
   const [courierError, setCourierError] = useState('')
   const [courierWarnings, setCourierWarnings] = useState<string[]>([])
+  const [courierQuoteContextKey, setCourierQuoteContextKey] = useState<string | null>(null)
+  const [courierQuoteFingerprint, setCourierQuoteFingerprint] = useState<string | null>(null)
   const [selectedCourierId, setSelectedCourierId] = useState<string | null>(null)
   const [bookingLoading, setBookingLoading] = useState(false)
   const [shadowfaxTestState, setShadowfaxTestState] = useState<ShadowfaxDirectTestState | null>(null)
   const [shadowfaxShipmentRow, setShadowfaxShipmentRow] = useState<ShadowfaxShipmentRowDiagnostic | null>(null)
   const bookingRequestInFlight = useRef(false)
   const courierRequestOrderRef = useRef<string | null>(null)
+  const courierRequestContextRef = useRef<string | null>(null)
+  const courierRequestControllerRef = useRef<AbortController | null>(null)
   const courierSelectionInFlight = useRef(false)
   const drawerGenerationRef = useRef(0)
   const [shipmentRefreshLoading, setShipmentRefreshLoading] = useState(false)
@@ -448,6 +453,8 @@ function App() {
       setOperations(null)
       setCourierOptions([])
       setCourierWarnings([])
+      setCourierQuoteContextKey(null)
+      setCourierQuoteFingerprint(null)
       setSelectedCourierId(null)
       setCourierError('')
       setCancellationPreflight(null)
@@ -492,10 +499,15 @@ function App() {
   const openOrder = (orderId: string) => {
     drawerGenerationRef.current += 1
     courierRequestOrderRef.current = null
+    courierRequestContextRef.current = null
+    courierRequestControllerRef.current?.abort()
+    courierRequestControllerRef.current = null
     setBookingEligibility(null)
     setOperations(null)
     setCourierOptions([])
     setCourierWarnings([])
+    setCourierQuoteContextKey(null)
+    setCourierQuoteFingerprint(null)
     setSelectedCourierId(null)
     setCourierError('')
     setCourierLoading(false)
@@ -579,8 +591,6 @@ function App() {
       return
     }
     try {
-      setCourierOptions([])
-      setCourierWarnings([])
       setSelectedCourierId(null)
       setCourierError('')
       setBookingEligibility(null)
@@ -655,16 +665,22 @@ function App() {
   }
 
 
-  const checkCouriers = async (packageNumbers: { weight_kg: number; length_cm: number | null; breadth_cm: number | null; height_cm: number | null }) => {
+  const checkCouriers = async (packageNumbers: QuotePackage, quoteContext: { key: string; address: QuoteAddress; generation: number }) => {
     if (!selectedOrder || !Number.isFinite(packageNumbers.weight_kg) || packageNumbers.weight_kg <= 0) return
     const orderId = selectedOrder.internalId
     const generation = drawerGenerationRef.current
-    if (courierRequestOrderRef.current === orderId) return
+    if (quoteContext.generation !== generation || courierRequestContextRef.current === quoteContext.key) return
+    courierRequestControllerRef.current?.abort()
+    const controller = new AbortController()
+    courierRequestControllerRef.current = controller
     courierRequestOrderRef.current = orderId
+    courierRequestContextRef.current = quoteContext.key
     setCourierLoading(true)
     setCourierError('')
     setCourierWarnings([])
     setCourierOptions([])
+    setCourierQuoteContextKey(null)
+    setCourierQuoteFingerprint(null)
     // Every lookup invalidates the previous persisted quote. Mirror that locally before the
     // backend clears it so a refreshed quote with the same courier ID cannot appear selected.
     setSelectedCourierId(null)
@@ -674,8 +690,11 @@ function App() {
       const result = await checkShiprocketCouriers(orderId, {
         ...packageNumbers,
         courier_payment_mode: selectedOrder.payment,
-      })
-      if (generation !== drawerGenerationRef.current) return
+        quote_address: quoteContext.address,
+        drawer_generation: generation,
+        client_context_key: quoteContext.key,
+      }, controller.signal)
+      if (controller.signal.aborted || generation !== drawerGenerationRef.current || result.client_context_key !== quoteContext.key) return
       // The lookup response is authoritative for the package that was just
       // persisted. Reusing drawer-open eligibility here leaves `eligible=false`
       // when that older snapshot only lacked package data, so the visible first
@@ -683,25 +702,31 @@ function App() {
       setBookingEligibility(result.booking_readiness)
       const sorted = [...(result.couriers ?? [])].sort((a, b) => a.total_estimated_shipping_cost - b.total_estimated_shipping_cost)
       setCourierOptions(sorted)
+      setCourierQuoteContextKey(result.client_context_key)
+      setCourierQuoteFingerprint(result.quote_context_fingerprint)
       setCourierWarnings(result.provider_warnings ?? [])
       if (result.lookup_status === 'manual_only') setCourierError('Courier lookup failed: both rate providers are unavailable. Retry lookup.')
       else if (sorted.length === 0) setCourierError('No courier services are currently available. Check the package and address, then retry.')
-      setNotice('Courier options loaded')
-      console.info('courier_lookup_frontend_timing', { orderId, request_and_render_ms: performance.now() - lookupStarted, backend_ms: result.timings_ms })
+      const responseReceived = performance.now()
+      window.requestAnimationFrame(() => { setNotice('Courier options loaded'); console.info('courier_lookup_frontend_timing', { orderId, drawer_generation: generation, lookup_start_ms: lookupStarted, request_ms: responseReceived - lookupStarted, response_to_cards_rendered_ms: performance.now() - responseReceived, backend_ms: result.timings_ms, quote_context_fingerprint: result.quote_context_fingerprint }) })
     } catch (err) {
-      if (generation !== drawerGenerationRef.current) return
+      if (controller.signal.aborted || generation !== drawerGenerationRef.current) return
       const message = (err as Error).message
       setCourierError(message === 'Failed to fetch'
         ? 'Courier lookup request failed before reaching the server. Check the connection and retry.'
         : message)
     } finally {
-      if (courierRequestOrderRef.current === orderId) courierRequestOrderRef.current = null
-      if (generation === drawerGenerationRef.current) setCourierLoading(false)
+      if (courierRequestContextRef.current === quoteContext.key) {
+        courierRequestOrderRef.current = null
+        courierRequestContextRef.current = null
+        courierRequestControllerRef.current = null
+        if (generation === drawerGenerationRef.current) setCourierLoading(false)
+      }
     }
   }
 
-  const selectCourier = async (courier: CourierQuote) => {
-    if (!selectedOrder || !courier.courier_id || courierSelectionInFlight.current) return
+  const selectCourier = async (courier: CourierQuote, expectedQuoteContextKey: string) => {
+    if (!selectedOrder || !courier.courier_id || courierSelectionInFlight.current || courierQuoteContextKey !== expectedQuoteContextKey || !bookingEligibility?.eligible) return
     courierSelectionInFlight.current = true
     const orderId = selectedOrder.internalId
     const generation = drawerGenerationRef.current
@@ -1061,6 +1086,7 @@ function App() {
           addressDraft={addressDraft}
           setAddressDraft={setAddressDraft}
           addressInitializing={addressInitializing}
+          drawerGeneration={addressDraftGeneration}
           courierSyncMessage={courierSyncMessage}
           addressVerificationLine={addressVerifiedLabel}
           onClose={() => { drawerGenerationRef.current += 1; setAddressDraft(emptyAddressDraft()); setAddressDraftOrderId(null); setAddressDraftGeneration(null); setAddressInitializing(true); setShadowfaxPincodeRecommendation(null); setSelectedOrderId(null); setSelectedOrderSnapshot(null) }}
@@ -1076,11 +1102,13 @@ function App() {
           labelLoading={labelLoading}
           courierError={courierError}
           courierWarnings={courierWarnings}
+          courierQuoteContextKey={courierQuoteContextKey}
+          courierQuoteFingerprint={courierQuoteFingerprint}
           shadowfaxPincodeRecommendation={shadowfaxPincodeRecommendation?.pincode === addressDraft.pincode.trim() ? shadowfaxPincodeRecommendation : null}
           selectedCourierId={selectedCourierId}
           persistedCourierSelection={operations?.selected_courier ?? null}
           onCheckCouriers={checkCouriers}
-          onSelectCourier={courier => void selectCourier(courier)}
+          onSelectCourier={(courier, contextKey) => void selectCourier(courier, contextKey)}
           onBookShipment={bookShipment}
           onSaveManualShadowfax={saveManualShadowfax}
           onSaveManualExternal={saveManualExternal}
@@ -1190,6 +1218,7 @@ const OrderDrawer = memo(function OrderDrawer({
   addressDraft,
   setAddressDraft,
   addressInitializing,
+  drawerGeneration,
   courierSyncMessage,
   addressVerificationLine,
   onClose,
@@ -1205,6 +1234,8 @@ const OrderDrawer = memo(function OrderDrawer({
   labelLoading,
   courierError,
   courierWarnings,
+  courierQuoteContextKey,
+  courierQuoteFingerprint,
   shadowfaxPincodeRecommendation,
   selectedCourierId,
   persistedCourierSelection,
@@ -1257,6 +1288,7 @@ const OrderDrawer = memo(function OrderDrawer({
     pincode: string
   }) => void
   addressInitializing: boolean
+  drawerGeneration: number | null
   courierSyncMessage: string
   addressVerificationLine: string
   onClose: () => void
@@ -1280,16 +1312,13 @@ const OrderDrawer = memo(function OrderDrawer({
   labelLoading: boolean
   courierError: string
   courierWarnings: string[]
+  courierQuoteContextKey: string | null
+  courierQuoteFingerprint: string | null
   shadowfaxPincodeRecommendation: OrderOperations['shadowfax_pincode_recommendation']
   selectedCourierId: string | null
   persistedCourierSelection: OrderOperations['selected_courier']
-  onCheckCouriers: (packageNumbers: {
-    weight_kg: number
-    length_cm: number | null
-    breadth_cm: number | null
-    height_cm: number | null
-  }) => void
-  onSelectCourier: (courier: CourierQuote) => void
+  onCheckCouriers: (packageNumbers: QuotePackage, quoteContext: { key: string; address: QuoteAddress; generation: number }) => void
+  onSelectCourier: (courier: CourierQuote, quoteContextKey: string) => void
   onBookShipment: (packageNumbers: {
     weight_kg: number
     length_cm: number | null
@@ -1328,6 +1357,9 @@ const OrderDrawer = memo(function OrderDrawer({
   const [manualExternal, setManualExternal] = useState<ManualExternalShipmentPayload>({ provider: 'shiprocket', awb: '', reason: 'Order recreated / cloned externally', comment: '', operator_confirmed: false })
   const [manualExternalStatus, setManualExternalStatus] = useState('')
   const autoLookupKeyRef = useRef('')
+  const selectableTimingRef = useRef(false)
+  const drawerOpenedAtRef = useRef(0)
+  const verificationCompletedAtRef = useRef<number | null>(null)
 
   const shipping = order.shippingAmount == null ? 'Courier rates not connected' : formatMoney(order.shippingAmount)
   const verificationLine = addressVerificationLine
@@ -1346,9 +1378,17 @@ const OrderDrawer = memo(function OrderDrawer({
   }), [packageDraft])
   const packageRequirementNames = new Set(['package weight', 'package length', 'package breadth', 'package height'])
   const nonPackageMissing = missing.filter(requirement => !packageRequirementNames.has(requirement.toLowerCase()))
-  const canCheckCouriers = bookingEligibility !== null && packageValid && nonPackageMissing.length === 0
+  const quoteAddress = useMemo<QuoteAddress>(() => ({ ...addressDraft }), [addressDraft])
+  const currentQuoteContextKey = useMemo(() => drawerGeneration === null ? '' : quoteContextKey({
+    orderId: order.internalId, generation: drawerGeneration, address: quoteAddress,
+    paymentMode: order.payment, codAmount: order.codCollectableAmount, package: packageNumbers,
+  }), [drawerGeneration, order.codCollectableAmount, order.internalId, order.payment, packageNumbers, quoteAddress])
+  const canCheckCouriers = !addressInitializing && drawerGeneration !== null && packageValid && /^\d{6}$/.test(addressDraft.pincode.trim()) && !bookingEligibility?.shipment_exists
   const selectedCourier = courierOptions.find(option => option.courier_id === selectedCourierId)
   const selectedCourierPersisted = courierSelectionMatches(persistedCourierSelection, selectedCourier)
+  const codConfirmed = isPrepaid || callLog[0]?.result === 'Confirmed'
+  const verifiedAddressForContext = hasVerifiedAddress && quoteAddressesMatch(quoteAddress, order.correctedAddress ?? order.verifiedAddressSnapshot)
+  const quoteGate = quoteSelectionGate({ eligible: Boolean(bookingEligibility?.eligible), contextMatches: Boolean(currentQuoteContextKey && courierQuoteContextKey === currentQuoteContextKey), addressVerified: verifiedAddressForContext, paymentMode: order.payment, codConfirmed })
   const preparingBooking = addressInitializing || bookingEligibility === null || courierLoading
   const canBookShipment = bookingEligibility !== null
     && nonPackageMissing.length === 0
@@ -1356,6 +1396,7 @@ const OrderDrawer = memo(function OrderDrawer({
     && Boolean(selectedCourierId)
     && selectedCourierPersisted
     && Boolean(selectedCourier?.booking_supported)
+    && quoteGate.enabled
     && !bookingEligibility.shipment_exists
     && !bookingLoading
   const requirementLabels: Record<string, string> = {
@@ -1389,12 +1430,23 @@ const OrderDrawer = memo(function OrderDrawer({
           : !selectedCourierPersisted ? 'Select and save a courier service'
           : !selectedCourier.booking_supported ? (selectedCourier.provider === 'delhivery' ? 'Direct booking is unavailable for this rate' : 'Selected courier does not support booking')
             : null)
-  const autoLookupKey = `${order.internalId}:${packageNumbers.weight_kg}:${packageNumbers.length_cm}:${packageNumbers.breadth_cm}:${packageNumbers.height_cm}:${bookingEligibility?.eligible}:${addressDraft.pincode}:${addressDraft.phone}`
   useEffect(() => {
-    if (!canCheckCouriers || courierLoading || courierError || autoLookupKeyRef.current === autoLookupKey) return
-    autoLookupKeyRef.current = autoLookupKey
-    onCheckCouriers(packageNumbers)
-  }, [autoLookupKey, canCheckCouriers, courierError, courierLoading, onCheckCouriers, packageNumbers])
+    drawerOpenedAtRef.current = performance.now()
+    verificationCompletedAtRef.current = null
+    selectableTimingRef.current = false
+    autoLookupKeyRef.current = ''
+  }, [drawerGeneration, order.internalId])
+  useEffect(() => {
+    if (!canCheckCouriers || !currentQuoteContextKey || autoLookupKeyRef.current === currentQuoteContextKey) return
+    autoLookupKeyRef.current = currentQuoteContextKey
+    console.info('courier_prefetch_started', { orderId: order.internalId, drawer_generation: drawerGeneration, drawer_open_to_lookup_start_ms: performance.now() - drawerOpenedAtRef.current })
+    onCheckCouriers(packageNumbers, { key: currentQuoteContextKey, address: quoteAddress, generation: drawerGeneration! })
+  }, [canCheckCouriers, currentQuoteContextKey, drawerGeneration, onCheckCouriers, order.internalId, packageNumbers, quoteAddress])
+  useEffect(() => {
+    if (verifiedAddressForContext && codConfirmed && verificationCompletedAtRef.current === null) verificationCompletedAtRef.current = performance.now()
+    if (quoteGate.enabled && !selectableTimingRef.current) console.info('courier_quotes_selectable', { orderId: order.internalId, quote_context_fingerprint: courierQuoteFingerprint, verification_complete_to_selectable_ms: verificationCompletedAtRef.current === null ? null : performance.now() - verificationCompletedAtRef.current })
+    selectableTimingRef.current = quoteGate.enabled
+  }, [codConfirmed, courierQuoteFingerprint, order.internalId, quoteGate.enabled, verifiedAddressForContext])
   return (
     <div className="fixed inset-0 z-40">
       <button aria-label="Close order drawer" onClick={onClose} className="absolute inset-0 bg-slate-950/35 backdrop-blur-[1px]" />
@@ -1556,17 +1608,18 @@ const OrderDrawer = memo(function OrderDrawer({
                     ? <p className="mt-1">Eligible for courier lookup</p>
                     : <ul className="mt-1 list-disc space-y-0.5 pl-5">{visibleMissing.map(requirement => <li key={requirement}>{requirement}</li>)}</ul>}
               </div>
-              {courierError && <div className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{courierError}{courierError.startsWith('Shiprocket cleanup') ? <button onClick={onRetryShiprocketCleanup} className="ml-3 rounded-md border border-rose-200 bg-white px-2 py-1 font-semibold">Retry cleanup</button> : <button onClick={() => { autoLookupKeyRef.current = ''; onCheckCouriers(packageNumbers) }} className="ml-3 rounded-md border border-rose-200 bg-white px-2 py-1 font-semibold">Retry courier lookup</button>}</div>}
+              {courierError && <div className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{courierError}{courierError.startsWith('Shiprocket cleanup') ? <button onClick={onRetryShiprocketCleanup} className="ml-3 rounded-md border border-rose-200 bg-white px-2 py-1 font-semibold">Retry cleanup</button> : <button onClick={() => { autoLookupKeyRef.current = ''; if (drawerGeneration !== null && currentQuoteContextKey) onCheckCouriers(packageNumbers, { key: currentQuoteContextKey, address: quoteAddress, generation: drawerGeneration }) }} className="ml-3 rounded-md border border-rose-200 bg-white px-2 py-1 font-semibold">Retry courier lookup</button>}</div>}
               {courierWarnings.map(warning => <div key={warning} className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-700">{warning}</div>)}
               {selectedCourier?.provider === 'delhivery' && !selectedCourier.booking_supported && <p className="text-xs text-amber-700">Direct Delhivery booking is unavailable because the provider is not configured or this destination is not serviceable.</p>}
-              {courierLoading && <p className="text-sm text-slate-500">Loading courier options…</p>}
+              {shadowfaxPincodeRecommendation && courierOptions.length === 0 && <p className="rounded-lg bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700">Shadowfax Recommended · {shadowfaxPincodeRecommendation.confidence} Pincode · {shadowfaxPincodeRecommendation.hub}</p>}
+              {courierLoading && <p className="text-sm text-slate-500">{courierOptions.length ? 'Refreshing courier options…' : 'Loading courier options…'}</p>}
               {courierOptions.length > 0 && (
                 <div className="space-y-1.5">
                   {courierOptions.map(option => {
                     const selected = option.courier_id === selectedCourierId
                     const shadowfaxRecommendation = option.provider === 'shadowfax' ? shadowfaxRecommendationPresentation(shadowfaxPincodeRecommendation) : null
                     return (
-                      <button key={`${option.courier_name}-${option.courier_id}`} onClick={() => void onSelectCourier(option)} className={`w-full rounded-xl border p-2.5 text-left transition ${selected ? 'border-[#ff6b35] bg-orange-50/60' : 'border-slate-200 bg-white hover:bg-slate-50'}`}>
+                      <button key={`${option.courier_name}-${option.courier_id}`} disabled={!quoteGate.enabled} onClick={() => void onSelectCourier(option, currentQuoteContextKey)} className={`w-full rounded-xl border p-2.5 text-left transition disabled:cursor-not-allowed disabled:opacity-70 ${selected ? 'border-[#ff6b35] bg-orange-50/60' : 'border-slate-200 bg-white enabled:hover:bg-slate-50'}`}>
                         <div className="flex items-start justify-between gap-3">
                           <div>
                             <div className="flex items-center gap-2">
@@ -1579,6 +1632,7 @@ const OrderDrawer = memo(function OrderDrawer({
                             <p className="mt-1 text-[11px] text-slate-400">{option.rate_note}</p>
                             {shadowfaxRecommendation && <p className="mt-1 text-[11px] font-medium text-emerald-700">{shadowfaxRecommendation.detail} · Recommendation only; live serviceability remains separate.</p>}
                             {option.provider === 'shadowfax' && showShadowfaxNotRecommended(shadowfaxPincodeRecommendation, addressDraft.pincode) && <p className="mt-1 text-[11px] font-medium text-amber-700">Not in recommended pincode list</p>}
+                            {!quoteGate.enabled && <p className="mt-1 text-[11px] font-semibold text-amber-700">{quoteGate.reason}</p>}
                           </div>
                           <div className="text-right text-xs text-slate-500">
                             <p>Freight {formatMoney(option.rate)}</p>

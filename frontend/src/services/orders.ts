@@ -814,7 +814,10 @@ export async function checkShiprocketCouriers(orderId: string, payload: {
   breadth_cm?: number | null
   height_cm?: number | null
   courier_payment_mode: string
-}): Promise<{
+  quote_address: { customer_name: string; phone: string; address_line1: string; address_line2: string; landmark: string; city: string; state: string; pincode: string }
+  drawer_generation: number
+  client_context_key: string
+}, signal?: AbortSignal): Promise<{
   provider: string
   pickup_postcode: string
   delivery_postcode: string
@@ -824,6 +827,9 @@ export async function checkShiprocketCouriers(orderId: string, payload: {
   provider_failures: Record<string, string>
   lookup_status: 'complete' | 'partial' | 'manual_only'
   timings_ms: Record<string, number>
+  client_context_key: string
+  quote_context_fingerprint: string
+  quote_context: Record<string, unknown>
   booking_readiness: {
     eligible: boolean
     missing_requirements: string[]
@@ -855,7 +861,7 @@ export async function checkShiprocketCouriers(orderId: string, payload: {
     response = await apiFetch(`${apiBase}/api/v1/couriers/shiprocket/orders/${orderId}/couriers/check`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(payload), signal,
     })
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {

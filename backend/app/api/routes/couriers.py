@@ -52,8 +52,22 @@ class PackageDetailsPayload(BaseModel):
     height_cm: float = Field(default=5, gt=0)
 
 
+class QuoteAddressPayload(BaseModel):
+    customer_name: str = ""
+    phone: str = ""
+    address_line1: str = ""
+    address_line2: str = ""
+    landmark: str = ""
+    city: str = ""
+    state: str = ""
+    pincode: str = Field(pattern=r"^\d{6}$")
+
+
 class CourierCheckPayload(PackageDetailsPayload):
     courier_payment_mode: str = Field(default="COD")
+    quote_address: QuoteAddressPayload | None = None
+    drawer_generation: int | None = Field(default=None, ge=0)
+    client_context_key: str | None = Field(default=None, max_length=2048)
 
 
 class BookingPayload(PackageDetailsPayload):
@@ -701,14 +715,19 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
             order_id, package.model_dump(), current_actor(request),
         )
         eligibility = ShiprocketService().evaluate_booking_eligibility(order, operations, shipment)
-        if not eligibility.eligible:
-            raise HTTPException(status_code=400, detail={"message": "Order is not eligible for courier lookup.", "missing_requirements": eligibility.missing_requirements})
+        quote_operations = deepcopy(operations)
+        if payload.quote_address is not None:
+            quote_operations["corrected_address"] = payload.quote_address.model_dump()
         pickup_started = time.perf_counter()
-        delivery_postcode = ShiprocketService().delivery_postcode(order, operations) or ""
-        cod = payload.courier_payment_mode.upper() == "COD"
+        delivery_postcode = ShiprocketService().delivery_postcode(order, quote_operations) or ""
+        # Use the authoritative Shopify classification for provider pricing.
+        # Partial-COD is a COD shipment even if an older client submits a UI
+        # presentation label instead of the normalized provider mode.
+        quote_payment_mode = _order_payment_mode(order)
+        cod = quote_payment_mode == "COD"
         try:
             pickup_postcode, delivery_postcode, cod = await asyncio.wait_for(
-                _serviceability_query(order, operations, package, payload.courier_payment_mode), timeout=10.0,
+                _serviceability_query(order, quote_operations, package, quote_payment_mode), timeout=10.0,
             )
         except asyncio.TimeoutError:
             pickup_postcode = ""
@@ -775,6 +794,17 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
             "provider": "shadowfax", "booking_supported": True,
             "rate_note": "Manual booking on Shadowfax required",
         })
+        quote_address = _order_latest_address(order, quote_operations) or {}
+        quote_context = {
+            "order_id": order.order_id, "drawer_generation": payload.drawer_generation,
+            "destination": {key: str(quote_address.get(key) or "") for key in (
+                "customer_name", "phone", "address_line1", "address_line2", "landmark", "city", "state", "pincode"
+            )},
+            "payment_mode": "COD" if cod else "Prepaid",
+            "cod_amount": str(order.cod_collectable_amount) if cod else "0",
+            "package": package.model_dump(), "pickup_postcode": pickup_postcode,
+        }
+        quote_context_fingerprint = hashlib.sha256(json.dumps(quote_context, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     except ShiprocketConfigurationError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     except ShiprocketAPIError as error:
@@ -791,6 +821,9 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
         "delivery_postcode": delivery_postcode,
         "payment_mode": "COD" if cod else "Prepaid",
         "weight_kg": package.weight_kg,
+        "client_context_key": payload.client_context_key,
+        "quote_context": quote_context,
+        "quote_context_fingerprint": quote_context_fingerprint,
         "provider_warnings": provider_warnings,
         "provider_failures": provider_failures,
         "lookup_status": "manual_only" if all(provider in provider_failures for provider in ("shiprocket", "delhivery")) else "partial" if provider_failures else "complete",

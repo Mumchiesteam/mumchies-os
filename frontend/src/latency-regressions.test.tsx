@@ -43,9 +43,12 @@ describe('Orders latency regressions', () => {
 
   it('keeps one lookup in flight, clears loading, and rejects stale drawer responses', () => {
     const flow = source.slice(source.indexOf('const checkCouriers'), source.indexOf('const selectCourier'))
-    expect(flow).toContain('if (courierRequestOrderRef.current === orderId) return')
-    expect(flow).toContain('if (generation !== drawerGenerationRef.current) return')
+    expect(flow).toContain('courierRequestContextRef.current === quoteContext.key')
+    expect(flow).toContain('courierRequestControllerRef.current?.abort()')
+    expect(flow).toContain('controller.signal.aborted || generation !== drawerGenerationRef.current')
+    expect(flow).toContain('result.client_context_key !== quoteContext.key')
     expect(flow).toContain('courierRequestOrderRef.current = null')
+    expect(flow).toContain('courierRequestControllerRef.current = null')
     expect(flow).toContain('setCourierLoading(false)')
     expect(flow).toContain("result.lookup_status === 'manual_only'")
     expect(flow).toContain("message === 'Failed to fetch'")

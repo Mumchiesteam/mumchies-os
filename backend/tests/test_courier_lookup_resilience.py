@@ -89,3 +89,27 @@ async def test_provider_timeouts_return_manual_option_and_combined_error(monkeyp
     assert result["provider_failures"] == {"shiprocket": "timeout", "delhivery": "timeout"}
     assert [quote["provider"] for quote in result["couriers"]] == ["shadowfax"]
     assert any("both rate providers" in warning for warning in result["provider_warnings"])
+
+
+@pytest.mark.anyio
+async def test_ineligible_order_can_prefetch_but_response_remains_locked(monkeypatch, lookup_context):
+    locked = eligibility()
+    locked.eligible = False
+    locked.missing_requirements = ["address must be verified"]
+    monkeypatch.setattr(couriers.ShiprocketService, "evaluate_booking_eligibility", lambda *_args: locked)
+    monkeypatch.setattr(couriers.ShiprocketService, "serviceability", lambda *_args: [])
+    monkeypatch.setattr(couriers.DelhiveryService, "configured", property(lambda _self: False))
+    payload = CourierCheckPayload(
+        weight_kg=.5, courier_payment_mode="Prepaid", drawer_generation=9, client_context_key="drawer-9",
+        quote_address={"customer_name": "Lookup", "phone": "9876543210", "address_line1": "Street", "address_line2": "", "landmark": "", "city": "Mumbai", "state": "Maharashtra", "pincode": "400001"},
+    )
+    result = await couriers.shiprocket_serviceability("1", payload, SimpleNamespace(), lookup_context)
+    assert result["booking_readiness"]["eligible"] is False
+    assert result["client_context_key"] == "drawer-9"
+    assert result["quote_context"]["drawer_generation"] == 9
+    assert len(result["quote_context_fingerprint"]) == 64
+
+
+def test_partial_cod_uses_authoritative_cod_provider_mode():
+    partial = order().model_copy(update={"payment_type": "partial_cod"})
+    assert couriers._order_payment_mode(partial) == "COD"

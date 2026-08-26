@@ -57,6 +57,10 @@ describe('orders pagination client', () => {
 })
 
 describe('provider-neutral courier client', () => {
+  const quoteRequest = {
+    weight_kg: 0.5, courier_payment_mode: 'Prepaid', drawer_generation: 7, client_context_key: 'context-7',
+    quote_address: { customer_name: 'Customer', phone: '9876543210', address_line1: 'Street', address_line2: '', landmark: '', city: 'Mumbai', state: 'Maharashtra', pincode: '400001' },
+  }
   it('records manual shipment provenance against the exact order endpoint', async () => {
     const shipment = { order_id: '1', provider: 'shiprocket', awb: 'AWB-1', booking_status: 'booked', booking_mode: 'manual_external_booking' }
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ provider: 'shiprocket', shipment, message: 'recorded', validation_source: 'operator_confirmed', shiprocket_cleanup: { status: 'not_applicable' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
@@ -78,22 +82,31 @@ describe('provider-neutral courier client', () => {
 
   it('uses safe empty defaults when courier arrays are omitted', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ provider: 'multi', weight_kg: 0.5 }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
-    const result = await checkShiprocketCouriers('1', { weight_kg: 0.5, courier_payment_mode: 'Prepaid' })
+    const result = await checkShiprocketCouriers('1', quoteRequest)
     expect(result.couriers).toEqual([])
     expect(result.provider_warnings).toEqual([])
   })
 
   it('normalizes numeric IDs on the courier response only', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ provider: 'multi', provider_warnings: [], couriers: [{ courier_id: 43, courier_name: 'Delhivery Surface' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
-    const result = await checkShiprocketCouriers('1', { weight_kg: 0.5, courier_payment_mode: 'Prepaid' })
+    const result = await checkShiprocketCouriers('1', quoteRequest)
     expect(result.couriers[0].courier_id).toBe('43')
   })
 
   it('replaces browser Failed to fetch with a safe actionable lookup message', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('Failed to fetch'))
-    await expect(checkShiprocketCouriers('1', { weight_kg: 0.5, courier_payment_mode: 'Prepaid' }))
+    await expect(checkShiprocketCouriers('1', quoteRequest))
       .rejects.toThrow('Courier lookup request failed before reaching the server. Check the connection and retry.')
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('sends the immutable drawer quote context and supports stale-request cancellation', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ provider: 'multi', couriers: [], client_context_key: 'context-7' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    const controller = new AbortController()
+    await checkShiprocketCouriers('1', quoteRequest, controller.signal)
+    const request = fetchMock.mock.calls[0][1] as RequestInit
+    expect(JSON.parse(String(request.body))).toMatchObject({ drawer_generation: 7, client_context_key: 'context-7', quote_address: { pincode: '400001' } })
+    expect(request.signal).toBe(controller.signal)
   })
 
   it('omits operator when current-user identity is unavailable', async () => {
