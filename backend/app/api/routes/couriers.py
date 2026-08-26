@@ -887,8 +887,10 @@ async def record_manual_external_shipment(order_id: str, payload: ManualExternal
     if order.cancelled_at or str(order.shopify_status or "").strip().casefold() in {"cancelled", "canceled"}:
         raise HTTPException(status_code=409, detail="Cancelled Shopify orders cannot be marked as shipped manually.")
     existing = get_shipment(db, order_id)
-    if existing and has_persisted_provider_booking_evidence(shipment_snapshot(existing)):
-        raise HTTPException(status_code=409, detail="An active shipment already exists for this order.")
+    if existing:
+        existing_snapshot = shipment_snapshot(existing)
+        if has_persisted_provider_booking_evidence(existing_snapshot) or has_uncertain_provider_booking(existing_snapshot):
+            raise HTTPException(status_code=409, detail="An active or uncertain shipment already exists for this order. Reconcile it before recording another shipment.")
     conflicting = db.scalar(select(ShiprocketShipment).where(func.lower(ShiprocketShipment.awb) == awb.casefold(), ShiprocketShipment.order_id != order_id))
     if conflicting is not None:
         raise HTTPException(status_code=409, detail="This AWB is already assigned to a different order. Nothing was recorded.")

@@ -75,6 +75,26 @@ async def test_duplicate_awb_cannot_cross_orders(db, manual_context):
     assert db.get(ShiprocketShipment, "1") is None
 
 
+@pytest.mark.anyio
+async def test_uncertain_os_booking_cannot_be_overwritten_by_manual_shipment(db, manual_context):
+    db.add(ShiprocketShipment(order_id="1", provider="delhivery", provider_order_id="provider-maybe-created", booking_status="manifest_unknown")); db.commit()
+    with pytest.raises(Exception) as error:
+        await couriers.record_manual_external_shipment("1", ManualExternalShipmentPayload(provider="shiprocket", awb="MANUAL-AWB", reason="OS booking issue", operator_confirmed=True), request(), db)
+    assert getattr(error.value, "status_code", None) == 409 and "uncertain shipment" in error.value.detail
+    row = db.get(ShiprocketShipment, "1")
+    assert row.provider_order_id == "provider-maybe-created" and row.awb is None and row.booking_status == "manifest_unknown"
+
+
+@pytest.mark.anyio
+async def test_confirmed_os_booking_cannot_be_overwritten_by_manual_shipment(db, manual_context):
+    db.add(ShiprocketShipment(order_id="1", provider="shiprocket", shipment_id="REAL-SHIPMENT", awb="REAL-AWB", booking_status="booked")); db.commit()
+    with pytest.raises(Exception) as error:
+        await couriers.record_manual_external_shipment("1", ManualExternalShipmentPayload(provider="delhivery", awb="SECOND-AWB", reason="Other", operator_confirmed=True), request(), db)
+    assert getattr(error.value, "status_code", None) == 409
+    row = db.get(ShiprocketShipment, "1")
+    assert (row.provider, row.shipment_id, row.awb, row.booking_status) == ("shiprocket", "REAL-SHIPMENT", "REAL-AWB", "booked")
+
+
 def test_manual_external_awb_is_mandatory():
     with pytest.raises(ValidationError): ManualExternalShipmentPayload(provider="shiprocket", awb="", reason="OS booking issue", operator_confirmed=True)
 
