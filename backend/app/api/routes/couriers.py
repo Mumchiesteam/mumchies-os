@@ -709,13 +709,13 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
         # read transaction before waiting on provider networks.
         db.rollback()
         package = PackageDetailsPayload.model_validate(payload.model_dump())
-        # Package persistence and stale-quote invalidation are one atomic operations-file
-        # mutation. This preserves revisions/provenance while avoiding a second 15 MB rewrite.
-        operations = OrderOperationsStore.prepare_courier_lookup(
-            order_id, package.model_dump(), current_actor(request),
-        )
-        eligibility = ShiprocketService().evaluate_booking_eligibility(order, operations, shipment)
         quote_operations = deepcopy(operations)
+        # Drawer-open prefetch is strictly read-only. Evaluate readiness against
+        # the proposed package snapshot without creating provenance or changing
+        # the persisted courier selection. Package persistence remains an
+        # explicit consequence of the operator selecting a quote.
+        quote_operations["package_details"] = package.model_dump()
+        eligibility = ShiprocketService().evaluate_booking_eligibility(order, quote_operations, shipment)
         if payload.quote_address is not None:
             quote_operations["corrected_address"] = payload.quote_address.model_dump()
         pickup_started = time.perf_counter()
@@ -834,9 +834,8 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
             "total_backend": round((time.perf_counter() - request_started) * 1000, 2),
         },
         "couriers": sorted(normalized_quotes, key=lambda quote: float(quote["total_estimated_shipping_cost"])),
-        # This is the authoritative eligibility snapshot after package persistence.
-        # The drawer must not keep using the pre-package snapshot that was loaded
-        # when it first opened.
+        # Eligibility is evaluated against the immutable proposed quote context;
+        # no order or shipment state has been persisted by this read-only route.
         "booking_readiness": {
             "eligible": eligibility.eligible,
             "missing_requirements": eligibility.missing_requirements,
@@ -1778,6 +1777,10 @@ async def select_courier(order_id: str, payload: dict[str, object], request: Req
         "rating": payload.get("rating"),
         "mode": payload.get("mode"),
     }
+    package = PackageDetailsPayload.model_validate(payload)
+    # Persist package provenance only at the explicit operator-selection
+    # boundary. Drawer-open quote prefetch must remain read-only.
+    OrderOperationsStore.prepare_courier_lookup(order_id, package.model_dump(), current_actor(request))
     record = OrderOperationsStore.save_selected_courier(order_id, selected)
     OrderOperationsStore.record_timeline_event(order_id, "courier_selected", operator=current_actor(request), details={"provider": provider, "courier_id": selected["courier_id"], "courier_name": selected["courier_name"]})
     return {"provider": provider, "selected_courier": record.get("selected_courier")}

@@ -92,11 +92,21 @@ def test_booking_requires_the_same_persisted_canonical_courier() -> None:
     assert not _booking_selection_matches({**selected, "courier_name": "Different Service"}, payload)
 
 
-def test_courier_lookup_clears_stored_selection_before_returning_quotes() -> None:
+def test_courier_lookup_is_read_only_and_returns_proposed_context_readiness() -> None:
     source = inspect.getsource(couriers.shiprocket_serviceability)
-    assert "prepare_courier_lookup" in source
+    assert "prepare_courier_lookup" not in source
+    assert "save_selected_courier" not in source
+    assert "book_order_shipment" not in source
+    assert "_cleanup_unused_shiprocket_order" not in source
+    assert "ShopifyFulfillmentSynchronizer" not in source
     assert '"booking_readiness"' in source
     assert '"eligible": eligibility.eligible' in source
+
+
+def test_package_and_selection_writes_only_follow_explicit_selection() -> None:
+    source = inspect.getsource(couriers.select_courier)
+    assert "prepare_courier_lookup" in source
+    assert "save_selected_courier" in source
 
 
 def test_booking_completes_critical_cleanup_before_noncritical_post_booking_work() -> None:

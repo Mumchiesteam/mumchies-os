@@ -681,8 +681,8 @@ function App() {
     setCourierOptions([])
     setCourierQuoteContextKey(null)
     setCourierQuoteFingerprint(null)
-    // Every lookup invalidates the previous persisted quote. Mirror that locally before the
-    // backend clears it so a refreshed quote with the same courier ID cannot appear selected.
+    // Every changed quote context invalidates the prior visible selection locally;
+    // drawer-open lookup itself does not write order operations.
     setSelectedCourierId(null)
     setOperations(previous => previous ? { ...previous, selected_courier: null } : previous)
     const lookupStarted = performance.now()
@@ -695,10 +695,9 @@ function App() {
         client_context_key: quoteContext.key,
       }, controller.signal)
       if (controller.signal.aborted || generation !== drawerGenerationRef.current || result.client_context_key !== quoteContext.key) return
-      // The lookup response is authoritative for the package that was just
-      // persisted. Reusing drawer-open eligibility here leaves `eligible=false`
-      // when that older snapshot only lacked package data, so the visible first
-      // click silently returns before preview or booking HTTP is sent.
+      // Readiness was evaluated against this proposed immutable package context.
+      // Package provenance is persisted only if the operator explicitly selects
+      // one of these matching quotes.
       setBookingEligibility(result.booking_readiness)
       const sorted = [...(result.couriers ?? [])].sort((a, b) => a.total_estimated_shipping_cost - b.total_estimated_shipping_cost)
       setCourierOptions(sorted)
@@ -725,7 +724,7 @@ function App() {
     }
   }
 
-  const selectCourier = async (courier: CourierQuote, expectedQuoteContextKey: string) => {
+  const selectCourier = async (courier: CourierQuote, expectedQuoteContextKey: string, packageNumbers: QuotePackage) => {
     if (!selectedOrder || !courier.courier_id || courierSelectionInFlight.current || courierQuoteContextKey !== expectedQuoteContextKey || !bookingEligibility?.eligible) return
     courierSelectionInFlight.current = true
     const orderId = selectedOrder.internalId
@@ -734,7 +733,7 @@ function App() {
     setSelectedCourierId(null)
     setOperations(previous => previous ? { ...previous, selected_courier: null } : previous)
     try {
-      const result = await selectShiprocketCourier(orderId, { ...courier, courier_id: courier.courier_id })
+      const result = await selectShiprocketCourier(orderId, { ...courier, ...packageNumbers, courier_id: courier.courier_id })
       if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return
       if (!courierSelectionMatches(result.selected_courier, courier)) throw new Error('The courier selection could not be persisted consistently. Select it again.')
       setOperations(prev => prev ? { ...prev, selected_courier: result.selected_courier } : prev)
@@ -1108,7 +1107,7 @@ function App() {
           selectedCourierId={selectedCourierId}
           persistedCourierSelection={operations?.selected_courier ?? null}
           onCheckCouriers={checkCouriers}
-          onSelectCourier={(courier, contextKey) => void selectCourier(courier, contextKey)}
+          onSelectCourier={(courier, contextKey, packageNumbers) => void selectCourier(courier, contextKey, packageNumbers)}
           onBookShipment={bookShipment}
           onSaveManualShadowfax={saveManualShadowfax}
           onSaveManualExternal={saveManualExternal}
@@ -1318,7 +1317,7 @@ const OrderDrawer = memo(function OrderDrawer({
   selectedCourierId: string | null
   persistedCourierSelection: OrderOperations['selected_courier']
   onCheckCouriers: (packageNumbers: QuotePackage, quoteContext: { key: string; address: QuoteAddress; generation: number }) => void
-  onSelectCourier: (courier: CourierQuote, quoteContextKey: string) => void
+  onSelectCourier: (courier: CourierQuote, quoteContextKey: string, packageNumbers: QuotePackage) => void
   onBookShipment: (packageNumbers: {
     weight_kg: number
     length_cm: number | null
@@ -1619,7 +1618,7 @@ const OrderDrawer = memo(function OrderDrawer({
                     const selected = option.courier_id === selectedCourierId
                     const shadowfaxRecommendation = option.provider === 'shadowfax' ? shadowfaxRecommendationPresentation(shadowfaxPincodeRecommendation) : null
                     return (
-                      <button key={`${option.courier_name}-${option.courier_id}`} disabled={!quoteGate.enabled} onClick={() => void onSelectCourier(option, currentQuoteContextKey)} className={`w-full rounded-xl border p-2.5 text-left transition disabled:cursor-not-allowed disabled:opacity-70 ${selected ? 'border-[#ff6b35] bg-orange-50/60' : 'border-slate-200 bg-white enabled:hover:bg-slate-50'}`}>
+                      <button key={`${option.courier_name}-${option.courier_id}`} disabled={!quoteGate.enabled} onClick={() => void onSelectCourier(option, currentQuoteContextKey, packageNumbers)} className={`w-full rounded-xl border p-2.5 text-left transition disabled:cursor-not-allowed disabled:opacity-70 ${selected ? 'border-[#ff6b35] bg-orange-50/60' : 'border-slate-200 bg-white enabled:hover:bg-slate-50'}`}>
                         <div className="flex items-start justify-between gap-3">
                           <div>
                             <div className="flex items-center gap-2">

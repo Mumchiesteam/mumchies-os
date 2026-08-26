@@ -899,6 +899,10 @@ export async function selectShiprocketCourier(orderId: string, payload: {
   expected_delivery_date: string | null
   rating: number | null
   mode: string | null
+  weight_kg: number
+  length_cm: number | null
+  breadth_cm: number | null
+  height_cm: number | null
 }): Promise<{ provider: string; selected_courier: OrderOperations['selected_courier'] }> {
   const response = await apiFetch(`${apiBase}/api/v1/couriers/shiprocket/orders/${orderId}/couriers/select`, {
     method: 'POST',

@@ -37,7 +37,6 @@ def lookup_context(monkeypatch):
 
     monkeypatch.setattr(couriers, "_load_context", load)
     monkeypatch.setattr(couriers, "_serviceability_query", pickup)
-    monkeypatch.setattr(couriers.OrderOperationsStore, "prepare_courier_lookup", lambda _order_id, package, _actor: {"address_verified": True, "package_details": package, "selected_courier": None})
     monkeypatch.setattr(couriers, "current_actor", lambda _request: "Tester")
     monkeypatch.setattr(couriers.ShiprocketService, "evaluate_booking_eligibility", lambda *_args: eligibility())
     return SimpleNamespace(rollback=lambda: None)
@@ -108,6 +107,29 @@ async def test_ineligible_order_can_prefetch_but_response_remains_locked(monkeyp
     assert result["client_context_key"] == "drawer-9"
     assert result["quote_context"]["drawer_generation"] == 9
     assert len(result["quote_context_fingerprint"]) == 64
+
+
+@pytest.mark.anyio
+async def test_drawer_prefetch_does_not_persist_package_or_selection(monkeypatch, lookup_context):
+    monkeypatch.setattr(couriers.OrderOperationsStore, "prepare_courier_lookup", lambda *_args: pytest.fail("prefetch attempted an operations write"))
+    monkeypatch.setattr(couriers.OrderOperationsStore, "save_selected_courier", lambda *_args: pytest.fail("prefetch persisted a courier selection"))
+    monkeypatch.setattr(couriers.ShiprocketService, "serviceability", lambda *_args: [])
+    monkeypatch.setattr(couriers.DelhiveryService, "configured", property(lambda _self: False))
+    result = await couriers.shiprocket_serviceability("1", CourierCheckPayload(weight_kg=.5, courier_payment_mode="Prepaid"), SimpleNamespace(), lookup_context)
+    assert result["provider"] == "multi"
+
+
+@pytest.mark.anyio
+async def test_explicit_selection_persists_package_before_courier(monkeypatch):
+    calls = []
+    monkeypatch.setattr(couriers, "current_actor", lambda _request: "Tester")
+    monkeypatch.setattr(couriers.OrderOperationsStore, "prepare_courier_lookup", lambda order_id, package, actor: calls.append(("package", order_id, package, actor)))
+    monkeypatch.setattr(couriers.OrderOperationsStore, "save_selected_courier", lambda order_id, selected: (calls.append(("courier", order_id, selected)) or {"selected_courier": selected}))
+    monkeypatch.setattr(couriers.OrderOperationsStore, "record_timeline_event", lambda *_args, **_kwargs: None)
+    payload = {"provider": "shiprocket", "courier_id": "43", "courier_name": "Surface", "booking_supported": True, "weight_kg": .5, "length_cm": 10, "breadth_cm": 11, "height_cm": 12}
+    result = await couriers.select_courier("1", payload, SimpleNamespace())
+    assert [call[0] for call in calls] == ["package", "courier"]
+    assert result["selected_courier"]["courier_id"] == "43"
 
 
 def test_partial_cod_uses_authoritative_cod_provider_mode():
