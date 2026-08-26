@@ -335,6 +335,13 @@ export interface OrderOperations {
   package_revision: number
   package_provenance: { order_id: string; saved_at: string; operator: string; revision: number } | null
   shipment: Order['shipment']
+  shadowfax_pincode_recommendation: {
+    pincode: string
+    hub: string
+    region: string
+    confidence: 'Super Confident' | 'Confident'
+    reference_only: true
+  } | null
 }
 
 export const apiBase = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '')

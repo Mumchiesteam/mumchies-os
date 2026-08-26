@@ -23,6 +23,7 @@ from app.core.identity import current_actor
 from app.schemas.orders import ShopifyOrder
 from app.repositories.shiprocket import get_shipment, get_shipments_by_order_id, snapshot as shipment_snapshot, sync_engage_orders
 from app.services.order_operations import OrderOperationsStore
+from app.services.shadowfax_pincode_reference import shadowfax_pincode_recommendation
 from app.services.report_snapshots import ReportSnapshotStore
 from app.services.delhivery import DelhiveryError, DelhiveryService
 from app.services.shipment_status import customer_cancellation_requires_action, derive_operational_status, has_existing_shipment_evidence, has_persisted_provider_booking_evidence, merge_shopify_fulfillment_evidence
@@ -508,12 +509,16 @@ async def get_order_operations(order_id: str, db: Session = Depends(get_db)) -> 
     if shipment is not None:
         operations = {**operations, "shipment": shipment}
     revision = int(operations.get("address_revision") or 0)
+    source_address = operations.get("corrected_address") if isinstance(operations.get("corrected_address"), dict) else None
+    if source_address is None and order is not None and order.shipping_address is not None:
+        source_address = order.shipping_address.model_dump()
+    recommendation = shadowfax_pincode_recommendation((source_address or {}).get("pincode"))
     logging.getLogger(__name__).info(
         "order_drawer total_ms=%.2f operations_store_ms=%.2f shopify_ms=%.2f shipment_readback_ms=%.2f",
         (time.perf_counter() - request_started) * 1000, store_ms, shopify_ms,
         (time.perf_counter() - shipment_started) * 1000,
     )
-    return {**operations, "address_revision": revision, "address_draft_token": _address_draft_token(order_id, revision)}
+    return {**operations, "address_revision": revision, "address_draft_token": _address_draft_token(order_id, revision), "shadowfax_pincode_recommendation": recommendation}
 
 
 @router.post("/{order_id}/shopify-fulfillment/sync")
@@ -853,7 +858,7 @@ async def save_and_verify_address(
     background_tasks.add_task(_sync_saved_address, order_id, sync_payload, current_actor(request))
     verified = not bool(validation["blockers"])
     revision = int(saved.get("address_revision") or 0)
-    saved = {**saved, "address_draft_token": _address_draft_token(order_id, revision)}
+    saved = {**saved, "address_draft_token": _address_draft_token(order_id, revision), "shadowfax_pincode_recommendation": shadowfax_pincode_recommendation(snapshot.get("pincode"))}
     total_ms = (time.perf_counter() - request_started) * 1000
     stages["total_backend"] = total_ms
     response.headers["Server-Timing"] = ", ".join(f"save_{name};dur={value:.2f}" for name, value in stages.items())

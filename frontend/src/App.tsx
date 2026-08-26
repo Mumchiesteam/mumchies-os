@@ -182,7 +182,7 @@ const Icon = ({ name, size = 18 }: { name: IconName; size?: number }) => {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>
 }
 
-function CopyButton({ value, label, stopPropagation = false }: { value: string; label: 'order number' | 'phone number'; stopPropagation?: boolean }) {
+function CopyButton({ value, label, stopPropagation = false }: { value: string; label: 'order number' | 'phone number' | 'pincode'; stopPropagation?: boolean }) {
   const [feedback, setFeedback] = useState('')
   const title = `Copy ${label}`
   const copy = async (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -195,10 +195,18 @@ function CopyButton({ value, label, stopPropagation = false }: { value: string; 
     }
     window.setTimeout(() => setFeedback(''), 1500)
   }
-  return <span className="inline-flex items-center gap-1"><button type="button" aria-label={title} title={title} onClick={copy} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"><Icon name="copy" size={14} /></button>{feedback && <span role="status" className="text-[10px] font-medium text-slate-500">{feedback}</span>}</span>
+  return <span className="inline-flex items-center gap-1"><button type="button" disabled={!value} aria-label={title} title={title} onClick={copy} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-35"><Icon name="copy" size={14} /></button>{feedback && <span role="status" className="text-[10px] font-medium text-slate-500">{feedback}</span>}</span>
 }
 
 const formatDate = (value: string) => new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(value))
+export const shadowfaxRecommendationPresentation = (recommendation: OrderOperations['shadowfax_pincode_recommendation']) => recommendation ? {
+  label: `Recommended · ${recommendation.confidence} Pincode`,
+  detail: `${recommendation.hub} · ${recommendation.region}`,
+  className: recommendation.confidence === 'Super Confident'
+    ? 'bg-emerald-600 text-white'
+    : 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200',
+} : null
+export const pincodeClipboardValue = (value: string) => /^\d{6}$/.test(value.trim()) ? value.trim() : ''
 const formatOrderDateTime = (value: string) => {
   const date = new Date(value)
   return {
@@ -217,6 +225,7 @@ function App() {
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null)
   const [selectedOrderSnapshot, setSelectedOrderSnapshot] = useState<Order | null>(null)
   const [operations, setOperations] = useState<OrderOperations | null>(null)
+  const [shadowfaxPincodeRecommendation, setShadowfaxPincodeRecommendation] = useState<OrderOperations['shadowfax_pincode_recommendation']>(null)
   const [loading, setLoading] = useState(true)
   const [ordersSlow, setOrdersSlow] = useState(false)
   const [error, setError] = useState('')
@@ -436,12 +445,14 @@ function App() {
       setSelectedCourierId(null)
       setCourierError('')
       setCancellationPreflight(null)
+      setShadowfaxPincodeRecommendation(null)
       const [ops, eligibility] = await Promise.all([
         getOrderOperations(orderId, controller.signal),
         getBookingEligibility(orderId, controller.signal),
       ])
       if (controller.signal.aborted || !isCurrentDrawerRequest({ orderId, generation }, selectedOrderId, drawerGenerationRef.current)) return
       setOperations(ops)
+      setShadowfaxPincodeRecommendation(ops.shadowfax_pincode_recommendation)
       applyCanonicalShipment(selectedOrder.internalId, ops.shipment)
       setCallResult('No Answer')
       setCallComment('')
@@ -463,6 +474,7 @@ function App() {
     })().catch((err) => {
       if (controller.signal.aborted) return
       setOperations(null)
+      setShadowfaxPincodeRecommendation(null)
       setCourierError((err as Error).message || 'Could not load order operations and courier eligibility.')
     })
     return () => controller.abort()
@@ -621,6 +633,7 @@ function App() {
       const responseReceived = performance.now()
       if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return
       setOperations(result.operations)
+      setShadowfaxPincodeRecommendation(result.operations.shadowfax_pincode_recommendation)
       setOrders(previous => previous.map(order => order.internalId === selectedOrder.internalId ? { ...order, correctedAddress: result.operations.corrected_address, addressVerified: result.operations.address_verified, addressVerifiedAt: result.operations.address_verified_at, addressVerifiedBy: result.operations.address_verified_by, verifiedAddressSnapshot: result.operations.verified_address_snapshot, addressSyncResults: result.operations.address_sync_results } : order))
       setNotice(result.verified ? (result.validation.warnings.length ? `Address verified with advisories: ${result.validation.warnings.join('; ')}` : 'Address saved and verified') : `Address saved but not verified: ${result.validation.blockers.join('; ')}`)
       const successRendered = performance.now()
@@ -1031,7 +1044,7 @@ function App() {
           addressInitializing={addressInitializing}
           courierSyncMessage={courierSyncMessage}
           addressVerificationLine={addressVerifiedLabel}
-          onClose={() => { drawerGenerationRef.current += 1; setAddressDraft(emptyAddressDraft()); setAddressDraftOrderId(null); setAddressDraftGeneration(null); setAddressInitializing(true); setSelectedOrderId(null); setSelectedOrderSnapshot(null) }}
+          onClose={() => { drawerGenerationRef.current += 1; setAddressDraft(emptyAddressDraft()); setAddressDraftOrderId(null); setAddressDraftGeneration(null); setAddressInitializing(true); setShadowfaxPincodeRecommendation(null); setSelectedOrderId(null); setSelectedOrderSnapshot(null) }}
           onSaveCallLog={() => void saveCallLog()}
           onSaveAddress={saveAndVerifyAddress}
           onSaveAddressConfirmation={() => void saveAddressConfirmation()}
@@ -1044,6 +1057,7 @@ function App() {
           labelLoading={labelLoading}
           courierError={courierError}
           courierWarnings={courierWarnings}
+          shadowfaxPincodeRecommendation={shadowfaxPincodeRecommendation?.pincode === addressDraft.pincode.trim() ? shadowfaxPincodeRecommendation : null}
           selectedCourierId={selectedCourierId}
           persistedCourierSelection={operations?.selected_courier ?? null}
           onCheckCouriers={checkCouriers}
@@ -1171,6 +1185,7 @@ const OrderDrawer = memo(function OrderDrawer({
   labelLoading,
   courierError,
   courierWarnings,
+  shadowfaxPincodeRecommendation,
   selectedCourierId,
   persistedCourierSelection,
   onCheckCouriers,
@@ -1244,6 +1259,7 @@ const OrderDrawer = memo(function OrderDrawer({
   labelLoading: boolean
   courierError: string
   courierWarnings: string[]
+  shadowfaxPincodeRecommendation: OrderOperations['shadowfax_pincode_recommendation']
   selectedCourierId: string | null
   persistedCourierSelection: OrderOperations['selected_courier']
   onCheckCouriers: (packageNumbers: {
@@ -1404,7 +1420,7 @@ const OrderDrawer = memo(function OrderDrawer({
               <div className="grid gap-2 sm:col-span-2 sm:grid-cols-3">
                 <Field disabled={addressInitializing} label="City" value={addressDraft.city} onChange={value => setAddressDraft({ ...addressDraft, city: value })} />
                 <Field disabled={addressInitializing} label="State" value={addressDraft.state} onChange={value => setAddressDraft({ ...addressDraft, state: value })} />
-                <Field disabled={addressInitializing} label="PIN Code" value={addressDraft.pincode} onChange={value => setAddressDraft({ ...addressDraft, pincode: value })} />
+                <PincodeField disabled={addressInitializing} value={addressDraft.pincode} onChange={value => setAddressDraft({ ...addressDraft, pincode: value })} />
               </div>
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
@@ -1523,6 +1539,7 @@ const OrderDrawer = memo(function OrderDrawer({
                 <div className="space-y-1.5">
                   {courierOptions.map(option => {
                     const selected = option.courier_id === selectedCourierId
+                    const shadowfaxRecommendation = option.provider === 'shadowfax' ? shadowfaxRecommendationPresentation(shadowfaxPincodeRecommendation) : null
                     return (
                       <button key={`${option.courier_name}-${option.courier_id}`} onClick={() => void onSelectCourier(option)} className={`w-full rounded-xl border p-2.5 text-left transition ${selected ? 'border-[#ff6b35] bg-orange-50/60' : 'border-slate-200 bg-white hover:bg-slate-50'}`}>
                         <div className="flex items-start justify-between gap-3">
@@ -1531,9 +1548,11 @@ const OrderDrawer = memo(function OrderDrawer({
                               <p className="text-sm font-semibold text-slate-800">{option.courier_name}</p>
                               <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase text-slate-500">{option.provider}</span>
                               {selected && <span className="rounded-full bg-[#ff6b35] px-2 py-0.5 text-[10px] font-bold text-white">Selected</span>}
+                              {shadowfaxRecommendation && <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${shadowfaxRecommendation.className}`}>{shadowfaxRecommendation.label}</span>}
                             </div>
                             <p className="mt-1 text-xs text-slate-500">{option.mode || 'mode n/a'} · {option.estimated_delivery_days ?? '—'} days · ETA {option.expected_delivery_date || '—'}</p>
                             <p className="mt-1 text-[11px] text-slate-400">{option.rate_note}</p>
+                            {shadowfaxRecommendation && <p className="mt-1 text-[11px] font-medium text-emerald-700">{shadowfaxRecommendation.detail} · Recommendation only; live serviceability remains separate.</p>}
                           </div>
                           <div className="text-right text-xs text-slate-500">
                             <p>Freight {formatMoney(option.rate)}</p>
@@ -1693,6 +1712,11 @@ function Field({ label, value, onChange, testId, disabled = false }: { label: st
       <input disabled={disabled} data-testid={testId} value={value} onChange={e => onChange(e.target.value)} className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-orange-300 focus:ring-2 focus:ring-orange-100 disabled:bg-slate-100" />
     </label>
   )
+}
+
+function PincodeField({ value, onChange, disabled = false }: { value: string; onChange: (value: string) => void; disabled?: boolean }) {
+  const copyValue = pincodeClipboardValue(value)
+  return <label className="block"><span className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-slate-400">PIN Code</span><span className="flex items-center gap-1"><input disabled={disabled} value={value} onChange={event => onChange(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-orange-300 focus:ring-2 focus:ring-orange-100 disabled:bg-slate-100"/><CopyButton value={copyValue} label="pincode" /></span></label>
 }
 
 export function MultilineField({ label, value, onChange, disabled = false }: { label: string; value: string; onChange: (value: string) => void; disabled?: boolean }) {

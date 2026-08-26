@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 
-import App, { OrdersTable } from './App'
+import App, { OrdersTable, pincodeClipboardValue, shadowfaxRecommendationPresentation } from './App'
 import { displayedOrderNumber, orderNumberClipboardValue, stopCopyPropagation } from './utils/orderNumber'
 
 describe('operations-first Orders layout', () => {
@@ -44,5 +44,22 @@ describe('operations-first Orders layout', () => {
     const stopPropagation = vi.fn()
     stopCopyPropagation({ stopPropagation }, true)
     expect(stopPropagation).toHaveBeenCalledOnce()
+  })
+
+  it('distinguishes Shadowfax recommendation confidence without claiming serviceability', () => {
+    const superConfident = shadowfaxRecommendationPresentation({ pincode: '123001', hub: 'NNL_Narnaul', region: 'Haryana', confidence: 'Super Confident', reference_only: true })
+    const confident = shadowfaxRecommendationPresentation({ pincode: '100191', hub: 'NOI_Sector63', region: 'Noida', confidence: 'Confident', reference_only: true })
+    expect(superConfident).toMatchObject({ label: 'Recommended · Super Confident Pincode', detail: 'NNL_Narnaul · Haryana' })
+    expect(superConfident?.className).toContain('bg-emerald-600')
+    expect(confident?.label).toBe('Recommended · Confident Pincode')
+    expect(confident?.className).toContain('bg-emerald-50')
+    expect(shadowfaxRecommendationPresentation(null)).toBeNull()
+  })
+
+  it('copies only valid six-digit pincodes', () => {
+    expect(pincodeClipboardValue(' 123001 ')).toBe('123001')
+    expect(pincodeClipboardValue('')).toBe('')
+    expect(pincodeClipboardValue('12345')).toBe('')
+    expect(pincodeClipboardValue('12300A')).toBe('')
   })
 })
