@@ -991,6 +991,21 @@ export function shippingLabelUrl(orderId: string, disposition: 'attachment' | 'i
   return `${apiBase}/api/v1/orders/${orderId}/shipment/label?disposition=${disposition}&print_ready=${printReady}`
 }
 
+export type ManualExternalShipmentPayload = {
+  provider: 'shiprocket' | 'delhivery' | 'shadowfax' | 'other'
+  awb: string
+  reason: 'Customer amended address' | 'Customer amended product / quantity' | 'Order recreated / cloned externally' | 'OS booking issue' | 'Other'
+  comment?: string
+  operator_confirmed: boolean
+}
+
+export async function recordManualExternalShipment(orderId: string, payload: ManualExternalShipmentPayload): Promise<{ provider: string; shipment: Order['shipment']; message: string; validation_source: string; validation_warning?: string; shiprocket_cleanup: { status: string; error?: string } }> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/manual-external-shipment`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(typeof body?.detail === 'string' ? body.detail : 'Could not record the manual shipment.')
+  return body
+}
+
 export async function validateAddress(orderId: string, payload: Record<string, string>): Promise<{ valid: boolean; status: string; blockers: string[]; warnings: string[]; shiprocket_confidence_score: number | null; shiprocket_confidence_category: string | null; shiprocket_message: string }> {
   const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/address/validate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
   if (!response.ok) throw new Error('Could not validate address.')

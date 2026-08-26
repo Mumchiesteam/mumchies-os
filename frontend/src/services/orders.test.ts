@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { bookShiprocketShipment, cancelCourierShipment, checkShiprocketCouriers, clearReconciliationFilter, getOrderOperations, getOrders, reconciliationDataset, reconciliationFilterLabel, reconcileCourierBooking, refreshShiprocketShipment, saveAndVerifyOrderAddress, selectReconciliationFilter, shiprocketCancellationMessage, shouldRemoveCleanupRecord, verifyShiprocketOnlyCancellation, type OrdersReconciliationSummary, type ReconciliationRecord, type ShiprocketCancellationResult, type ShiprocketCleanupRecord } from './orders'
+import { bookShiprocketShipment, cancelCourierShipment, checkShiprocketCouriers, clearReconciliationFilter, getOrderOperations, getOrders, reconciliationDataset, reconciliationFilterLabel, reconcileCourierBooking, recordManualExternalShipment, refreshShiprocketShipment, saveAndVerifyOrderAddress, selectReconciliationFilter, shiprocketCancellationMessage, shouldRemoveCleanupRecord, verifyShiprocketOnlyCancellation, type OrdersReconciliationSummary, type ReconciliationRecord, type ShiprocketCancellationResult, type ShiprocketCleanupRecord } from './orders'
 
 const response = (pageSize: number, total = 0) => new Response(JSON.stringify({
   items: [],
@@ -57,6 +57,14 @@ describe('orders pagination client', () => {
 })
 
 describe('provider-neutral courier client', () => {
+  it('records manual shipment provenance against the exact order endpoint', async () => {
+    const shipment = { order_id: '1', provider: 'shiprocket', awb: 'AWB-1', booking_status: 'booked', booking_mode: 'manual_external_booking' }
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ provider: 'shiprocket', shipment, message: 'recorded', validation_source: 'operator_confirmed', shiprocket_cleanup: { status: 'not_applicable' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    await recordManualExternalShipment('1', { provider: 'shiprocket', awb: 'AWB-1', reason: 'Order recreated / cloned externally', operator_confirmed: true })
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/orders/1/manual-external-shipment')
+    expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))).toMatchObject({ awb: 'AWB-1', operator_confirmed: true })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
   it('loads operations without expecting a couriers array', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ corrected_address: null, call_logs: [], package_details: null }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
     await expect(getOrderOperations('1')).resolves.toMatchObject({ corrected_address: null, call_logs: [] })

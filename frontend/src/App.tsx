@@ -4,6 +4,7 @@ import {
   addOrderCallLog,
   recordCodWhatsAppOpened,
   saveManualShadowfaxShipment,
+  recordManualExternalShipment,
   testShadowfaxDirect324663,
   getShadowfaxDirect324663Status,
   getShadowfaxShipmentRow324663,
@@ -56,6 +57,7 @@ import {
   type OrdersReconciliationSummary,
   type ReconciliationFilter,
   type ReconciliationRecord,
+  type ManualExternalShipmentPayload,
 } from './services/orders'
 import { logout } from './services/auth'
 import { canUseDraft, emptyAddressDraft, isCurrentDrawerRequest } from './order-drawer-integrity'
@@ -782,6 +784,18 @@ function App() {
     } catch (error) { setCourierError((error as Error).message); throw error } finally { setBookingLoading(false) }
   }
 
+  const saveManualExternal = async (payload: ManualExternalShipmentPayload) => {
+    if (!selectedOrder) return
+    const orderId = selectedOrder.internalId
+    setBookingLoading(true); setCourierError('')
+    try {
+      const result = await recordManualExternalShipment(orderId, payload)
+      applyConfirmedBooking(orderId, result.shipment)
+      setOperations(await getOrderOperations(orderId))
+      setNotice(result.message)
+    } catch (error) { setCourierError((error as Error).message); throw error } finally { setBookingLoading(false) }
+  }
+
   const testShadowfaxDirect = async () => {
     if (!selectedOrder || selectedOrder.orderNumber !== '324663') return
     if (!window.confirm('Create the one approved live Shadowfax shipment for order #324663? This can be used only once.')) return
@@ -1069,6 +1083,7 @@ function App() {
           onSelectCourier={courier => void selectCourier(courier)}
           onBookShipment={bookShipment}
           onSaveManualShadowfax={saveManualShadowfax}
+          onSaveManualExternal={saveManualExternal}
           showShadowfaxDirectTest={selectedOrder.orderNumber === '324663' && ['owner', 'admin'].includes(authUser?.role || '')}
           onTestShadowfaxDirect={() => void testShadowfaxDirect()}
           shadowfaxTestState={shadowfaxTestState}
@@ -1197,6 +1212,7 @@ const OrderDrawer = memo(function OrderDrawer({
   onSelectCourier,
   onBookShipment,
   onSaveManualShadowfax,
+  onSaveManualExternal,
   showShadowfaxDirectTest,
   onTestShadowfaxDirect,
   shadowfaxTestState,
@@ -1281,6 +1297,7 @@ const OrderDrawer = memo(function OrderDrawer({
     height_cm: number | null
   }) => void
   onSaveManualShadowfax: (payload: { awb?: string; service_name?: string; booked_at?: string; freight?: number; note?: string }) => Promise<void>
+  onSaveManualExternal: (payload: ManualExternalShipmentPayload) => Promise<void>
   showShadowfaxDirectTest: boolean
   onTestShadowfaxDirect: () => void
   shadowfaxTestState: ShadowfaxDirectTestState | null
@@ -1307,6 +1324,9 @@ const OrderDrawer = memo(function OrderDrawer({
   const [showShadowfaxForm, setShowShadowfaxForm] = useState(false)
   const [shadowfaxWorkflowStatus, setShadowfaxWorkflowStatus] = useState('')
   const [manualShadowfax, setManualShadowfax] = useState({ awb: '', service_name: '', booked_at: new Date().toISOString().slice(0, 16), freight: '', note: '' })
+  const [showManualExternal, setShowManualExternal] = useState(false)
+  const [manualExternal, setManualExternal] = useState<ManualExternalShipmentPayload>({ provider: 'shiprocket', awb: '', reason: 'Order recreated / cloned externally', comment: '', operator_confirmed: false })
+  const [manualExternalStatus, setManualExternalStatus] = useState('')
   const autoLookupKeyRef = useRef('')
 
   const shipping = order.shippingAmount == null ? 'Courier rates not connected' : formatMoney(order.shippingAmount)
@@ -1595,6 +1615,23 @@ const OrderDrawer = memo(function OrderDrawer({
                 <div className="grid gap-2 sm:grid-cols-2"><Field label="Shadowfax AWB" value={manualShadowfax.awb} onChange={awb => setManualShadowfax({ ...manualShadowfax, awb })} /><Field label="Service name" value={manualShadowfax.service_name} onChange={service_name => setManualShadowfax({ ...manualShadowfax, service_name })} /><Field label="Booking date/time" value={manualShadowfax.booked_at} onChange={booked_at => setManualShadowfax({ ...manualShadowfax, booked_at })} /><Field label="Freight (optional)" value={manualShadowfax.freight} onChange={freight => setManualShadowfax({ ...manualShadowfax, freight })} /><Field label="Operator note" value={manualShadowfax.note} onChange={note => setManualShadowfax({ ...manualShadowfax, note })} /></div>
                 <button disabled={bookingLoading || !manualShadowfax.awb.trim()} onClick={() => { setShadowfaxWorkflowStatus('Checking Shadowfax...'); void onSaveManualShadowfax({ awb: manualShadowfax.awb, service_name: manualShadowfax.service_name, booked_at: new Date(manualShadowfax.booked_at).toISOString(), freight: manualShadowfax.freight ? Number(manualShadowfax.freight) : undefined, note: manualShadowfax.note }).then(() => { setShadowfaxWorkflowStatus('Shipment found · Shipment recorded'); setShowShadowfaxForm(false) }).catch(() => setShadowfaxWorkflowStatus('Failed - retry')) }} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40">Validate and record shipment</button>
                 {!manualShadowfax.awb.trim() && <p className="text-xs text-amber-700">Enter the Shadowfax AWB.</p>}
+              </div>}
+              {!shipment && <div className="border-t border-slate-100 pt-3">
+                <button type="button" onClick={() => setShowManualExternal(value => !value)} className="text-xs font-semibold text-slate-600 underline decoration-slate-300 underline-offset-4">Mark as Shipped Manually</button>
+                {showManualExternal && <div className="mt-3 space-y-3 rounded-xl border border-amber-200 bg-amber-50/40 p-3">
+                  <p className="text-sm font-semibold text-slate-800">Record an externally booked shipment</p>
+                  <p className="text-xs text-slate-600">Use only when this exact Shopify order was booked in a courier portal outside Mumchies OS.</p>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <label className="text-xs font-semibold text-slate-600">Provider / Courier<select aria-label="Manual shipment provider" value={manualExternal.provider} onChange={event => setManualExternal({ ...manualExternal, provider: event.target.value as ManualExternalShipmentPayload['provider'], operator_confirmed: false })} className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"><option value="shiprocket">Shiprocket</option><option value="delhivery">Delhivery</option><option value="shadowfax">Shadowfax</option><option value="other">Other</option></select></label>
+                    <Field label="AWB / tracking number" value={manualExternal.awb} onChange={awb => setManualExternal({ ...manualExternal, awb })} />
+                    <label className="text-xs font-semibold text-slate-600 sm:col-span-2">Reason<select aria-label="Manual shipment reason" value={manualExternal.reason} onChange={event => setManualExternal({ ...manualExternal, reason: event.target.value as ManualExternalShipmentPayload['reason'] })} className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"><option>Customer amended address</option><option>Customer amended product / quantity</option><option>Order recreated / cloned externally</option><option>OS booking issue</option><option>Other</option></select></label>
+                    <label className="text-xs font-semibold text-slate-600 sm:col-span-2">Optional comment<textarea aria-label="Manual shipment comment" value={manualExternal.comment} onChange={event => setManualExternal({ ...manualExternal, comment: event.target.value })} className="mt-1 min-h-20 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm" /></label>
+                  </div>
+                  <label className="flex items-start gap-2 text-xs text-slate-700"><input type="checkbox" checked={manualExternal.operator_confirmed} onChange={event => setManualExternal({ ...manualExternal, operator_confirmed: event.target.checked })} /><span>I confirm this AWB belongs to this exact order if provider association validation is unavailable.</span></label>
+                  <button type="button" disabled={bookingLoading || !manualExternal.awb.trim()} onClick={() => { setManualExternalStatus('Validating shipment…'); void onSaveManualExternal({ ...manualExternal, awb: manualExternal.awb.trim() }).then(() => { setManualExternalStatus(`Shipment recorded manually · ${manualExternal.provider.charAt(0).toUpperCase() + manualExternal.provider.slice(1)} · AWB ${manualExternal.awb.trim()}`); setShowManualExternal(false) }).catch(error => setManualExternalStatus(`Failed · ${(error as Error).message}`)) }} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40">Validate and record shipment</button>
+                  {!manualExternal.awb.trim() && <p className="text-xs text-amber-700">AWB / tracking number is required.</p>}
+                  {manualExternalStatus && <p role="status" className="text-xs font-semibold text-slate-700">{manualExternalStatus}</p>}
+                </div>}
               </div>}
               {shipment && (
                 <div className="grid gap-x-4 gap-y-1 rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2.5 text-sm leading-snug text-emerald-800 sm:grid-cols-2">

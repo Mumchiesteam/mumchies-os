@@ -1,4 +1,4 @@
-export type QueueDatePreset = 'all' | 'today' | 'yesterday' | 'last_7_days' | 'custom'
+export type QueueDatePreset = 'all' | 'today' | 'yesterday' | 'last_7_days' | 'last_30_days' | 'custom'
 export type QueueDateFilter = { preset: QueueDatePreset; start: string; end: string }
 export type DispatchDateStage = 'ready_to_ship' | 'manifested'
 
@@ -15,8 +15,9 @@ export function matchesQueueDate(value: string | null | undefined, filter: Queue
     const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1)
     return timestamp >= yesterday && timestamp < today
   }
-  if (filter.preset === 'last_7_days') {
+  if (filter.preset === 'last_7_days' || filter.preset === 'last_30_days') {
     const start = new Date(today); start.setDate(start.getDate() - 6)
+    if (filter.preset === 'last_30_days') start.setDate(start.getDate() - 23)
     return timestamp >= start
   }
   const start = filter.start ? new Date(`${filter.start}T00:00:00`) : null

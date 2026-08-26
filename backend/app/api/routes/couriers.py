@@ -13,11 +13,13 @@ import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal, get_db
 from app.core.identity import current_actor, current_user
 from app.repositories.shiprocket import get_shipment, snapshot as shipment_snapshot, upsert_shipment
+from app.models.shiprocket import ShiprocketShipment
 from app.schemas.orders import ShopifyOrder
 from app.services.order_operations import OrderOperationsStore
 from app.services.delhivery import DelhiveryError, DelhiveryService
@@ -96,6 +98,43 @@ class ManualShadowfaxPayload(BaseModel):
     booked_at: datetime | None = None
     freight: float | None = Field(default=None, ge=0)
     note: str | None = None
+
+
+class ManualExternalShipmentPayload(BaseModel):
+    provider: str
+    awb: str = Field(min_length=1, max_length=64)
+    reason: str
+    comment: str | None = Field(default=None, max_length=1000)
+    operator_confirmed: bool = False
+
+
+MANUAL_EXTERNAL_PROVIDERS = {"shiprocket", "delhivery", "shadowfax", "other"}
+MANUAL_EXTERNAL_REASONS = {
+    "Customer amended address", "Customer amended product / quantity",
+    "Order recreated / cloned externally", "OS booking issue", "Other",
+}
+
+
+async def _validate_manual_external_association(order: ShopifyOrder, provider: str, awb: str, operator_confirmed: bool) -> tuple[str, str | None]:
+    """Use an exact order lookup when supported; never present AWB existence as order association."""
+    if provider == "other":
+        if not operator_confirmed:
+            raise HTTPException(status_code=409, detail="Provider validation is unavailable. Confirm that this AWB belongs to the current order.")
+        return "operator_confirmed", None
+    try:
+        booking = await courier_registry.get(provider).reconcile_booking(order.order_number)
+    except ProviderError as error:
+        if not operator_confirmed:
+            raise HTTPException(status_code=409, detail=f"{provider.title()} order validation is unavailable: {error}. Confirm the manual association to continue.") from error
+        return "operator_confirmed", str(error)
+    provider_awb = str(booking.awb or "").strip() if booking else ""
+    if provider_awb:
+        if provider_awb.casefold() != awb.casefold():
+            raise HTTPException(status_code=409, detail=f"{provider.title()} returned AWB {provider_awb} for this order, not {awb}. Nothing was recorded.")
+        return "provider_order_lookup", None
+    if not operator_confirmed:
+        raise HTTPException(status_code=409, detail=f"{provider.title()} could not confirm an AWB for this exact order. Confirm the manual association to continue.")
+    return "operator_confirmed", None
 
 
 def _shopify_shadowfax_tracking(order: ShopifyOrder) -> tuple[str, str | None] | None:
@@ -829,6 +868,58 @@ async def save_manual_shadowfax_shipment(order_id: str, payload: ManualShadowfax
         "provider_warning": validation.get("provider_warning"),
         "validation_source": validation["validation_source"],
         "message": "Shadowfax shipment found and recorded.",
+    }
+
+
+@booking_router.post("/{order_id}/manual-external-shipment")
+async def record_manual_external_shipment(order_id: str, payload: ManualExternalShipmentPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
+    provider = payload.provider.strip().casefold()
+    awb = payload.awb.strip()
+    reason = payload.reason.strip()
+    comment = str(payload.comment or "").strip() or None
+    if provider not in MANUAL_EXTERNAL_PROVIDERS:
+        raise HTTPException(status_code=422, detail="Choose Shiprocket, Delhivery, Shadowfax, or Other.")
+    if not awb:
+        raise HTTPException(status_code=422, detail="AWB / tracking number is required.")
+    if reason not in MANUAL_EXTERNAL_REASONS:
+        raise HTTPException(status_code=422, detail="Choose a valid manual shipment reason.")
+    order, operations, shipment = await _load_context(order_id, db)
+    if order.cancelled_at or str(order.shopify_status or "").strip().casefold() in {"cancelled", "canceled"}:
+        raise HTTPException(status_code=409, detail="Cancelled Shopify orders cannot be marked as shipped manually.")
+    existing = get_shipment(db, order_id)
+    if existing and has_persisted_provider_booking_evidence(shipment_snapshot(existing)):
+        raise HTTPException(status_code=409, detail="An active shipment already exists for this order.")
+    conflicting = db.scalar(select(ShiprocketShipment).where(func.lower(ShiprocketShipment.awb) == awb.casefold(), ShiprocketShipment.order_id != order_id))
+    if conflicting is not None:
+        raise HTTPException(status_code=409, detail="This AWB is already assigned to a different order. Nothing was recorded.")
+    if has_existing_shipment_evidence(order, operations, shipment):
+        raise HTTPException(status_code=409, detail="An active shipment or fulfilment already exists for this order.")
+    validation_source, validation_warning = await _validate_manual_external_association(order, provider, awb, payload.operator_confirmed)
+    actor = current_actor(request)
+    booked_at = datetime.now(timezone.utc)
+    note = f"Reason: {reason}" + (f"\nComment: {comment}" if comment else "")
+    saved = upsert_shipment(
+        db, order_id, provider=provider, provider_order_id=None, shipment_id=awb, awb=awb,
+        courier_name=provider.title() if provider != "other" else "Other",
+        booking_status="booked", booking_mode="manual_external_booking", booked_at=booked_at,
+        latest_status="Booked externally", normalized_status="booked", booking_confidence="confirmed",
+        reconciliation_status="confirmed" if validation_source == "provider_order_lookup" else "manual_review",
+        reconciliation_error=validation_warning, booking_operator=actor, booking_note=note,
+    )
+    OrderOperationsStore.record_timeline_event(
+        order_id, "manual_external_shipment_recorded", operator=actor,
+        details={"provider": provider, "awb": awb, "reason": reason, "comment": comment,
+                 "provenance": "manual_external_booking", "validation_source": validation_source},
+    )
+    cleanup = {"status": "not_applicable", "reason": "manually_confirmed_shiprocket_is_the_real_shipment"}
+    if provider in {"delhivery", "shadowfax"}:
+        cleanup = await _cleanup_unused_shiprocket_order(order_id, order.order_number, actor)
+    synchronized = await _sync_shopify_after_booking(db, order)
+    return {
+        "provider": provider, "shipment": synchronized or shipment_snapshot(saved),
+        "validation_source": validation_source, "validation_warning": validation_warning,
+        "shiprocket_cleanup": cleanup,
+        "message": f"Shipment recorded manually · {provider.title()} · AWB {awb}",
     }
 
 
