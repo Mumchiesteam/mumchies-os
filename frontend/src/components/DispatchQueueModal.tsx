@@ -1,13 +1,67 @@
-import {useMemo,useState} from 'react'
-import {changeDispatchStage,createLabelBatch,labelBatchPdfUrl,formatMoney,type DispatchQueue} from '../services/orders'
-import {formatDateTime} from '../utils/time'
+import { useMemo, useState } from 'react'
+import { changeDispatchStage, createLabelBatch, labelBatchPdfUrl, formatMoney, type DispatchQueue } from '../services/orders'
+import { formatDateTime } from '../utils/time'
+import { dispatchQueueDate, matchesQueueDate, type QueueDateFilter } from '../utils/queueDateFilter'
+import { QueueDateFilterControl } from './QueueDateFilterControl'
 
-export function DispatchQueueModal({stage,queue,canCorrect,close,changed,notice}:{stage:'ready_to_ship'|'manifested';queue:DispatchQueue;orders?:unknown[];canCorrect:boolean;close:()=>void;changed:(queue:DispatchQueue,readyDelta:number,manifestedDelta:number)=>void;notice:(message:string)=>void}){
- const [search,setSearch]=useState(''),[courier,setCourier]=useState('all'),[sort,setSort]=useState('newest'),[selected,setSelected]=useState<Set<string>>(new Set());const source=queue[stage]
- const rows=useMemo(()=>source.filter(row=>`${row.order_number||''} ${row.customer_name||''} ${row.awb||''}`.toLowerCase().includes(search.toLowerCase())&&(courier==='all'||courier===(row.provider||row.courier_name))).sort((a,b)=>{if(sort==='courier')return String(a.provider||a.courier_name).localeCompare(String(b.provider||b.courier_name));if(sort==='order')return String(a.order_number||'').localeCompare(String(b.order_number||''),undefined,{numeric:true});const field=stage==='manifested'?'manifested_at':'booked_at',delta=new Date(String(b[field]||0)).getTime()-new Date(String(a[field]||0)).getTime();return sort==='oldest'?-delta:delta}),[courier,search,sort,source,stage])
- const toggle=(id:string)=>setSelected(current=>{const next=new Set(current);if(next.has(id))next.delete(id);else next.add(id);return next})
- const move=async()=>{const ids=[...selected],target=stage==='ready_to_ship'?'manifest':'ready';if(!ids.length||!window.confirm(`${target==='manifest'?'Move':'Move back'} ${ids.length} selected shipments ${target==='manifest'?'to Manifested':'to Ready to Ship'}?`))return;try{const result=await changeDispatchStage(ids,target);changed(target==='manifest'?{ready_to_ship:queue.ready_to_ship.filter(row=>!ids.includes(String(row.order_id))),manifested:[...result.items,...queue.manifested]}:{ready_to_ship:[...result.items,...queue.ready_to_ship],manifested:queue.manifested.filter(row=>!ids.includes(String(row.order_id)))},result.ready_to_ship_delta,result.manifested_delta);setSelected(new Set())}catch(error){notice((error as Error).message)}}
- const print=async()=>{const ids=[...selected],providers=new Set(source.filter(row=>ids.includes(String(row.order_id))).map(row=>row.provider));if(providers.size!==1)return notice('Select shipments from one provider for a label batch.');if(!providers.has('shiprocket'))return notice('Use the courier portal/manual label workflow for this provider.');try{const batch=await createLabelBatch(ids);window.open(labelBatchPdfUrl(batch.id),'_blank','noopener,noreferrer')}catch(error){notice((error as Error).message)}}
- const couriers=[...new Set(source.map(row=>row.provider||row.courier_name).filter(Boolean))] as string[],selectAll=(checked:boolean)=>setSelected(current=>{const next=new Set(current);rows.forEach(row=>checked?next.add(String(row.order_id)):next.delete(String(row.order_id)));return next})
- return <div className="fixed inset-0 z-[75] grid place-items-center bg-slate-950/40 p-4"><div className="max-h-[88vh] w-full max-w-6xl overflow-y-auto rounded-xl bg-white p-5 shadow-2xl"><div className="flex justify-between"><div><h2 className="text-lg font-bold">{stage==='ready_to_ship'?'Ready to Ship':'Manifested'}</h2><p className="text-xs text-slate-500">Internal Mumchies stage; no provider manifest or tracking mutation.</p></div><button onClick={close}>Close</button></div><div className="sticky top-0 z-20 mt-4 flex flex-wrap gap-2 bg-white py-2"><input aria-label="Search dispatch" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search order, AWB or customer" className="min-w-64 flex-1 rounded-md border px-3 py-2 text-sm"/><select aria-label="Courier filter" value={courier} onChange={e=>setCourier(e.target.value)} className="rounded-md border px-3 py-2 text-sm"><option value="all">All couriers</option>{couriers.map(value=><option key={value}>{value}</option>)}</select><select aria-label="Dispatch sort" value={sort} onChange={e=>setSort(e.target.value)} className="rounded-md border px-3 py-2 text-sm"><option value="newest">Newest {stage==='manifested'?'manifested':'booked'}</option><option value="oldest">Oldest {stage==='manifested'?'manifested':'booked'}</option><option value="order">Order number</option><option value="courier">Courier</option></select>{stage==='ready_to_ship'&&<button disabled={!selected.size} onClick={()=>void print()} className="rounded-md border px-3 py-2 text-sm font-semibold disabled:opacity-40">Download Shiprocket Labels</button>}<button disabled={!selected.size||(stage==='manifested'&&!canCorrect)} onClick={()=>void move()} className="rounded-md bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:opacity-40">{stage==='ready_to_ship'?'Move Selected to Manifested':'Move back to Ready to Ship'}</button></div><label className="mt-2 flex gap-2 text-sm font-semibold"><input type="checkbox" checked={rows.length>0&&rows.every(row=>selected.has(String(row.order_id)))} onChange={e=>selectAll(e.target.checked)}/>Select all filtered</label><div className="mt-3 overflow-x-auto"><table className="w-full min-w-[920px] text-left text-xs"><thead className="sticky top-[58px] z-10 bg-white"><tr>{['','Order Number','Customer','Courier','AWB','Booked At','Payment','Order Value',stage==='manifested'?'Manifested At':'Label','Manifested By'].map(value=><th key={value} className="border-b px-2 py-2">{value}</th>)}</tr></thead><tbody>{rows.map(row=><tr key={row.order_id}><td className="px-2 py-2"><input type="checkbox" checked={selected.has(String(row.order_id))} onChange={()=>toggle(String(row.order_id))}/></td><td className="px-2 py-2 font-semibold">#{row.order_number||'—'}</td><td className="px-2 py-2">{row.customer_name||'—'}</td><td className="px-2 py-2">{row.courier_name||row.provider||'—'}</td><td className="px-2 py-2 font-mono">{row.awb}</td><td className="px-2 py-2">{row.booked_at?formatDateTime(row.booked_at):'—'}</td><td className="px-2 py-2">{row.payment_type?row.payment_type.replaceAll('_',' ').toUpperCase():'—'}</td><td className="px-2 py-2">{row.order_value==null?'—':formatMoney(row.order_value)}</td><td className="px-2 py-2">{stage==='manifested'?(row.manifested_at?formatDateTime(row.manifested_at):'—'):(row.provider==='shiprocket'?'OS label supported':'Portal / manual')}</td><td className="px-2 py-2">{row.manifested_by||'—'}</td></tr>)}</tbody></table></div></div></div>
+type Props = {
+  stage: 'ready_to_ship' | 'manifested'; queue: DispatchQueue; orders?: unknown[]
+  dateFilter: QueueDateFilter; onDateFilterChange: (value: QueueDateFilter) => void
+  canCorrect: boolean; close: () => void
+  changed: (queue: DispatchQueue, readyDelta: number, manifestedDelta: number) => void
+  notice: (message: string) => void
+}
+
+export function DispatchQueueModal({ stage, queue, dateFilter, onDateFilterChange, canCorrect, close, changed, notice }: Props) {
+  const [search, setSearch] = useState('')
+  const [courier, setCourier] = useState('all')
+  const [sort, setSort] = useState('newest')
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const source = queue[stage]
+  const rows = useMemo(() => source.filter(row =>
+    `${row.order_number || ''} ${row.customer_name || ''} ${row.awb || ''}`.toLowerCase().includes(search.toLowerCase())
+    && (courier === 'all' || courier === (row.provider || row.courier_name))
+    && matchesQueueDate(dispatchQueueDate(row, stage), dateFilter)
+  ).sort((a, b) => {
+    if (sort === 'courier') return String(a.provider || a.courier_name).localeCompare(String(b.provider || b.courier_name))
+    if (sort === 'order') return String(a.order_number || '').localeCompare(String(b.order_number || ''), undefined, { numeric: true })
+    const field = stage === 'manifested' ? 'manifested_at' : 'booked_at'
+    const delta = new Date(String(b[field] || 0)).getTime() - new Date(String(a[field] || 0)).getTime()
+    return sort === 'oldest' ? -delta : delta
+  }), [courier, dateFilter, search, sort, source, stage])
+  const toggle = (id: string) => setSelected(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next })
+  const move = async () => {
+    const ids = [...selected], target = stage === 'ready_to_ship' ? 'manifest' : 'ready'
+    if (!ids.length || !window.confirm(`${target === 'manifest' ? 'Move' : 'Move back'} ${ids.length} selected shipments ${target === 'manifest' ? 'to Manifested' : 'to Ready to Ship'}?`)) return
+    try {
+      const result = await changeDispatchStage(ids, target)
+      changed(target === 'manifest'
+        ? { ready_to_ship: queue.ready_to_ship.filter(row => !ids.includes(String(row.order_id))), manifested: [...result.items, ...queue.manifested] }
+        : { ready_to_ship: [...result.items, ...queue.ready_to_ship], manifested: queue.manifested.filter(row => !ids.includes(String(row.order_id))) }, result.ready_to_ship_delta, result.manifested_delta)
+      setSelected(new Set())
+    } catch (error) { notice((error as Error).message) }
+  }
+  const print = async () => {
+    const ids = [...selected], providers = new Set(source.filter(row => ids.includes(String(row.order_id))).map(row => row.provider || row.courier_name))
+    if (providers.size !== 1) return notice('Select shipments from one provider for a label batch.')
+    if (!providers.has('shiprocket')) return notice('Use the courier portal/manual label workflow for this provider.')
+    try { const batch = await createLabelBatch(ids); window.open(labelBatchPdfUrl(batch.id), '_blank', 'noopener,noreferrer') } catch (error) { notice((error as Error).message) }
+  }
+  const couriers = [...new Set(source.map(row => row.provider || row.courier_name).filter(Boolean))] as string[]
+  const selectAll = (checked: boolean) => setSelected(current => { const next = new Set(current); rows.forEach(row => checked ? next.add(String(row.order_id)) : next.delete(String(row.order_id))); return next })
+  return <div className="fixed inset-0 z-[75] grid place-items-center bg-slate-950/40 p-4"><div className="max-h-[88vh] w-full max-w-6xl overflow-y-auto rounded-xl bg-white p-5 shadow-2xl">
+    <div className="flex justify-between"><div><h2 className="text-lg font-bold">{stage === 'ready_to_ship' ? 'Ready to Ship' : 'Manifested'}</h2><p className="text-xs text-slate-500">Internal Mumchies stage; no provider manifest or tracking mutation.</p></div><button onClick={close}>Close</button></div>
+    <div className="sticky top-0 z-20 mt-4 flex flex-wrap gap-2 bg-white py-2">
+      <input aria-label="Search dispatch" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search order, AWB or customer" className="min-w-64 flex-1 rounded-md border px-3 py-2 text-sm" />
+      <select aria-label="Courier filter" value={courier} onChange={event => setCourier(event.target.value)} className="rounded-md border px-3 py-2 text-sm"><option value="all">All couriers</option>{couriers.map(value => <option key={value}>{value}</option>)}</select>
+      <select aria-label="Dispatch sort" value={sort} onChange={event => setSort(event.target.value)} className="rounded-md border px-3 py-2 text-sm"><option value="newest">Newest {stage === 'manifested' ? 'manifested' : 'booked'}</option><option value="oldest">Oldest {stage === 'manifested' ? 'manifested' : 'booked'}</option><option value="order">Order number</option><option value="courier">Courier</option></select>
+      <QueueDateFilterControl value={dateFilter} onChange={onDateFilterChange} label={stage === 'manifested' ? 'Manifest date' : 'Booking date'} />
+      {stage === 'ready_to_ship' && <button disabled={!selected.size} onClick={() => void print()} className="rounded-md border px-3 py-2 text-sm font-semibold disabled:opacity-40">Download Shiprocket Labels</button>}
+      <button disabled={!selected.size || (stage === 'manifested' && !canCorrect)} onClick={() => void move()} className="rounded-md bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:opacity-40">{stage === 'ready_to_ship' ? 'Move Selected to Manifested' : 'Move back to Ready to Ship'}</button>
+    </div>
+    <label className="mt-2 flex gap-2 text-sm font-semibold"><input type="checkbox" checked={rows.length > 0 && rows.every(row => selected.has(String(row.order_id)))} onChange={event => selectAll(event.target.checked)} />Select all filtered</label>
+    <div className="mt-3 overflow-x-auto"><table className="w-full min-w-[920px] text-left text-xs"><thead className="sticky top-[58px] z-10 bg-white"><tr>{['', 'Order Number', 'Customer', 'Courier', 'AWB', 'Booked At', 'Payment', 'Order Value', stage === 'manifested' ? 'Manifested At' : 'Label', 'Manifested By'].map(value => <th key={value} className="border-b px-2 py-2">{value}</th>)}</tr></thead><tbody>{rows.map(row => <tr key={row.order_id}>
+      <td className="px-2 py-2"><input type="checkbox" checked={selected.has(String(row.order_id))} onChange={() => toggle(String(row.order_id))} /></td><td className="px-2 py-2 font-semibold">#{row.order_number || '—'}</td><td className="px-2 py-2">{row.customer_name || '—'}</td><td className="px-2 py-2">{row.courier_name || row.provider || '—'}</td><td className="px-2 py-2 font-mono">{row.awb}</td><td className="px-2 py-2">{row.booked_at ? formatDateTime(row.booked_at) : '—'}</td><td className="px-2 py-2">{row.payment_type ? row.payment_type.replaceAll('_', ' ').toUpperCase() : '—'}</td><td className="px-2 py-2">{row.order_value == null ? '—' : formatMoney(row.order_value)}</td><td className="px-2 py-2">{stage === 'manifested' ? (row.manifested_at ? formatDateTime(row.manifested_at) : '—') : (row.provider === 'shiprocket' ? 'OS label supported' : 'Portal / manual')}</td><td className="px-2 py-2">{row.manifested_by || '—'}</td>
+    </tr>)}</tbody></table></div>
+  </div></div>
 }

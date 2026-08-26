@@ -78,6 +78,8 @@ import { courierSelectionMatches } from './utils/courierSelection'
 import { applyConfirmedBookingState, isConfirmedLabelBooking, mergeCanonicalShipment } from './utils/postBooking'
 import { CourierIssuesPage } from './components/CourierIssuesPage'
 import { DispatchQueueModal } from './components/DispatchQueueModal'
+import { QueueDateFilterControl } from './components/QueueDateFilterControl'
+import { matchesOrderQueueFilters, type QueueDateFilter } from './utils/queueDateFilter'
 
 type IconName = 'grid' | 'bag' | 'alert' | 'users' | 'chart' | 'settings' | 'search' | 'bell' | 'filter' | 'chevron' | 'more' | 'eye' | 'truck' | 'calendar' | 'close' | 'copy' | 'phone' | 'external' | 'repeat' | 'tag' | 'edit' | 'call'
 type TabKey = 'fresh' | 'previous' | 'all' | 'ready_to_ship' | 'manifested' | 'printed_today' | 'shiprocket_cleanup'
@@ -207,6 +209,7 @@ export const shadowfaxRecommendationPresentation = (recommendation: OrderOperati
     : 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200',
 } : null
 export const pincodeClipboardValue = (value: string) => /^\d{6}$/.test(value.trim()) ? value.trim() : ''
+export const showShadowfaxNotRecommended = (recommendation: OrderOperations['shadowfax_pincode_recommendation'], pincode: string) => !recommendation && /^\d{6}$/.test(pincode.trim())
 const formatOrderDateTime = (value: string) => {
   const date = new Date(value)
   return {
@@ -237,6 +240,7 @@ function App() {
   const [payment, setPayment] = useState('All')
   const [risk, setRisk] = useState('All')
   const [sort, setSort] = useState('Newest first')
+  const [dateFilter, setDateFilter] = useState<QueueDateFilter>({ preset: 'all', start: '', end: '' })
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<20 | 50 | 100>(20)
   const [total, setTotal] = useState(0)
@@ -527,7 +531,7 @@ function App() {
     void verifyShiprocketOnlyCancellation(record).then(result => handleCleanupResult(record, result)).catch(error => setNotice(error.message))
   }
 
-  const displayedOrders = orders
+  const displayedOrders = useMemo(() => orders.filter(order => matchesOrderQueueFilters(order, dateFilter, payment, risk)), [dateFilter, orders, payment, risk])
   const displayedLabelShipments = useMemo(() => (queue==='manifested'?labelQueue.manifested:labelQueue.ready_to_ship).filter(shipment => {
     const order = orders.find(value => value.internalId === shipment.order_id)
     return `${order?.orderNumber || ''} ${order?.customerName || ''} ${shipment.awb || ''}`.toLowerCase().includes(labelSearch.toLowerCase())
@@ -979,6 +983,7 @@ function App() {
               <Filter value={payment} onChange={value => { setPayment(value); setPage(1) }} options={['All', 'COD', 'Partial COD', 'Prepaid']} label="Payment Type" />
               <Filter value={risk} onChange={value => { setRisk(value); setPage(1) }} options={['All', 'High', 'Medium', 'Low']} label="Risk" />
               <Filter value={sort} onChange={value => { setSort(value); setPage(1) }} options={['Newest first', 'Oldest first', 'COD first', 'Prepaid first', 'Value high to low', 'Value low to high']} label="Sort" />
+              <QueueDateFilterControl value={dateFilter} onChange={value => { setDateFilter(value); setPage(1) }} label="Order date" />
             </div>
           </div>
 
@@ -1090,7 +1095,7 @@ function App() {
         {labelQueue.printed_today.length > 0 && <details className="mt-4"><summary className="cursor-pointer text-sm font-semibold text-slate-600">Previously printed</summary><div className="mt-2 space-y-2">{labelQueue.printed_today.map(shipment => <div key={shipment.order_id} className="flex items-center gap-2 rounded-lg bg-slate-50 p-2 text-xs"><span>#{orders.find(order => order.internalId === shipment.order_id)?.orderNumber || shipment.order_id}</span><span>Printed {shipment.label_last_printed_at ? formatDateTime(shipment.label_last_printed_at) : ''}</span><button onClick={() => { if (window.confirm('Print this label again?')) void requestLabelReprint(String(shipment.order_id)).then(refreshLabels).catch(error => setNotice(error.message)) }} className="ml-auto font-semibold text-slate-700">Print again?</button></div>)}</div></details>}
         {!activeBatch ? <button disabled={!selectedLabels.size} onClick={() => void createLabelBatch([...selectedLabels]).then(batch => { setActiveBatch(batch); setPrintedLabels(new Set(batch.order_ids)); window.open(labelBatchPdfUrl(batch.id), '_blank', 'noopener,noreferrer'); refreshLabels() }).catch(error => setNotice(error.message))} className="mt-4 rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-40">Print Selected</button> : <div className="mt-5 rounded-lg bg-amber-50 p-4"><p className="font-semibold text-amber-900">Were all labels printed successfully?</p><p className="mt-1 text-xs text-amber-700">Uncheck failed labels before confirming partial success.</p><div className="mt-3 space-y-1">{activeBatch.order_ids.map(id => <label key={id} className="flex gap-2 text-sm"><input type="checkbox" checked={printedLabels.has(id)} onChange={() => setPrintedLabels(previous => { const next = new Set(previous); if (next.has(id)) next.delete(id); else next.add(id); return next })} />#{orders.find(order => order.internalId === id)?.orderNumber || id}</label>)}</div><div className="mt-3 flex flex-wrap gap-2"><button onClick={() => void confirmLabelBatch(activeBatch.id, activeBatch.order_ids).then(() => { setActiveBatch(null); setSelectedLabels(new Set()); refreshLabels() })} className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white">Mark all printed</button><button onClick={() => void confirmLabelBatch(activeBatch.id, [...printedLabels]).then(() => { setActiveBatch(null); setSelectedLabels(new Set()); refreshLabels() })} className="rounded-lg border border-amber-300 px-3 py-2 text-sm font-semibold">Confirm selected only</button><button onClick={() => void confirmLabelBatch(activeBatch.id, []).then(() => { setActiveBatch(null); setSelectedLabels(new Set()); refreshLabels() })} className="rounded-lg px-3 py-2 text-sm">Return all to queue</button><button onClick={() => window.open(labelBatchPdfUrl(activeBatch.id), '_blank', 'noopener,noreferrer')} className="rounded-lg px-3 py-2 text-sm">Reopen PDF</button></div></div>}
       </div></div>}
-      {showDispatch && (queue==='ready_to_ship'||queue==='manifested') && <DispatchQueueModal stage={queue} queue={labelQueue} orders={orders} canCorrect={['owner','admin'].includes(authUser?.role||'')} close={()=>setShowDispatch(false)} notice={setNotice} changed={(next,readyDelta,manifestedDelta)=>{setLabelQueue({...next,printed_today:[]});setCounts(current=>({...current,ready_to_ship:Math.max(0,current.ready_to_ship+readyDelta),manifested:Math.max(0,current.manifested+manifestedDelta)}))}}/>}
+      {showDispatch && (queue==='ready_to_ship'||queue==='manifested') && <DispatchQueueModal stage={queue} queue={labelQueue} orders={orders} dateFilter={dateFilter} onDateFilterChange={setDateFilter} canCorrect={['owner','admin'].includes(authUser?.role||'')} close={()=>setShowDispatch(false)} notice={setNotice} changed={(next,readyDelta,manifestedDelta)=>{setLabelQueue({...next,printed_today:[]});setCounts(current=>({...current,ready_to_ship:Math.max(0,current.ready_to_ship+readyDelta),manifested:Math.max(0,current.manifested+manifestedDelta)}))}}/>}
     </div>
   )
 }
@@ -1553,6 +1558,7 @@ const OrderDrawer = memo(function OrderDrawer({
                             <p className="mt-1 text-xs text-slate-500">{option.mode || 'mode n/a'} · {option.estimated_delivery_days ?? '—'} days · ETA {option.expected_delivery_date || '—'}</p>
                             <p className="mt-1 text-[11px] text-slate-400">{option.rate_note}</p>
                             {shadowfaxRecommendation && <p className="mt-1 text-[11px] font-medium text-emerald-700">{shadowfaxRecommendation.detail} · Recommendation only; live serviceability remains separate.</p>}
+                            {option.provider === 'shadowfax' && showShadowfaxNotRecommended(shadowfaxPincodeRecommendation, addressDraft.pincode) && <p className="mt-1 text-[11px] font-medium text-amber-700">Not in recommended pincode list</p>}
                           </div>
                           <div className="text-right text-xs text-slate-500">
                             <p>Freight {formatMoney(option.rate)}</p>

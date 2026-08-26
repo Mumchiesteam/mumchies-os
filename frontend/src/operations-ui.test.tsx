@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 
-import App, { OrdersTable, pincodeClipboardValue, shadowfaxRecommendationPresentation } from './App'
+import App, { OrdersTable, pincodeClipboardValue, shadowfaxRecommendationPresentation, showShadowfaxNotRecommended } from './App'
 import { displayedOrderNumber, orderNumberClipboardValue, stopCopyPropagation } from './utils/orderNumber'
 
 describe('operations-first Orders layout', () => {
@@ -18,7 +18,7 @@ describe('operations-first Orders layout', () => {
 
   it('keeps only the operational filters and Engage table column', () => {
     const html = renderToStaticMarkup(<App />)
-    for (const filter of ['Payment Type', 'Risk', 'Sort']) expect(html).toContain(`aria-label="${filter}"`)
+    for (const filter of ['Payment Type', 'Risk', 'Sort', 'Order date']) expect(html).toContain(`aria-label="${filter}"`)
     for (const removed of ['aria-label="Order Confirmation"', 'aria-label="Address Verification"', 'aria-label="COD → Prepaid"']) expect(html).not.toContain(removed)
   })
 
@@ -61,5 +61,14 @@ describe('operations-first Orders layout', () => {
     expect(pincodeClipboardValue('')).toBe('')
     expect(pincodeClipboardValue('12345')).toBe('')
     expect(pincodeClipboardValue('12300A')).toBe('')
+  })
+
+  it('shows the Shadowfax negative recommendation only for valid absent pincodes', () => {
+    const recommendation = { pincode: '123001', hub: 'NNL_Narnaul', region: 'Haryana', confidence: 'Super Confident', reference_only: true } as const
+    expect(showShadowfaxNotRecommended(recommendation, '123001')).toBe(false)
+    expect(showShadowfaxNotRecommended(null, '654321')).toBe(true)
+    expect(showShadowfaxNotRecommended(null, '')).toBe(false)
+    expect(showShadowfaxNotRecommended(null, '12345')).toBe(false)
+    expect(showShadowfaxNotRecommended(null, '12300A')).toBe(false)
   })
 })
