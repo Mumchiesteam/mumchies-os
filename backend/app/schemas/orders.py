@@ -45,6 +45,7 @@ class ShopifyOrder(BaseModel):
     shipping_address: ShippingAddress | None = None
     customer_id: str | None = None
     customer_orders_count: int | None = None
+    is_repeat_customer: bool = False
     products: list[OrderProduct]
     total_amount: Decimal
     order_total: Decimal = Decimal("0")

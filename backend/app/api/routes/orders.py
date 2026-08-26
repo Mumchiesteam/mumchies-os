@@ -279,11 +279,7 @@ def _full_counts(orders: list[ShopifyOrder], now: datetime, db: Session) -> dict
     cod = [order for order in orders if order.payment_type in {"cod", "partial_cod"}]
     prepaid = [order for order in orders if order.payment_type == "prepaid"]
     high_risk = [order for order in orders if "high" in " ".join(order.tags).casefold() and not _is_inactive(order)]
-    customer_counts: dict[str, int] = {}
-    for order in orders:
-        if order.customer_id:
-            customer_counts[order.customer_id] = customer_counts.get(order.customer_id, 0) + 1
-    repeat = [order for order in orders if (order.customer_orders_count or 0) > 1 or bool(order.customer_id and customer_counts.get(order.customer_id, 0) > 1)]
+    repeat = [order for order in orders if order.is_repeat_customer]
     from app.models.shiprocket import ShiprocketShipment
     local_today = now.astimezone(ZoneInfo("Asia/Kolkata")).date()
     shipments = db.scalars(select(ShiprocketShipment).where(ShiprocketShipment.label_print_status.in_(["not_printed", "awaiting_confirmation", "printed"]))).all() if hasattr(db, "scalars") else []
@@ -439,7 +435,7 @@ def _export_row(order: ShopifyOrder) -> list[object]:
         order.order_number, created.date(), created.time().replace(second=0, microsecond=0), order.customer_name,
         order.phone, address.get("city"), address.get("state"), address.get("pincode"), float(order.order_total),
         float(order.paid_amount), float(order.cod_collectable_amount), order.payment_type, order.payment_status,
-        "High" if "high risk" in " ".join(order.tags).casefold() else "Low", "Repeat" if (order.customer_orders_count or 0) > 1 else "New",
+        "High" if "high risk" in " ".join(order.tags).casefold() else "Low", "Repeat" if order.is_repeat_customer else "New",
         order.operational_status, order.call_attempt_count, "Verified" if order.address_verified else "Pending",
         shipment.get("address_confidence_score"), shipment.get("address_confidence_category"), shipment.get("provider"),
         shipment.get("courier_name"), shipment.get("awb"), shipment.get("latest_status"), shipment.get("booked_at"),
@@ -483,7 +479,7 @@ async def export_orders(payload: ExportPayload, db: Session = Depends(get_db)):
             "Partial COD": [value for value in orders if value.payment_type == "partial_cod"],
             "Prepaid": [value for value in orders if value.payment_type == "prepaid"],
             "High Risk": [value for value in orders if "high risk" in " ".join(value.tags).casefold()],
-            "Repeat Customers": [value for value in orders if (value.customer_orders_count or 0) > 1],
+            "Repeat Customers": [value for value in orders if value.is_repeat_customer],
         }
         for name, values in tabs.items():
             add_sheet(name, values)
@@ -648,7 +644,7 @@ async def save_and_verify_address(order_id: str, payload: SaveVerifyAddressPaylo
 async def add_call_log(order_id: str, payload: CallLogPayload, request: Request) -> dict[str, object]:
     entry = {
         "result": payload.result,
-        "timestamp": payload.timestamp or datetime.now().isoformat(timespec="seconds"),
+        "timestamp": payload.timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "operator": current_actor(request),
         "comment": payload.comment,
     }
@@ -1045,5 +1041,5 @@ async def verify_order_address(order_id: str, payload: VerifyAddressPayload, req
         order_id,
         operator=current_actor(request),
         snapshot=payload.address_snapshot,
-        verified_at=payload.verified_at or datetime.now().isoformat(timespec="seconds"),
+        verified_at=payload.verified_at or datetime.now(timezone.utc).isoformat(timespec="seconds"),
     )

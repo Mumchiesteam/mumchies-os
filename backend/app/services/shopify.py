@@ -13,6 +13,7 @@ import httpx
 from app.core.config import settings
 from app.schemas.orders import ExternalTracking, OrderProduct, ShippingAddress, ShopifyOrder
 
+from app.services.repeat_customers import mark_repeat_customers
 # Safe, confident tracking-URL templates for a small set of known providers - reuses the exact
 # pattern already used elsewhere in this codebase (see DelhiveryService/normalize_tracking).
 # Deliberately NOT populated for providers we aren't sure of the public tracking URL for; those
@@ -42,6 +43,9 @@ class ShopifyService:
     _orders_cache: dict[tuple[str, str], tuple[float, list[ShopifyOrder]]] = {}
     _orders_lock = asyncio.Lock()
     _orders_cache_ttl_seconds = 300
+    _identity_cache: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
+    _identity_lock = asyncio.Lock()
+    _identity_cache_ttl_seconds = 3600
 
     def __init__(
         self,
@@ -367,6 +371,8 @@ class ShopifyService:
                     return list(cached[1])
 
             orders = await self._fetch_orders(limit)
+            history = await self._get_order_identity_history(force_refresh=force_refresh)
+            orders = mark_repeat_customers(orders, history)
             if limit is None:
                 self._orders_cache[cache_key] = (
                     time.monotonic() + self._orders_cache_ttl_seconds,
@@ -376,6 +382,41 @@ class ShopifyService:
 
     async def _fetch_orders(self, limit: int | None = None) -> list[ShopifyOrder]:
         return await self._fetch_orders_for_enrichment(limit, include_transactions=True)
+
+    async def _get_order_identity_history(self, *, force_refresh: bool = False) -> list[dict[str, Any]]:
+        cache_key = (self.store, self.api_version or "")
+        cached = self._identity_cache.get(cache_key)
+        if not force_refresh and cached and cached[0] > time.monotonic():
+            return list(cached[1])
+        async with self._identity_lock:
+            cached = self._identity_cache.get(cache_key)
+            if not force_refresh and cached and cached[0] > time.monotonic():
+                return list(cached[1])
+            history = await self._fetch_order_identity_history()
+            self._identity_cache[cache_key] = (time.monotonic() + self._identity_cache_ttl_seconds, list(history))
+            return history
+
+    async def _fetch_order_identity_history(self) -> list[dict[str, Any]]:
+        """Fetch identity-only order history in bulk; never makes per-order requests."""
+        url = f"https://{self.store}/admin/api/{self.api_version}/orders.json"
+        params: dict[str, str] | None = {
+            "status": "any", "limit": "250", "order": "created_at desc",
+            "fields": "id,created_at,customer,email,phone,shipping_address,cancelled_at,tags,test",
+        }
+        headers = {"X-Shopify-Access-Token": await self._get_access_token()}
+        history: list[dict[str, Any]] = []
+        seen_urls: set[str] = set()
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            while url:
+                if url in seen_urls:
+                    raise ShopifyConfigurationError("Shopify identity pagination repeated a page URL.")
+                seen_urls.add(url)
+                response = await client.get(url, params=params, headers=headers)
+                response.raise_for_status()
+                history.extend(value for value in response.json().get("orders", []) if isinstance(value, dict))
+                url = self._next_page_url(response.headers.get("link")) or ""
+                params = None
+        return history
 
     async def get_orders_for_ndr_enrichment(self) -> list[ShopifyOrder]:
         """Read recent orders without per-order transaction calls; NDR needs identity and fulfilment data only."""

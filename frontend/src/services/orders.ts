@@ -47,6 +47,7 @@ export interface Order {
   cancelledAt: string | null
   customerId: string | null
   customerOrdersCount: number | null
+  isRepeatCustomer: boolean
   phone: string | null
   email: string | null
   shippingAddress: {
@@ -185,6 +186,7 @@ interface ApiOrder {
   customer_name: string | null
   customer_id: string | null
   customer_orders_count: number | null
+  is_repeat_customer: boolean
   phone: string | null
   email: string | null
   shipping_address: {
@@ -396,7 +398,7 @@ export const mapApiOrder = (item: ApiOrder): Order => {
     payment: inferPayment(item.payment_status, item.payment_type), orderTotal: Number(item.order_total ?? item.total_amount),
     paidAmount: Number(item.paid_amount ?? 0), outstandingAmount: Number(item.outstanding_amount ?? 0), codCollectableAmount: Number(item.cod_collectable_amount ?? 0),
     paymentType: item.payment_type, financialStatus: item.payment_status, risk: inferRisk(item.tags), fulfillmentStatus: item.fulfillment_status,
-    shopifyStatus: item.shopify_status, cancelledAt: item.cancelled_at, customerId: item.customer_id, customerOrdersCount: item.customer_orders_count,
+    shopifyStatus: item.shopify_status, cancelledAt: item.cancelled_at, customerId: item.customer_id, customerOrdersCount: item.customer_orders_count, isRepeatCustomer: item.is_repeat_customer,
     phone: item.phone, email: item.email, shippingAddress: item.shipping_address,
     products: item.products.map(product => ({ productName: product.product_name, sku: product.sku, quantity: product.quantity, weightGrams: product.weight_grams, price: Number(product.price) })),
     tags: item.tags, firstActionAt: item.first_action_at, humanActionCount: item.human_action_count, callAttemptCount: item.call_attempt_count,

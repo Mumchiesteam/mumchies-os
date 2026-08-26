@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { actOnNDR, getNDRCase, getNDRCases, getNDROperators, getNDRSummary, type NDRCase, type NDRFilters, type NDRKpi, type NDROperator, type NDRSourceHealth, type NDRSummary } from '../services/ndr'
 import { kpiButtonClass, shopifyPresentation, toggleKpi } from '../utils/ndrView'
+import { formatDateTime } from '../utils/time'
 
 const format = (value: string | null | undefined) => {
   if (!value) return '—'
   const parsed = new Date(value)
-  return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleString('en-IN')
+  return Number.isNaN(parsed.getTime()) ? '—' : formatDateTime(value)
 }
 const statusStyle: Record<string,string> = { new:'bg-rose-50 text-rose-700', awaiting_customer:'bg-amber-50 text-amber-700', courier_pending:'bg-blue-50 text-blue-700', resolved:'bg-emerald-50 text-emerald-700' }
 const kpiCards: { key:NDRKpi; label:string; summaryKey:keyof Pick<NDRSummary,'active_ndr'|'new_today'|'awaiting_customer'|'courier_pending'|'resolved_today'|'over_sla'> }[] = [
