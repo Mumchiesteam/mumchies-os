@@ -387,11 +387,7 @@ def _full_counts(orders: list[ShopifyOrder], now: datetime, db: Session) -> dict
     cod = [order for order in orders if order.payment_type in {"cod", "partial_cod"}]
     prepaid = [order for order in orders if order.payment_type == "prepaid"]
     high_risk = [order for order in orders if "high" in " ".join(order.tags).casefold() and not _is_inactive(order)]
-    customer_counts: dict[str, int] = {}
-    for order in orders:
-        if order.customer_id:
-            customer_counts[order.customer_id] = customer_counts.get(order.customer_id, 0) + 1
-    repeat = [order for order in orders if (order.customer_orders_count or 0) > 1 or bool(order.customer_id and customer_counts.get(order.customer_id, 0) > 1)]
+    repeat = [order for order in orders if order.is_repeat_customer]
     from app.models.shiprocket import ShiprocketShipment
     shipments = db.scalars(select(ShiprocketShipment).where(ShiprocketShipment.booking_status == "booked", ShiprocketShipment.awb.is_not(None))).all() if hasattr(db, "scalars") else []
     ready = [value for value in shipments if (value.dispatch_status or "ready_to_ship") == "ready_to_ship"]
@@ -631,7 +627,7 @@ async def export_orders(payload: ExportPayload, db: Session = Depends(get_db)):
             "Partial COD": [value for value in orders if value.payment_type == "partial_cod"],
             "Prepaid": [value for value in orders if value.payment_type == "prepaid"],
             "High Risk": [value for value in orders if "high risk" in " ".join(value.tags).casefold()],
-            "Repeat Customers": [value for value in orders if (value.customer_orders_count or 0) > 1],
+            "Repeat Customers": [value for value in orders if value.is_repeat_customer],
         }
         for name, values in tabs.items():
             add_sheet(name, values)
@@ -878,7 +874,7 @@ async def add_call_log(order_id: str, payload: CallLogPayload, request: Request)
         raise HTTPException(status_code=422, detail="Add a reason before placing the order On Hold.")
     entry = {
         "result": payload.result,
-        "timestamp": payload.timestamp or datetime.now().isoformat(timespec="seconds"),
+        "timestamp": payload.timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "operator": current_actor(request),
         "comment": payload.comment,
     }
@@ -1342,5 +1338,5 @@ async def verify_order_address(order_id: str, payload: VerifyAddressPayload, req
         order_id,
         operator=current_actor(request),
         snapshot=payload.address_snapshot,
-        verified_at=payload.verified_at or datetime.now().isoformat(timespec="seconds"),
+        verified_at=payload.verified_at or datetime.now(timezone.utc).isoformat(timespec="seconds"),
     )

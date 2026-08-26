@@ -67,7 +67,7 @@ import { NDRPage } from './components/NDRPage'
 import { DashboardPage } from './components/DashboardPage'
 import { AnalyticsPage } from './components/AnalyticsPage'
 import { ReportsPage } from './components/ReportsPage'
-import { formatDateTime } from './utils/time'
+import { formatDateTime, parseOperationalDate } from './utils/time'
 import { orderContactSectionTitle } from './utils/operations'
 import { EngageCircle, EngageProgress } from './components/EngageStatus'
 import { OrderStatusBadge } from './components/OrderStatusBadge'
@@ -149,7 +149,7 @@ const reconciliationRecordToOrder = (record: ReconciliationRecord): Order => {
     payment: paymentType === 'cod' ? 'COD' : paymentType === 'partial_cod' ? 'Partial COD' : 'Prepaid', orderTotal: record.total_amount,
     paidAmount: 0, outstandingAmount: 0, codCollectableAmount: 0, paymentType, financialStatus: null,
     risk: ['High', 'Medium'].includes(record.risk) ? record.risk as RiskLevel : 'Low', fulfillmentStatus: null, shopifyStatus: null,
-    cancelledAt: null, customerId: null, customerOrdersCount: null, phone: null, email: null, shippingAddress: null, products: [], tags: [],
+    cancelledAt: null, customerId: null, customerOrdersCount: null, isRepeatCustomer: false, phone: null, email: null, shippingAddress: null, products: [], tags: [],
     firstActionAt: null, humanActionCount: 0, callAttemptCount: 0, latestCallResult: null, operationalStatus: record.status,
     addressVerified: false, addressVerifiedAt: null, addressVerifiedBy: null, verifiedAddressSnapshot: null, correctedAddress: null,
     courierSyncStatus: null, courierSyncError: null, addressSyncResults: null, packageDetails: null, selectedCourier: null, shipment: null, externalTracking: null,
@@ -339,17 +339,7 @@ function App() {
       setTotalPages(data.totalPages)
       setCounts(data.counts)
       if (data.page !== page) setPage(data.page)
-      const counts = new Map<string, number>()
-      const repeat = new Set<string>()
-      for (const order of data.items) {
-        if ((order.customerOrdersCount || 0) > 1) repeat.add(order.internalId)
-        if (order.customerId) {
-          const next = (counts.get(order.customerId) || 0) + 1
-          counts.set(order.customerId, next)
-          if (next > 1) repeat.add(order.internalId)
-        }
-      }
-      setRepeatIds(repeat)
+      setRepeatIds(new Set(data.items.filter(order => order.isRepeatCustomer).map(order => order.internalId)))
     } catch (err) {
       if ((err as Error).name !== 'AbortError') setError((err as Error).message)
     } finally {
@@ -569,7 +559,7 @@ function App() {
     return listStatus(order)
   }
 
-  const callLog = [...(operations?.call_logs || [])].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+  const callLog = [...(operations?.call_logs || [])].sort((a, b) => parseOperationalDate(b.timestamp).getTime() - parseOperationalDate(a.timestamp).getTime())
   const courierSyncMessage = operations?.courier_sync_error || ''
   const status = selectedOrder ? statusFromOrder(selectedOrder) : 'Call Pending'
   const isRepeat = selectedOrder ? repeatIds.has(selectedOrder.internalId) : false
@@ -1077,7 +1067,7 @@ function App() {
             ...(selectedOrder.shipment?.booked_at ? [{ action: `${selectedOrder.shipment.provider || 'Courier'} booking confirmed`, timestamp: selectedOrder.shipment.booked_at, operator: null }] : []),
             ...(selectedOrder.shipment?.shopify_fulfillment_synced_at ? [{ action: 'Shopify fulfilment synced', timestamp: selectedOrder.shipment.shopify_fulfillment_synced_at, operator: null }] : []),
             ...(selectedOrder.shipment?.label_last_printed_at ? [{ action: 'Label printing confirmed', timestamp: selectedOrder.shipment.label_last_printed_at, operator: selectedOrder.shipment.label_last_printed_by }] : []),
-          ].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())}
+          ].sort((a, b) => parseOperationalDate(a.timestamp).getTime() - parseOperationalDate(b.timestamp).getTime())}
           callResult={callResult}
           callComment={callComment}
           setCallResult={setCallResult}

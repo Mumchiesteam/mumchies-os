@@ -14,6 +14,7 @@ import httpx
 
 from app.core.config import settings
 from app.schemas.orders import ExternalTracking, OrderProduct, ShippingAddress, ShopifyOrder
+from app.services.repeat_customers import mark_repeat_customers
 
 LOGGER = logging.getLogger(__name__)
 
@@ -490,7 +491,7 @@ class ShopifyService:
         return value.replace("\\", "\\\\").replace('"', '\\"')
 
     async def _repeat_history_rows(self, orders: list[ShopifyOrder]) -> list[dict[str, Any]]:
-        """Read full Shopify history in batches; this does not change the Orders lookback."""
+        """Read matching Shopify history in bounded batches without blocking the Orders response."""
         identities: list[str] = []
         for order in orders:
             if order.customer_id:
@@ -500,37 +501,29 @@ class ShopifyService:
             elif self._repeat_phone(order.phone):
                 identities.append(f'phone:"{self._search_value(self._repeat_phone(order.phone))}"')
         identities = list(dict.fromkeys(identities))
+        if not identities:
+            return []
         query = """query RepeatCustomerHistory($query: String!, $after: String) {
           orders(first: 250, after: $after, query: $query, sortKey: CREATED_AT, reverse: true) {
             nodes {
-              id cancelledAt email phone
+              id createdAt cancelledAt test tags email phone
               customer { id email phone }
-              fulfillments(first: 1) { id }
             }
             pageInfo { hasNextPage endCursor }
           }
         }"""
-        # Repeat classification only needs one qualifying prior order per identity.
-        # Retaining every historical node made this list grow with total Shopify history.
-        rows: list[dict[str, Any]] = []
-        matched_identities: set[str] = set()
-        current_ids = {str(order.order_id) for order in orders}
         customer_targets = {str(order.customer_id): f"customer_id:{order.customer_id}" for order in orders if order.customer_id}
-        email_targets = {self._repeat_email(order.email): f"email:{self._repeat_email(order.email)}" for order in orders if not order.customer_id and self._repeat_email(order.email)}
-        phone_targets = {self._repeat_phone(order.phone): f"phone:{self._repeat_phone(order.phone)}" for order in orders if not order.customer_id and self._repeat_phone(order.phone)}
-        for start in range(0, len(identities), 20):
-            search = " OR ".join(identities[start:start + 20])
+        email_targets = {self._repeat_email(order.email): f'email:"{self._search_value(self._repeat_email(order.email))}"' for order in orders if not order.customer_id and self._repeat_email(order.email)}
+        phone_targets = {self._repeat_phone(order.phone): f'phone:"{self._search_value(self._repeat_phone(order.phone))}"' for order in orders if not order.customer_id and self._repeat_phone(order.phone)}
+
+        async def fetch_chunk(chunk: list[str]) -> list[dict[str, Any]]:
+            oldest_by_identity: dict[str, dict[str, Any]] = {}
             after: str | None = None
             while True:
-                data = await self.graphql(query, {"query": search, "after": after})
+                data = await self.graphql(query, {"query": " OR ".join(chunk), "after": after})
                 connection = data.get("orders") or {}
                 for value in connection.get("nodes") or []:
                     if not isinstance(value, dict):
-                        continue
-                    previous_id = str(value.get("id") or "").rsplit("/", 1)[-1]
-                    if previous_id in current_ids:
-                        continue
-                    if value.get("cancelledAt") and not value.get("fulfillments"):
                         continue
                     customer = value.get("customer") or {}
                     customer_id = str(customer.get("id") or "").rsplit("/", 1)[-1]
@@ -539,16 +532,18 @@ class ShopifyService:
                         identity = email_targets.get(self._repeat_email(value.get("email") or customer.get("email")))
                     if identity is None:
                         identity = phone_targets.get(self._repeat_phone(value.get("phone") or customer.get("phone")))
-                    if identity and identity not in matched_identities:
-                        matched_identities.add(identity)
-                        rows.append(value)
+                    if identity in chunk:
+                        oldest_by_identity[identity] = value
                 page_info = connection.get("pageInfo") or {}
                 if not page_info.get("hasNextPage"):
-                    break
+                    return list(oldest_by_identity.values())
                 after = str(page_info.get("endCursor") or "") or None
                 if after is None:
-                    break
-        return rows
+                    raise ShopifyConfigurationError("Shopify repeat-history pagination omitted its cursor.")
+
+        chunks = [identities[start:start + 250] for start in range(0, len(identities), 250)]
+        pages = await asyncio.gather(*(fetch_chunk(chunk) for chunk in chunks))
+        return [row for page in pages for row in page]
 
     async def _enrich_repeat_customer_history(self, orders: list[ShopifyOrder]) -> None:
         if not orders:
@@ -557,30 +552,24 @@ class ShopifyService:
             history = await self._repeat_history_rows(orders)
         except ShopifySyncError:
             return
-        qualifying_ids: dict[tuple[str, str], set[str]] = {}
+        canonical: list[dict[str, Any]] = []
         for previous in history:
-            if previous.get("cancelledAt") and not previous.get("fulfillments"):
-                continue
-            previous_id = str(previous.get("id") or "").rsplit("/", 1)[-1]
             customer = previous.get("customer") or {}
-            customer_id = str(customer.get("id") or "").rsplit("/", 1)[-1]
-            email = self._repeat_email(previous.get("email") or customer.get("email"))
-            phone = self._repeat_phone(previous.get("phone") or customer.get("phone"))
-            if customer_id:
-                qualifying_ids.setdefault(("customer", customer_id), set()).add(previous_id)
-            if email:
-                qualifying_ids.setdefault(("email", email), set()).add(previous_id)
-            if phone:
-                qualifying_ids.setdefault(("phone", phone), set()).add(previous_id)
-        for order in orders:
-            keys = []
-            if order.customer_id:
-                keys.append(("customer", str(order.customer_id)))
-            else:
-                if email := self._repeat_email(order.email): keys.append(("email", email))
-                if phone := self._repeat_phone(order.phone): keys.append(("phone", phone))
-            repeat = any(any(previous_id != order.order_id for previous_id in qualifying_ids.get(key, set())) for key in keys)
-            order.customer_orders_count = 2 if repeat else 1
+            customer_gid = str(customer.get("id") or "")
+            canonical.append({
+                "id": str(previous.get("id") or "").rsplit("/", 1)[-1],
+                "created_at": previous.get("createdAt") or "1970-01-01T00:00:00+00:00",
+                "cancelled_at": previous.get("cancelledAt"), "test": previous.get("test"),
+                "tags": ",".join(previous.get("tags") or []),
+                "email": previous.get("email") or customer.get("email"),
+                "phone": previous.get("phone") or customer.get("phone"),
+                "customer": {"id": customer_gid.rsplit("/", 1)[-1]} if customer_gid else None,
+                "shipping_address": {},
+            })
+        enriched = mark_repeat_customers(orders, canonical)
+        for order, value in zip(orders, enriched, strict=True):
+            order.is_repeat_customer = value.is_repeat_customer
+            order.customer_orders_count = 2 if value.is_repeat_customer else 1
 
     async def get_orders_for_ndr_enrichment(self) -> list[ShopifyOrder]:
         """Read recent orders without per-order transaction calls; NDR needs identity and fulfilment data only."""
