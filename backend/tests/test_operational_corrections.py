@@ -755,6 +755,7 @@ async def test_shiprocket_cleanup_pending_classifies_cancelled_and_delhivery(db,
 @pytest.mark.anyio
 async def test_delhivery_refresh_invokes_guarded_shiprocket_cleanup(db, tmp_path, monkeypatch):
     monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    monkeypatch.setattr(couriers.ShiprocketService, "_validate_configuration", lambda self: None)
     db.add(ShiprocketShipment(order_id="1", provider="delhivery", provider_order_id="325665", shipment_id="4829510031894", awb="4829510031894", booking_status="booked", latest_status="Manifested"))
     db.commit()
 
@@ -770,15 +771,22 @@ async def test_delhivery_refresh_invokes_guarded_shiprocket_cleanup(db, tmp_path
 
     async def find(_self, channel_order_id):
         recorded["find"] = channel_order_id
-        return {"id": 1534075972, "channel_order_id": channel_order_id, "status": "NEW", "shipments": []}
+        return {"id": 1534075972, "channel_order_id": channel_order_id}
+
+    async def detail(_self, shiprocket_order_id):
+        recorded.setdefault("details", []).append(shiprocket_order_id)
+        if len(recorded["details"]) == 1:
+            return {"id": 1534075972, "channel_order_id": "325665", "status": "NEW", "shipments": []}
+        return {"id": 1534075972, "channel_order_id": "325665", "status": "CANCELED", "shipments": []}
 
     async def cancel(_self, order):
         recorded["cancel"] = order
-        return {}
+        return {"http_status": 200, "response": {"status_code": 200, "message": "Order cancelled successfully"}, "classification": "accepted"}
 
     monkeypatch.setattr(couriers, "_load_context", load_context)
     monkeypatch.setattr(couriers.DelhiveryService, "reconcile", reconcile)
     monkeypatch.setattr(couriers.ShiprocketService, "find_existing_order", find)
+    monkeypatch.setattr(couriers.ShiprocketService, "order_details", detail)
     monkeypatch.setattr(couriers.ShiprocketService, "cancel_unbooked_order", cancel)
 
     result = await couriers.refresh_shiprocket_shipment("1", authenticated_request(), db)
@@ -786,13 +794,16 @@ async def test_delhivery_refresh_invokes_guarded_shiprocket_cleanup(db, tmp_path
     assert recorded["reconcile"] == {"order_id": "1", "order_number": "325665", "waybill": "4829510031894"}
     assert recorded["find"] == "325665"
     assert recorded["cancel"]["id"] == 1534075972
-    assert result["shiprocket_cleanup"] == {"status": "cancelled", "cancel_on_channel": False, "shiprocket_order_id": "1534075972"}
+    assert result["shiprocket_cleanup"]["status"] == "cancelled"
+    assert result["shiprocket_cleanup"]["cancel_on_channel"] is False
+    assert result["shiprocket_cleanup"]["shiprocket_order_id"] == "1534075972"
     assert result["warning"] is None
 
 
 @pytest.mark.anyio
 async def test_delhivery_cleanup_failure_does_not_fail_refresh(db, tmp_path, monkeypatch):
     monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    monkeypatch.setattr(couriers.ShiprocketService, "_validate_configuration", lambda self: None)
     db.add(ShiprocketShipment(order_id="1", provider="delhivery", provider_order_id="325665", shipment_id="4829510031894", awb="4829510031894", booking_status="booked", latest_status="Manifested"))
     db.commit()
 
@@ -805,7 +816,10 @@ async def test_delhivery_cleanup_failure_does_not_fail_refresh(db, tmp_path, mon
         return {"provider": "delhivery", "awb": waybill, "booking_status": "booked"}
 
     async def find(_self, _channel_order_id):
-        return {"id": 1534075972, "channel_order_id": "325665", "status": "NEW", "shipments": []}
+        return {"id": 1534075972, "channel_order_id": "325665"}
+
+    async def detail(_self, shiprocket_order_id):
+        return {"id": shiprocket_order_id, "channel_order_id": "325665", "status": "NEW", "shipments": []}
 
     async def cancel(_self, _order):
         raise ShiprocketAPIError("provider unavailable")
@@ -813,18 +827,22 @@ async def test_delhivery_cleanup_failure_does_not_fail_refresh(db, tmp_path, mon
     monkeypatch.setattr(couriers, "_load_context", load_context)
     monkeypatch.setattr(couriers.DelhiveryService, "reconcile", reconcile)
     monkeypatch.setattr(couriers.ShiprocketService, "find_existing_order", find)
+    monkeypatch.setattr(couriers.ShiprocketService, "order_details", detail)
     monkeypatch.setattr(couriers.ShiprocketService, "cancel_unbooked_order", cancel)
 
     result = await couriers.refresh_shiprocket_shipment("1", authenticated_request(), db)
 
     assert result["shipment"]["awb"] == "4829510031894"
-    assert result["shiprocket_cleanup"] == {"status": "failed", "cancel_on_channel": False, "error": "provider unavailable"}
+    assert result["shiprocket_cleanup"]["status"] == "failed"
+    assert result["shiprocket_cleanup"]["cancel_on_channel"] is False
+    assert result["shiprocket_cleanup"]["error"] == "provider unavailable"
     assert result["warning"] == "provider unavailable"
 
 
 @pytest.mark.anyio
 async def test_delhivery_reconcile_invokes_guarded_shiprocket_cleanup(db, tmp_path, monkeypatch):
     monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    monkeypatch.setattr(couriers.ShiprocketService, "_validate_configuration", lambda self: None)
     db.add(ShiprocketShipment(order_id="1", provider="delhivery", provider_order_id="325665", shipment_id="4829510031894", awb="4829510031894", booking_status="booked", latest_status="Manifested"))
     db.commit()
 
@@ -836,14 +854,18 @@ async def test_delhivery_reconcile_invokes_guarded_shiprocket_cleanup(db, tmp_pa
 
     async def find(_self, channel_order_id):
         recorded["find"] = channel_order_id
-        return {"id": 1534075972, "channel_order_id": channel_order_id, "status": "NEW", "shipments": []}
+        return {"id": 1534075972, "channel_order_id": channel_order_id}
+
+    async def detail(_self, shiprocket_order_id):
+        return {"id": shiprocket_order_id, "channel_order_id": "325665", "status": "NEW", "shipments": []}
 
     async def cancel(_self, order):
         recorded["cancel"] = order
-        return {}
+        return {"http_status": 200, "response": {"status_code": 200, "message": "Order cancelled successfully"}, "classification": "accepted"}
 
     monkeypatch.setattr(couriers.CourierPlatformService, "reconcile", reconcile)
     monkeypatch.setattr(couriers.ShiprocketService, "find_existing_order", find)
+    monkeypatch.setattr(couriers.ShiprocketService, "order_details", detail)
     monkeypatch.setattr(couriers.ShiprocketService, "cancel_unbooked_order", cancel)
 
     result = await couriers.reconcile_provider_booking("1", couriers.ProviderActionPayload(operator="Authenticated Operator"), authenticated_request(), db)
@@ -851,7 +873,9 @@ async def test_delhivery_reconcile_invokes_guarded_shiprocket_cleanup(db, tmp_pa
     assert recorded["reconcile"] == {"order_id": "1", "provider": "delhivery", "operator": "Authenticated Operator"}
     assert recorded["find"] == "325665"
     assert recorded["cancel"]["id"] == 1534075972
-    assert result["shiprocket_cleanup"] == {"status": "cancelled", "cancel_on_channel": False, "shiprocket_order_id": "1534075972"}
+    assert result["shiprocket_cleanup"]["status"] == "cancelled"
+    assert result["shiprocket_cleanup"]["cancel_on_channel"] is False
+    assert result["shiprocket_cleanup"]["shiprocket_order_id"] == "1534075972"
     assert result["warning"] is None
 
 
@@ -861,16 +885,24 @@ async def test_delhivery_reconcile_invokes_guarded_shiprocket_cleanup(db, tmp_pa
     [
         {"id": 1534075972, "channel_order_id": "325665", "status": "NEW", "shipment_id": "S1", "awb_code": "AWB1", "shipments": []},
         {"id": 1534075972, "channel_order_id": "325665", "status": "SHIPPED", "shipments": []},
-        {"id": 1534075972, "channel_order_id": "325665", "status": "CANCELED", "shipments": []},
     ],
 )
 async def test_delhivery_cleanup_protects_awb_progress_and_non_new_orders(tmp_path, monkeypatch, upstream):
     monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    monkeypatch.setattr(couriers.ShiprocketService, "_validate_configuration", lambda self: None)
 
     async def find(_self, _channel_order_id):
+        return {"id": upstream["id"], "channel_order_id": upstream["channel_order_id"]}
+
+    async def detail(_self, shiprocket_order_id):
         return upstream
 
+    async def cancel(_self, order):
+        raise AssertionError("cancel should not be attempted for protected Shiprocket orders")
+
     monkeypatch.setattr(couriers.ShiprocketService, "find_existing_order", find)
+    monkeypatch.setattr(couriers.ShiprocketService, "order_details", detail)
+    monkeypatch.setattr(couriers.ShiprocketService, "cancel_unbooked_order", cancel)
 
     result = await couriers._cleanup_unused_shiprocket_order("1", "325665", "Authenticated Operator")
 
@@ -878,7 +910,7 @@ async def test_delhivery_cleanup_protects_awb_progress_and_non_new_orders(tmp_pa
     if upstream.get("awb_code"):
         assert result["awb"] == "AWB1"
     else:
-        assert result["shiprocket_status"] in {"shipped", "canceled"}
+        assert result["shiprocket_status"] == "shipped"
 
 
 def cleanup_payload():
