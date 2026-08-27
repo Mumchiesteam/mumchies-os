@@ -1726,6 +1726,9 @@ async def reconcile_provider_booking(order_id: str, payload: ProviderActionPaylo
     provider = shipment.provider or "shiprocket"
     try:
         result = await CourierPlatformService().reconcile(db, order_id=order_id, adapter=courier_registry.get(provider), operator=current_actor(request))
+        if provider == "delhivery":
+            cleanup = await _cleanup_unused_shiprocket_order(order_id, shipment.provider_order_id or order_id, current_actor(request))
+            return {"provider": provider, "shipment": result, "shiprocket_cleanup": cleanup, "warning": cleanup.get("error")}
         return {"provider": provider, "shipment": result}
     except ProviderError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -1805,7 +1808,7 @@ async def shiprocket_tracking(order_id: str, db: Session = Depends(get_db)) -> d
 
 
 @router.post("/orders/{order_id}/refresh")
-async def refresh_shiprocket_shipment(order_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
+async def refresh_shiprocket_shipment(order_id: str, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     try:
         order, _, _ = await _load_context(order_id, db)
         shipment = get_shipment(db, order_id)
@@ -1817,7 +1820,8 @@ async def refresh_shiprocket_shipment(order_id: str, db: Session = Depends(get_d
                 order_number=shipment.provider_order_id or order.order_number,
                 waybill=shipment.awb or shipment.shipment_id,
             )
-            return {"provider": "delhivery", "shipment": refreshed}
+            cleanup = await _cleanup_unused_shiprocket_order(order_id, shipment.provider_order_id or order.order_number, current_actor(request))
+            return {"provider": "delhivery", "shipment": refreshed, "shiprocket_cleanup": cleanup, "warning": cleanup.get("error")}
         if shipment.provider != "shiprocket":
             raise HTTPException(status_code=409, detail="This courier provider does not support shipment refresh.")
         refreshed = await ShiprocketService().reconcile_existing_shipment(
