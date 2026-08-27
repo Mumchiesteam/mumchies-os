@@ -327,6 +327,22 @@ export const apiFetch = async (input: RequestInfo | URL, init: RequestInit = {})
   return response
 }
 
+export const apiErrorMessage = (body: unknown, fallback: string): string => {
+  if (!body || typeof body !== 'object') return fallback
+  const value = body as { detail?: unknown; message?: unknown }
+  const detail = value.detail
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (detail && typeof detail === 'object' && 'message' in detail) {
+    const message = (detail as { message?: unknown }).message
+    if (typeof message === 'string' && message.trim()) return message
+  }
+  if (Array.isArray(detail)) {
+    const message = detail.find(item => item && typeof item === 'object' && typeof item.msg === 'string')?.msg
+    if (message) return message.replace(/^Value error, /, '')
+  }
+  return typeof value.message === 'string' && value.message.trim() ? value.message : fallback
+}
+
 const formatDate = (value: string) => new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(value))
 
 const toMoney = (value: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value)
@@ -429,7 +445,7 @@ export async function getOrders(query: OrdersQuery = {}, signal?: AbortSignal): 
   const response = await apiFetch(`${apiBase}/api/v1/orders?${params}`, { signal })
   if (!response.ok) {
     const body = await response.json().catch(() => null)
-    throw new Error(body?.detail ?? 'Could not load Shopify orders.')
+    throw new Error(apiErrorMessage(body, 'Could not load Shopify orders.'))
   }
 
   const data: { items: ApiOrder[]; page: number; page_size: number; total: number; total_pages: number; counts: OrderCounts } = await response.json()
@@ -544,8 +560,8 @@ export const shouldRemoveCleanupRecord = (result: ShiprocketCancellationResult) 
 
 export const formatMoney = toMoney
 
-export async function getOrderOperations(orderId: string): Promise<OrderOperations> {
-  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/operations`)
+export async function getOrderOperations(orderId: string, signal?: AbortSignal): Promise<OrderOperations> {
+  const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/operations`, { signal })
   if (!response.ok) {
     throw new Error('Could not load order operations.')
   }
@@ -599,7 +615,7 @@ export async function addAddressConfirmationComment(orderId: string, comment: st
 export async function saveAndVerifyOrderAddress(orderId: string, payload: Record<string, string | null>): Promise<{ operations: OrderOperations; validation: { status: string; blockers: string[]; warnings: string[]; shiprocket_message: string }; verified: boolean }> {
   const response = await apiFetch(`${apiBase}/api/v1/orders/${orderId}/address/save-verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
   const body = await response.json().catch(() => null)
-  if (!response.ok) throw new Error(body?.detail || 'Could not save and verify address.')
+  if (!response.ok) throw new Error(apiErrorMessage(body, 'Could not save and verify address.'))
   return body
 }
 
@@ -652,7 +668,7 @@ export async function saveOrderPackage(orderId: string, payload: {
   return response.json()
 }
 
-export async function getBookingEligibility(orderId: string): Promise<{
+export async function getBookingEligibility(orderId: string, signal?: AbortSignal): Promise<{
   provider: string
   eligible: boolean
   missing_requirements: string[]
@@ -662,7 +678,7 @@ export async function getBookingEligibility(orderId: string): Promise<{
   shipment_status: string | null
   shipment: Order['shipment']
 }> {
-  const response = await apiFetch(`${apiBase}/api/v1/couriers/shiprocket/orders/${orderId}/eligibility`)
+  const response = await apiFetch(`${apiBase}/api/v1/couriers/shiprocket/orders/${orderId}/eligibility`, { signal })
   if (!response.ok) {
     throw new Error('Could not check booking eligibility.')
   }
@@ -675,7 +691,7 @@ export async function checkShiprocketCouriers(orderId: string, payload: {
   breadth_cm?: number | null
   height_cm?: number | null
   courier_payment_mode: string
-}): Promise<{
+}, signal?: AbortSignal): Promise<{
   provider: string
   pickup_postcode: string
   delivery_postcode: string
@@ -703,10 +719,11 @@ export async function checkShiprocketCouriers(orderId: string, payload: {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    signal,
   })
   if (!response.ok) {
     const body = await response.json().catch(() => null)
-    throw new Error(body?.detail?.message || body?.detail || 'Could not check couriers.')
+    throw new Error(apiErrorMessage(body, 'Could not check couriers.'))
   }
   return response.json()
 }
@@ -752,7 +769,7 @@ export async function bookShiprocketShipment(orderId: string, payload: {
   })
   if (!response.ok) {
     const body = await response.json().catch(() => null)
-    throw new Error(body?.detail?.message || body?.detail || 'Could not book shipment.')
+    throw new Error(apiErrorMessage(body, 'Could not book shipment.'))
   }
   return response.json()
 }

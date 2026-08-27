@@ -11,13 +11,14 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.core.identity import current_actor
+from app.core.config import settings
 from app.repositories.shiprocket import get_shipment, snapshot as shipment_snapshot, upsert_shipment
 from app.schemas.orders import ShopifyOrder
 from app.services.order_operations import OrderOperationsStore
 from app.services.delhivery import DelhiveryError, DelhiveryService
 from app.services.courier_platform import ProviderError, courier_registry
 from app.services.courier_platform.service import CourierPlatformService
-from app.services.shipment_status import has_existing_shipment_evidence
+from app.services.shipment_status import has_existing_shipment_evidence, has_genuine_booking_evidence, has_uncertain_booking
 from app.services.shiprocket import (
     BookingEligibilityResult,
     CourierQuote,
@@ -259,6 +260,8 @@ async def _build_provider_booking_request(order: ShopifyOrder, operations: dict[
         "city": address.get("city"),
         "state": address.get("state"),
     }
+
+
     missing_customer = [field for field, value in customer_address.items() if not str(value or "").strip()]
     if missing_customer:
         raise HTTPException(status_code=400, detail=f"Shipping address is missing: {', '.join(missing_customer)}.")
@@ -332,6 +335,87 @@ async def _build_provider_booking_request(order: ShopifyOrder, operations: dict[
     }
 
 
+def _shadowfax_dry_run_blockers(
+    order: ShopifyOrder,
+    operations: dict[str, object],
+    shipment: dict[str, object] | None,
+) -> tuple[list[str], list[str], PackageDetailsPayload | None]:
+    blockers: list[str] = []
+    advisories: list[str] = []
+    if not operations.get("address_verified"):
+        blockers.append("address_verified must be true")
+    if has_existing_shipment_evidence(order, operations, shipment):
+        blockers.append("genuine existing shipment or fulfilment evidence")
+    address = _order_latest_address(order, operations)
+    if not isinstance(address, dict):
+        blockers.append("verified shipping address is missing")
+        address = {}
+    phone = "".join(character for character in str(address.get("phone") or order.phone or "") if character.isdigit())
+    if len(phone) not in {10, 12}:
+        blockers.append("valid customer phone is missing")
+    pincode = str(address.get("pincode") or "").strip()
+    if not (pincode.isdigit() and len(pincode) == 6):
+        blockers.append("valid six-digit delivery pincode is missing")
+    for label, keys in {
+        "customer name": ("customer_name", "name"),
+        "address line 1": ("address_line1", "address"),
+        "city": ("city",),
+        "state": ("state",),
+    }.items():
+        if not any(str(address.get(key) or "").strip() for key in keys) and not (
+            label == "customer name" and str(order.customer_name or "").strip()
+        ):
+            blockers.append(f"{label} is missing")
+    if not str(address.get("landmark") or "").strip():
+        advisories.append("landmark is missing")
+    payment_mode = _order_payment_mode(order)
+    if payment_mode not in {"COD", "Prepaid"}:
+        blockers.append("canonical payment mode is unknown")
+    if payment_mode == "COD" and float(order.cod_collectable_amount) <= 0:
+        blockers.append("COD amount must be greater than zero")
+    if not order.products:
+        blockers.append("product description is missing")
+    package = None
+    try:
+        package = PackageDetailsPayload.model_validate(operations.get("package_details") or {})
+    except Exception:
+        blockers.append("package weight and dimensions must all be present and greater than zero")
+    if not settings.shiprocket_pickup:
+        blockers.append("pickup location identifier is not configured")
+    return blockers, advisories, package
+
+
+@router.post("/orders/{order_id}/shadowfax/dry-run")
+async def shadowfax_booking_dry_run(order_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
+    """Construct and validate a Shadowfax booking without calling or persisting anything."""
+    order, operations, shipment = await _load_context(order_id, db)
+    blockers, advisories, package = _shadowfax_dry_run_blockers(order, operations, shipment)
+    payload = None
+    if not blockers and package is not None:
+        try:
+            payload = await _build_provider_booking_request(order, operations, package)
+        except HTTPException as error:
+            blockers.append(str(error.detail))
+    payment_mode = _order_payment_mode(order)
+    pincode = str((_order_latest_address(order, operations) or {}).get("pincode") or "")
+    dimensions = operations.get("package_details") or {}
+    return {
+        "provider": "shadowfax", "dry_run": True,
+        "valid": not blockers and payload is not None,
+        "blockers": blockers, "advisories": advisories,
+        "external_request_sent": False, "booking_evidence_persisted": False,
+        "shopify_fulfillment_changed": False,
+        "summary": {
+            "order_number": order.order_number, "payment_mode": payment_mode,
+            "cod_amount": float(order.cod_collectable_amount) if payment_mode == "COD" else 0,
+            "weight_kg": dimensions.get("weight_kg"), "length_cm": dimensions.get("length_cm"),
+            "breadth_cm": dimensions.get("breadth_cm"), "height_cm": dimensions.get("height_cm"),
+            "destination_pincode": pincode,
+            "payload_sections": sorted(payload) if payload else [],
+        },
+    }
+
+
 @router.get("/health")
 async def shiprocket_health() -> dict[str, object]:
     try:
@@ -392,15 +476,20 @@ async def booking_eligibility(order_id: str, db: Session = Depends(get_db)) -> d
 
 
 @router.post("/orders/{order_id}/couriers/check")
-async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload, db: Session = Depends(get_db)) -> dict[str, object]:
+async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload, request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
     provider_warnings: list[str] = []
     try:
         order, operations, shipment = await _load_context(order_id, db)
         package = PackageDetailsPayload.model_validate(payload.model_dump())
-        OrderOperationsStore.save_package_details(order_id, package.model_dump())
+        operations = OrderOperationsStore.prepare_courier_lookup(
+            order_id, package.model_dump(), operator=current_actor(request),
+        )
         eligibility = ShiprocketService().evaluate_booking_eligibility(order, operations, shipment)
         if not eligibility.eligible:
             raise HTTPException(status_code=400, detail={"message": "Order is not eligible for courier lookup.", "missing_requirements": eligibility.missing_requirements})
+        # No database work follows in this read-only route. Return the pooled connection before
+        # waiting on multiple courier networks so slow providers cannot exhaust the DB pool.
+        db.close()
         pickup_postcode, delivery_postcode, cod = await _serviceability_query(order, operations, package, payload.courier_payment_mode)
         quotes = await ShiprocketService().serviceability(pickup_postcode, delivery_postcode, package.weight_kg, cod)
         normalized_quotes = [asdict(quote) for quote in quotes]
@@ -459,8 +548,10 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
         order, operations, shipment = await _load_context(order_id, db)
         package = PackageDetailsPayload.model_validate(payload.model_dump())
         existing = get_shipment(db, order_id)
-        if existing and (existing.awb or existing.shipment_id or existing.shiprocket_order_id):
+        if existing and has_genuine_booking_evidence(shipment_snapshot(existing)):
             return {"provider": existing.provider or "shiprocket", "existing": True, "shipment": shipment_snapshot(existing)}
+        if existing and has_uncertain_booking(shipment_snapshot(existing)):
+            raise HTTPException(status_code=409, detail="A submitted booking request has an uncertain outcome. Reconcile it before retrying.")
 
         # Backend duplicate-booking guard: reject outright (not just via eligibility) if any
         # reliable source - local shipment, Shopify fulfilment status/tags - already shows an
@@ -482,6 +573,11 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
         if payload.provider and payload.provider.lower() != provider:
             raise HTTPException(status_code=400, detail="Requested provider does not match the stored courier selection.")
         if provider == "shadowfax":
+            if not settings.shadowfax_live_booking_enabled:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Shadowfax live booking is disabled pending an approved controlled production test.",
+                )
             adapter = courier_registry.get("shadowfax")
             request = await _build_provider_booking_request(order, operations, package)
             try:
@@ -491,8 +587,12 @@ async def shiprocket_book_shipment(order_id: str, payload: BookingPayload, db: S
                 )
             except ProviderError as error:
                 raise HTTPException(status_code=503 if error.operation in {"authenticate", "serviceability", "booking"} else 409, detail=str(error)) from error
+            OrderOperationsStore.save_selected_courier(order_id, selected)
+            _activate_new_label_tracking(db, order_id, result)
             synchronized = await _sync_shopify_after_booking(db, order)
-            return {"provider": "shadowfax", **result, "shipment": synchronized or result.get("shipment")}
+            OrderOperationsStore.record_timeline_event(order_id, "shipment_booked", operator=actor, details={"provider": "shadowfax"})
+            cleanup = await _cleanup_unused_shiprocket_order(order_id, order.order_number, actor)
+            return {"provider": "shadowfax", **result, "shipment": synchronized or result.get("shipment"), "shiprocket_cleanup": cleanup, "warning": cleanup.get("error")}
         if provider == "delhivery":
             service = DelhiveryService()
             if not service.configured:
@@ -638,8 +738,7 @@ async def select_courier(order_id: str, payload: dict[str, object], request: Req
         "rating": payload.get("rating"),
         "mode": payload.get("mode"),
     }
-    record = OrderOperationsStore.save_selected_courier(order_id, selected)
-    OrderOperationsStore.record_timeline_event(order_id, "courier_selected", operator=current_actor(request), details={"provider": provider, "courier_id": selected["courier_id"], "courier_name": selected["courier_name"]})
+    record = OrderOperationsStore.select_courier(order_id, selected, operator=current_actor(request))
     return {"provider": provider, "selected_courier": record.get("selected_courier")}
 
 

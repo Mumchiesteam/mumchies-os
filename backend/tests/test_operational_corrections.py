@@ -139,6 +139,107 @@ async def test_delhivery_cleanup_cancels_only_unbooked_and_failure_is_non_destru
 
 
 @pytest.mark.anyio
+async def test_direct_shadowfax_booking_invokes_guarded_shiprocket_cleanup(db, tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    monkeypatch.setattr(couriers.settings, "shadowfax_live_booking_enabled", True)
+    order = SimpleNamespace(order_number="325670", shopify_graphql_id="gid://shopify/Order/1")
+    operations = {
+        "selected_courier": {
+            "provider": "shadowfax",
+            "booking_supported": True,
+            "courier_id": "Regular",
+            "courier_name": "Shadowfax Direct",
+        },
+        "package_details": {"weight_kg": 0.5, "length_cm": 10, "breadth_cm": 10, "height_cm": 10},
+    }
+    recorded = {}
+
+    async def load_context(_order_id, _db):
+        return order, operations, None
+
+    async def book(_self, db, *, order_id, merchant_order_id, adapter, request, operator):
+        recorded["booking"] = {
+            "order_id": order_id,
+            "merchant_order_id": merchant_order_id,
+            "provider": adapter.provider,
+            "operator": operator,
+            "request": request,
+        }
+        return {"shipment": {"provider": "shadowfax", "awb": "SF-1"}, "existing": False}
+
+    async def sync(_db, _order):
+        return None
+
+    async def cleanup(order_id, channel_order_id, operator):
+        recorded["cleanup"] = {"order_id": order_id, "channel_order_id": channel_order_id, "operator": operator}
+        return {"status": "cancelled", "cancel_on_channel": False, "shiprocket_order_id": "9001"}
+
+    async def build_request(_order, _operations, _package):
+        return {"request": "shadowfax"}
+
+    monkeypatch.setattr(couriers, "_load_context", load_context)
+    monkeypatch.setattr(couriers.ShiprocketService, "evaluate_booking_eligibility", lambda *_args, **_kwargs: SimpleNamespace(eligible=True, missing_requirements=[], operational_status="Ready for Booking", payment_mode="COD", shipment_exists=False, shipment_status=None, shipment_snapshot=None))
+    monkeypatch.setattr(couriers.CourierPlatformService, "book", book)
+    monkeypatch.setattr(couriers, "_build_provider_booking_request", build_request)
+    monkeypatch.setattr(couriers, "_sync_shopify_after_booking", sync)
+    monkeypatch.setattr(couriers, "_cleanup_unused_shiprocket_order", cleanup)
+    monkeypatch.setattr(couriers.OrderOperationsStore, "save_selected_courier", lambda *args, **kwargs: None)
+    monkeypatch.setattr(couriers.OrderOperationsStore, "record_timeline_event", lambda *args, **kwargs: None)
+
+    result = await couriers.shiprocket_book_shipment("1", couriers.BookingPayload(courier_id="Regular", provider="shadowfax", courier_name="Shadowfax Direct", weight_kg=0.5, length_cm=10, breadth_cm=10, height_cm=10), db, "Authenticated Operator")
+
+    assert recorded["booking"]["provider"] == "shadowfax"
+    assert recorded["cleanup"] == {"order_id": "1", "channel_order_id": "325670", "operator": "Authenticated Operator"}
+    assert result["shiprocket_cleanup"] == {"status": "cancelled", "cancel_on_channel": False, "shiprocket_order_id": "9001"}
+    assert result["warning"] is None
+
+
+@pytest.mark.anyio
+async def test_shadowfax_cleanup_failure_does_not_block_successful_booking(db, tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    monkeypatch.setattr(couriers.settings, "shadowfax_live_booking_enabled", True)
+    order = SimpleNamespace(order_number="325670", shopify_graphql_id="gid://shopify/Order/1")
+    operations = {
+        "selected_courier": {
+            "provider": "shadowfax",
+            "booking_supported": True,
+            "courier_id": "Regular",
+            "courier_name": "Shadowfax Direct",
+        },
+        "package_details": {"weight_kg": 0.5, "length_cm": 10, "breadth_cm": 10, "height_cm": 10},
+    }
+
+    async def load_context(_order_id, _db):
+        return order, operations, None
+
+    async def book(_self, db, *, order_id, merchant_order_id, adapter, request, operator):
+        return {"shipment": {"provider": "shadowfax", "awb": "SF-1"}, "existing": False}
+
+    async def sync(_db, _order):
+        return None
+
+    async def cleanup(_order_id, _channel_order_id, _operator):
+        return {"status": "failed", "cancel_on_channel": False, "error": "provider unavailable"}
+
+    async def build_request(_order, _operations, _package):
+        return {"request": "shadowfax"}
+
+    monkeypatch.setattr(couriers, "_load_context", load_context)
+    monkeypatch.setattr(couriers.ShiprocketService, "evaluate_booking_eligibility", lambda *_args, **_kwargs: SimpleNamespace(eligible=True, missing_requirements=[], operational_status="Ready for Booking", payment_mode="COD", shipment_exists=False, shipment_status=None, shipment_snapshot=None))
+    monkeypatch.setattr(couriers.CourierPlatformService, "book", book)
+    monkeypatch.setattr(couriers, "_build_provider_booking_request", build_request)
+    monkeypatch.setattr(couriers, "_sync_shopify_after_booking", sync)
+    monkeypatch.setattr(couriers, "_cleanup_unused_shiprocket_order", cleanup)
+    monkeypatch.setattr(couriers.OrderOperationsStore, "save_selected_courier", lambda *args, **kwargs: None)
+    monkeypatch.setattr(couriers.OrderOperationsStore, "record_timeline_event", lambda *args, **kwargs: None)
+
+    result = await couriers.shiprocket_book_shipment("1", couriers.BookingPayload(courier_id="Regular", provider="shadowfax", courier_name="Shadowfax Direct", weight_kg=0.5, length_cm=10, breadth_cm=10, height_cm=10), db, "Authenticated Operator")
+
+    assert result["shiprocket_cleanup"] == {"status": "failed", "cancel_on_channel": False, "error": "provider unavailable"}
+    assert result["warning"] == "provider unavailable"
+
+
+@pytest.mark.anyio
 async def test_cancellation_preflight_protects_local_awb(db, monkeypatch):
     db.add(ShiprocketShipment(order_id="1", provider="shiprocket", awb="AWB", booking_status="booked"))
     db.commit()

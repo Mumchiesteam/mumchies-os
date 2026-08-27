@@ -35,7 +35,6 @@ import {
   reconcileCourierBooking,
   cancelCourierShipment,
   saveAndVerifyOrderAddress,
-  saveOrderPackage,
   selectShiprocketCourier,
   shippingLabelUrl,
   syncShopifyFulfillment,
@@ -55,12 +54,15 @@ import { useAuth } from './auth-context'
 import { UsersPage } from './components/UsersPage'
 import { NDRPage } from './components/NDRPage'
 import { ReconciliationUnavailable } from './components/ReconciliationUnavailable'
+import { ReportsPage } from './components/ReportsPage'
 import { formatDateTime, parseOperationalDate } from './utils/time'
 import { orderContactSectionTitle } from './utils/operations'
 import { EngageCircle, EngageProgress } from './components/EngageStatus'
 import { OrderStatusBadge } from './components/OrderStatusBadge'
 import { engageCategory } from './utils/engage'
 import { hasShipmentEvidence, isCancelled, listStatus, type OperationalStatus } from './utils/orderStatus'
+import { OrderSessionGuard } from './utils/orderSession'
+import { AbortableRequestGate } from './utils/requestGate'
 
 type IconName = 'grid' | 'bag' | 'alert' | 'users' | 'chart' | 'settings' | 'search' | 'bell' | 'filter' | 'chevron' | 'more' | 'eye' | 'truck' | 'calendar' | 'close' | 'copy' | 'phone' | 'external' | 'repeat' | 'tag' | 'edit' | 'call'
 type TabKey = 'fresh' | 'previous' | 'all' | 'labels_to_print' | 'awaiting_confirmation' | 'printed_today' | 'shiprocket_cleanup'
@@ -82,7 +84,7 @@ type CourierQuote = {
   rate_note: string
 }
 
-const navItems = ['Dashboard', 'Orders', 'NDR', 'Reconciliation', 'Settings'] as const
+const navItems = ['Dashboard', 'Orders', 'NDR', 'Reconciliation', 'Reports', 'Settings'] as const
 const tabItems: { key: TabKey; label: string }[] = [
   { key: 'fresh', label: 'Fresh Orders' },
   { key: 'previous', label: 'Previous Pending Orders' },
@@ -155,9 +157,13 @@ const formatOrderDateTime = (value: string) => {
 }
 function App() {
   const authUser = useAuth()
-  const [activePage, setActivePage] = useState<'Orders' | 'NDR' | 'Reconciliation' | 'Settings'>('Orders')
+  const initialReportPath = window.location.pathname.startsWith('/reports') ? window.location.pathname : ''
+  const [activePage, setActivePage] = useState<'Orders' | 'NDR' | 'Reconciliation' | 'Reports' | 'Settings'>(initialReportPath ? 'Reports' : 'Orders')
+  const [reportPath, setReportPath] = useState(initialReportPath || '/reports')
   const [orders, setOrders] = useState<Order[]>([])
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null)
+  const drawerSession = useRef(new OrderSessionGuard())
+  const courierLookup = useRef(new AbortableRequestGate())
   const [operations, setOperations] = useState<OrderOperations | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -222,6 +228,10 @@ function App() {
   const [printedLabels, setPrintedLabels] = useState<Set<string>>(new Set())
   const refreshLabels = useCallback(() => void getLabelQueue().then(setLabelQueue).catch(() => undefined), [])
   const refreshCleanup = useCallback(() => void getShiprocketCleanupPending().then(result => setCleanupRecords(result.items)).catch(() => undefined), [])
+  const resetCourierLookup = useCallback(() => {
+    courierLookup.current.invalidate()
+    setCourierLoading(false)
+  }, [])
   const loadOrders = useCallback(async (signal?: AbortSignal) => {
     try {
       setLoading(true)
@@ -249,7 +259,11 @@ function App() {
       setCounts(data.counts)
       if (data.page !== page) setPage(data.page)
       setRepeatIds(new Set(data.items.filter(order => order.isRepeatCustomer).map(order => order.internalId)))
-      setSelectedOrderId(current => current && data.items.some(order => order.internalId === current) ? current : null)
+      setSelectedOrderId(current => {
+        const next = current && data.items.some(order => order.internalId === current) ? current : null
+        if (!next && current) drawerSession.current.select(null)
+        return next
+      })
     } catch (err) {
       if ((err as Error).name !== 'AbortError') setError((err as Error).message)
     } finally {
@@ -268,13 +282,17 @@ function App() {
     }
   }, [loadOrders])
 
-  useEffect(() => { refreshLabels(); refreshCleanup(); refreshReconciliation() }, [refreshCleanup, refreshLabels, refreshReconciliation])
+  useEffect(() => {
+    if (activePage !== 'Reconciliation') return
+    refreshCleanup()
+    refreshReconciliation()
+  }, [activePage, refreshCleanup, refreshReconciliation])
 
   useEffect(() => {
-    if (selectedOrderId) return
+    if (activePage !== 'Orders' || selectedOrderId) return
     const interval = window.setInterval(() => void loadOrders(), 60_000)
     return () => window.clearInterval(interval)
-  }, [loadOrders, selectedOrderId])
+  }, [activePage, loadOrders, selectedOrderId])
 
   useEffect(() => {
     if (!notice) return
@@ -285,9 +303,14 @@ function App() {
   const reconciliationRows = useMemo(() => reconciliationDataset(reconciliation, reconciliationFilter), [reconciliation, reconciliationFilter])
   const reconciliationOrders = useMemo(() => reconciliationRows.map(reconciliationRecordToOrder), [reconciliationRows])
   const selectedOrder = useMemo(() => [...orders, ...reconciliationOrders].find(order => order.internalId === selectedOrderId) || null, [orders, reconciliationOrders, selectedOrderId])
+  const selectedOrderSnapshot = useRef<Order | null>(null)
+  useEffect(() => { selectedOrderSnapshot.current = selectedOrder }, [selectedOrder])
   useEffect(() => {
-    if (!selectedOrder) return
-    let active = true
+    const order = selectedOrderSnapshot.current
+    if (!order || order.internalId !== selectedOrderId) return
+    resetCourierLookup()
+    const token = drawerSession.current.token() ?? drawerSession.current.select(order.internalId)!
+    const controller = new AbortController()
     void (async () => {
       setBookingEligibility(null)
       setOperations(null)
@@ -296,34 +319,37 @@ function App() {
       setSelectedCourierId(null)
       setCourierError('')
       setCancellationPreflight(null)
-      const ops = await getOrderOperations(selectedOrder.internalId)
-      if (!active) return
+      const [ops, eligibility] = await Promise.all([
+        getOrderOperations(order.internalId, controller.signal),
+        getBookingEligibility(order.internalId, controller.signal),
+      ])
+      if (!drawerSession.current.isCurrent(token)) return
       setOperations(ops)
       setCallResult('No Answer')
       setCallComment('')
       setAddressDraft({
-        customer_name: ops.corrected_address?.customer_name ?? selectedOrder.shippingAddress?.name ?? selectedOrder.customerName ?? '',
-        phone: ops.corrected_address?.phone ?? selectedOrder.phone ?? '',
-        address_line1: ops.corrected_address?.address_line1 ?? selectedOrder.shippingAddress?.address ?? '',
+        customer_name: ops.corrected_address?.customer_name ?? order.shippingAddress?.name ?? order.customerName ?? '',
+        phone: ops.corrected_address?.phone ?? order.phone ?? '',
+        address_line1: ops.corrected_address?.address_line1 ?? order.shippingAddress?.address ?? '',
         address_line2: ops.corrected_address?.address_line2 ?? '',
-        landmark: ops.corrected_address?.landmark ?? selectedOrder.shippingAddress?.landmark ?? '',
-        city: ops.corrected_address?.city ?? selectedOrder.shippingAddress?.city ?? '',
-        state: ops.corrected_address?.state ?? selectedOrder.shippingAddress?.state ?? '',
-        pincode: ops.corrected_address?.pincode ?? selectedOrder.shippingAddress?.pincode ?? '',
+        landmark: ops.corrected_address?.landmark ?? order.shippingAddress?.landmark ?? '',
+        city: ops.corrected_address?.city ?? order.shippingAddress?.city ?? '',
+        state: ops.corrected_address?.state ?? order.shippingAddress?.state ?? '',
+        pincode: ops.corrected_address?.pincode ?? order.shippingAddress?.pincode ?? '',
       })
       setSelectedCourierId(ops.selected_courier?.courier_id ?? null)
-      const eligibility = await getBookingEligibility(selectedOrder.internalId)
-      if (!active) return
       setBookingEligibility(eligibility)
     })().catch((err) => {
-      if (!active) return
+      if (controller.signal.aborted || !drawerSession.current.isCurrent(token)) return
       setOperations(null)
       setCourierError((err as Error).message || 'Could not load order operations and courier eligibility.')
     })
-    return () => { active = false }
-  }, [selectedOrder])
+    return () => controller.abort()
+  }, [resetCourierLookup, selectedOrderId])
 
   const openOrder = (orderId: string) => {
+    resetCourierLookup()
+    drawerSession.current.select(orderId)
     setBookingEligibility(null)
     setOperations(null)
     setCourierOptions([])
@@ -332,6 +358,12 @@ function App() {
     setCourierError('')
     setCancellationPreflight(null)
     setSelectedOrderId(orderId)
+  }
+
+  const closeOrder = () => {
+    resetCourierLookup()
+    drawerSession.current.select(null)
+    setSelectedOrderId(null)
   }
 
   const handleCleanupResult = (record: ShiprocketCleanupRecord, result: ShiprocketCancellationResult) => {
@@ -453,28 +485,33 @@ function App() {
 
   const checkCouriers = async (packageNumbers: { weight_kg: number; length_cm: number | null; breadth_cm: number | null; height_cm: number | null }) => {
     if (!selectedOrder || !Number.isFinite(packageNumbers.weight_kg) || packageNumbers.weight_kg <= 0) return
+    const orderId = selectedOrder.internalId
+    const lookup = courierLookup.current.start()
     setCourierLoading(true)
     setCourierError('')
     setCourierWarnings([])
     setCourierOptions([])
     try {
-      await saveOrderPackage(selectedOrder.internalId, packageNumbers)
       const result = await checkShiprocketCouriers(selectedOrder.internalId, {
         ...packageNumbers,
         courier_payment_mode: selectedOrder.payment,
-      })
+      }, lookup.signal)
+      if (!lookup.isCurrent()) return
       const sorted = [...result.couriers].sort((a, b) => a.total_estimated_shipping_cost - b.total_estimated_shipping_cost)
       setCourierOptions(sorted)
       setCourierWarnings(result.provider_warnings ?? [])
       if (selectedCourierId && !sorted.some(courier => courier.courier_id === selectedCourierId)) {
         setSelectedCourierId(null)
       }
-      await refreshEligibility(selectedOrder.internalId)
+      const eligibility = await getBookingEligibility(orderId, lookup.signal)
+      if (!lookup.isCurrent()) return
+      setBookingEligibility(eligibility)
       setNotice('Courier options loaded')
     } catch (err) {
+      if ((err as Error).name === 'AbortError' || !lookup.isCurrent()) return
       setCourierError((err as Error).message)
     } finally {
-      setCourierLoading(false)
+      if (lookup.isCurrent()) setCourierLoading(false)
     }
   }
 
@@ -510,7 +547,7 @@ function App() {
         : order))
       setOperations(await getOrderOperations(selectedOrder.internalId))
       if (result.warning) setCourierError(`Shiprocket cleanup failed: ${result.warning}`)
-      setNotice(result.warning ? 'Delhivery shipment booked; Shiprocket cleanup needs attention' : result.existing ? 'Existing shipment loaded' : 'Shipment booked')
+      setNotice(result.warning ? 'Shipment booked; Shiprocket cleanup needs attention' : result.existing ? 'Existing shipment loaded' : 'Shipment booked')
     } catch (err) {
       setCourierError((err as Error).message)
     } finally {
@@ -587,6 +624,22 @@ function App() {
     window.setTimeout(() => setLabelLoading(false), 1_000)
   }
 
+  const navigateReports = useCallback((path: string) => {
+    window.history.pushState({}, '', path)
+    setReportPath(path)
+    setActivePage('Reports')
+  }, [])
+
+  useEffect(() => {
+    const onPopState = () => {
+      const path = window.location.pathname
+      if (path.startsWith('/reports')) { setReportPath(path); setActivePage('Reports') }
+      else setActivePage('Orders')
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
+
   return (
     <div className="min-h-screen bg-[#f8fafc] text-slate-900">
       <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur">
@@ -600,7 +653,7 @@ function App() {
           </div>
           <nav className="ml-2 hidden flex-1 gap-2 overflow-x-auto md:flex">
             {navItems.filter(item => item !== 'Settings' || authUser?.role === 'owner').map(item => (
-              <button key={item} onClick={() => { if (item === 'Orders' || item === 'NDR' || item === 'Reconciliation' || item === 'Settings') setActivePage(item) }} className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-medium ${item === activePage ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{item}</button>
+              <button key={item} onClick={() => { if (item === 'Reports') navigateReports('/reports'); else if (item === 'Orders' || item === 'NDR' || item === 'Reconciliation' || item === 'Settings') { if (window.location.pathname.startsWith('/reports')) window.history.pushState({}, '', '/'); setActivePage(item) } }} className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-medium ${item === activePage ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{item}</button>
             ))}
           </nav>
           <div className="ml-auto flex items-center gap-2">
@@ -614,6 +667,7 @@ function App() {
       <main className="mx-auto max-w-[1800px] px-4 py-5 lg:px-6">
         {activePage === 'Settings' && authUser?.role === 'owner' && <UsersPage />}
         {activePage === 'NDR' && <NDRPage />}
+        {activePage === 'Reports' && <ReportsPage path={reportPath} navigate={navigateReports} />}
         {activePage === 'Reconciliation' && <div>
           <div className="mb-5"><p className="text-sm font-medium text-[#ff6b35]">Reconciliation</p><h2 className="mt-1 text-2xl font-bold tracking-tight">Order reconciliation</h2></div>
           <div className="mb-5 border-b border-slate-200"><button className="border-b-2 border-slate-900 px-1 pb-3 text-sm font-semibold text-slate-900">OS / Shiprocket Reconciliation</button></div>
@@ -737,7 +791,7 @@ function App() {
           setAddressDraft={setAddressDraft}
           courierSyncMessage={courierSyncMessage}
           addressVerificationLine={addressVerifiedLabel}
-          onClose={() => setSelectedOrderId(null)}
+          onClose={closeOrder}
           onSaveCallLog={() => void saveCallLog()}
           onSaveAddress={saveAndVerifyAddress}
           onSaveAddressConfirmation={() => void saveAddressConfirmation()}
