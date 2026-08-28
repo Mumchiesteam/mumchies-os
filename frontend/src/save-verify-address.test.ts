@@ -34,6 +34,8 @@ describe('Save & Verify drawer state propagation', () => {
 
   it('applies the authoritative operations response and awaits fresh eligibility', () => {
     expect(flow).toContain('setOperations(result.operations)')
+    expect(flow).toContain('operationalStatus: null')
+    expect(flow).toContain('addressVerified: result.operations.address_verified')
     expect(flow).toContain('const freshEligibility = await getBookingEligibility(orderId)')
     expect(flow).toContain('setBookingEligibility(freshEligibility)')
   })
@@ -45,6 +47,14 @@ describe('Save & Verify drawer state propagation', () => {
     expect(flow).toContain('draft_order_id: orderId')
     expect(flow).toContain('expected_revision: operations.address_revision')
     expect(flow).toContain('draft_token: operations.address_draft_token')
+  })
+
+  it('uses the canonical operations address state for the drawer header and courier gate', () => {
+    expect(source).toContain('const drawerOrder = useMemo')
+    expect(source).toContain('addressVerified: operations.address_verified')
+    expect(source).toContain('operationalStatus: null')
+    expect(source).toContain('const status = drawerOrder ? statusFromOrder(drawerOrder)')
+    expect(source).toContain('order={drawerOrder || selectedOrder}')
   })
 
   it('exposes explicit ready, saving, verified, and retry states', () => {

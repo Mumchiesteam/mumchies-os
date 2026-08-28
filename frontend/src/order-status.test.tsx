@@ -43,4 +43,9 @@ describe('order status rendering', () => {
     expect(listStatus({ ...order(null), operationalStatus: null, latestCallResult: 'Confirmed', addressVerified: false } as Order)).toBe('Address Verification Pending')
     expect(listStatus({ ...order(null), operationalStatus: null, latestCallResult: 'Confirmed', addressVerified: true } as Order)).toBe('Ready for Booking')
   })
+
+  it('does not retain Address Verification Pending for a canonically verified prepaid order', () => {
+    const verifiedPrepaid = { ...order('Address Verification Pending'), operationalStatus: null, payment: 'Prepaid', addressVerified: true } as Order
+    expect(listStatus(verifiedPrepaid)).toBe('Ready for Booking')
+  })
 })

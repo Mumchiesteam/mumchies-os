@@ -412,6 +412,15 @@ function App() {
   const reconciliationRows = useMemo(() => reconciliationDataset(reconciliation, reconciliationFilter), [reconciliation, reconciliationFilter])
   const reconciliationOrders = useMemo(() => reconciliationRows.map(reconciliationRecordToOrder), [reconciliationRows])
   const selectedOrder = useMemo(() => [...orders, ...reconciliationOrders].find(order => order.internalId === selectedOrderId) || (selectedOrderSnapshot?.internalId === selectedOrderId ? selectedOrderSnapshot : null), [orders, reconciliationOrders, selectedOrderId, selectedOrderSnapshot])
+  const drawerOrder = useMemo(() => !selectedOrder || !operations ? selectedOrder : ({
+    ...selectedOrder,
+    operationalStatus: null,
+    addressVerified: operations.address_verified,
+    addressVerifiedAt: operations.address_verified_at,
+    addressVerifiedBy: operations.address_verified_by,
+    verifiedAddressSnapshot: operations.verified_address_snapshot,
+    correctedAddress: operations.corrected_address,
+  }), [operations, selectedOrder])
   useEffect(() => {
     if (selectedOrder?.orderNumber === '324663' && ['owner', 'admin'].includes(authUser?.role || '')) {
       void getShadowfaxDirect324663Status().then(setShadowfaxTestState).catch(() => setShadowfaxTestState(null))
@@ -568,7 +577,7 @@ function App() {
 
   const callLog = [...(operations?.call_logs || [])].sort((a, b) => parseOperationalDate(b.timestamp).getTime() - parseOperationalDate(a.timestamp).getTime())
   const courierSyncMessage = operations?.courier_sync_error || ''
-  const status = selectedOrder ? statusFromOrder(selectedOrder) : 'Call Pending'
+  const status = drawerOrder ? statusFromOrder(drawerOrder) : 'Call Pending'
   const isRepeat = selectedOrder ? repeatIds.has(selectedOrder.internalId) : false
   const visibleCount = search ? total : counts.operations
   const addressVerifiedLabel = operations?.address_verified
@@ -655,7 +664,7 @@ function App() {
       if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return
       setOperations(result.operations)
       setShadowfaxPincodeRecommendation(result.operations.shadowfax_pincode_recommendation)
-      setOrders(previous => previous.map(order => order.internalId === selectedOrder.internalId ? { ...order, correctedAddress: result.operations.corrected_address, addressVerified: result.operations.address_verified, addressVerifiedAt: result.operations.address_verified_at, addressVerifiedBy: result.operations.address_verified_by, verifiedAddressSnapshot: result.operations.verified_address_snapshot, addressSyncResults: result.operations.address_sync_results } : order))
+      setOrders(previous => previous.map(order => order.internalId === selectedOrder.internalId ? { ...order, operationalStatus: null, correctedAddress: result.operations.corrected_address, addressVerified: result.operations.address_verified, addressVerifiedAt: result.operations.address_verified_at, addressVerifiedBy: result.operations.address_verified_by, verifiedAddressSnapshot: result.operations.verified_address_snapshot, addressSyncResults: result.operations.address_sync_results } : order))
       setNotice(result.verified ? (result.validation.warnings.length ? `Address verified with advisories: ${result.validation.warnings.join('; ')}` : 'Address saved and verified') : `Address saved but not verified: ${result.validation.blockers.join('; ')}`)
       const successRendered = performance.now()
       console.info('save_verify_frontend_timing', { orderId, click_to_request_ms: requestStarted - clickStarted, request_ms: responseReceived - requestStarted, post_response_ms: successRendered - responseReceived, total_ms: successRendered - clickStarted })
@@ -1080,7 +1089,7 @@ function App() {
       {selectedOrder && (
         <OrderDrawer
           key={selectedOrder.internalId}
-          order={selectedOrder}
+          order={drawerOrder || selectedOrder}
           repeat={isRepeat}
           status={status}
           callLog={callLog}
