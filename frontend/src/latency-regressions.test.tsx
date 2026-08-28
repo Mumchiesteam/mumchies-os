@@ -88,7 +88,39 @@ describe('Orders latency regressions', () => {
     const card = source.slice(source.indexOf('{courierOptions.map(option =>'), source.indexOf("{selectedCourier?.provider === 'shadowfax'"))
     const calls = card.match(/onSelectCourier\(option, currentQuoteContextKey, packageNumbers\)/g) || []
     expect(calls).toHaveLength(1)
-    expect(card).toContain('disabled={!quoteGate.enabled}')
+    expect(card).toContain('disabled={!quoteGate.enabled || Boolean(selectingCourierKey)}')
+  })
+
+  it('shows pending selection feedback without treating it as a persisted courier', () => {
+    const flow = source.slice(source.indexOf('const selectCourier'), source.indexOf('const bookShipment'))
+    expect(flow).toContain('setSelectingCourierKey(courierSelectionKey(courier))')
+    expect(flow).toContain('setSelectedCourierKey(courierSelectionKey(result.selected_courier))')
+    expect(flow).toContain('setSelectingCourierKey(null)')
+    expect(flow).toContain('if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return')
+    const card = source.slice(source.indexOf('{courierOptions.map(option =>'), source.indexOf("{selectedCourier?.provider === 'shadowfax'"))
+    expect(card).toContain('Selecting</span>')
+    expect(card).toContain('Boolean(selectingCourierKey)')
+    expect(source).toContain('Selecting courier')
+  })
+
+  it('changes the booking CTA immediately while courier persistence is pending', () => {
+    const footer = source.slice(source.indexOf('{selectingCourierKey ?'), source.indexOf('</button>{!canBookShipment'))
+    expect(footer).toContain('Selecting courier')
+    expect(footer).toContain('Book Shipment')
+  })
+
+  it('does not send a duplicate select request while a courier is pending', () => {
+    const flow = source.slice(source.indexOf('const selectCourier'), source.indexOf('const bookShipment'))
+    expect(flow).toContain('courierSelectionInFlight.current')
+    const card = source.slice(source.indexOf('{courierOptions.map(option =>'), source.indexOf("{selectedCourier?.provider === 'shadowfax'"))
+    expect(card).toContain('disabled={!quoteGate.enabled || Boolean(selectingCourierKey)}')
+  })
+
+  it('restores the unselected UI after a failed courier selection', () => {
+    const flow = source.slice(source.indexOf('const selectCourier'), source.indexOf('const bookShipment'))
+    expect(flow).toContain('} catch (err) {')
+    expect(flow).toContain('setSelectingCourierKey(null)')
+    expect(flow).toContain('setCourierError((err as Error).message)')
   })
 
   it('rejects delayed select responses from a previous drawer order', () => {

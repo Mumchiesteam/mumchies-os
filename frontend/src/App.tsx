@@ -281,6 +281,7 @@ function App() {
   const [courierQuoteContextKey, setCourierQuoteContextKey] = useState<string | null>(null)
   const [courierQuoteFingerprint, setCourierQuoteFingerprint] = useState<string | null>(null)
   const [selectedCourierKey, setSelectedCourierKey] = useState<string | null>(null)
+  const [selectingCourierKey, setSelectingCourierKey] = useState<string | null>(null)
   const [bookingLoading, setBookingLoading] = useState(false)
   const [shadowfaxTestState, setShadowfaxTestState] = useState<ShadowfaxDirectTestState | null>(null)
   const [shadowfaxShipmentRow, setShadowfaxShipmentRow] = useState<ShadowfaxShipmentRowDiagnostic | null>(null)
@@ -449,6 +450,7 @@ function App() {
       setCourierQuoteContextKey(null)
       setCourierQuoteFingerprint(null)
       setSelectedCourierKey(null)
+      setSelectingCourierKey(null)
       setCourierError('')
       setCancellationPreflight(null)
       setShadowfaxPincodeRecommendation(null)
@@ -503,6 +505,7 @@ function App() {
     setCourierQuoteContextKey(null)
     setCourierQuoteFingerprint(null)
     setSelectedCourierKey(null)
+    setSelectingCourierKey(null)
     setCourierError('')
     setCourierLoading(false)
     setCancellationPreflight(null)
@@ -691,6 +694,7 @@ function App() {
     // Every changed quote context invalidates the prior visible selection locally;
     // drawer-open lookup itself does not write order operations.
     setSelectedCourierKey(null)
+    setSelectingCourierKey(null)
     setOperations(previous => previous ? { ...previous, selected_courier: null } : previous)
     const lookupStarted = performance.now()
     try {
@@ -739,6 +743,7 @@ function App() {
     const generation = drawerGenerationRef.current
     setCourierError('')
     setSelectedCourierKey(null)
+    setSelectingCourierKey(courierSelectionKey(courier))
     setOperations(previous => previous ? { ...previous, selected_courier: null } : previous)
     try {
       const result = await selectShiprocketCourier(orderId, { ...courier, ...packageNumbers, courier_id: courier.courier_id })
@@ -746,8 +751,12 @@ function App() {
       if (!courierSelectionMatches(result.selected_courier, courier)) throw new Error('The courier selection could not be persisted consistently. Select it again.')
       setOperations(prev => prev ? { ...prev, selected_courier: result.selected_courier } : prev)
       setSelectedCourierKey(courierSelectionKey(result.selected_courier))
+      setSelectingCourierKey(null)
     } catch (err) {
-      if (generation === drawerGenerationRef.current && selectedOrderId === orderId) setCourierError((err as Error).message)
+      if (generation === drawerGenerationRef.current && selectedOrderId === orderId) {
+        setSelectingCourierKey(null)
+        setCourierError((err as Error).message)
+      }
     } finally {
       courierSelectionInFlight.current = false
     }
@@ -1096,7 +1105,7 @@ function App() {
           drawerGeneration={addressDraftGeneration}
           courierSyncMessage={courierSyncMessage}
           addressVerificationLine={addressVerifiedLabel}
-          onClose={() => { drawerGenerationRef.current += 1; setAddressDraft(emptyAddressDraft()); setAddressDraftOrderId(null); setAddressDraftGeneration(null); setAddressInitializing(true); setShadowfaxPincodeRecommendation(null); setSelectedOrderId(null); setSelectedOrderSnapshot(null) }}
+          onClose={() => { drawerGenerationRef.current += 1; setSelectingCourierKey(null); setAddressDraft(emptyAddressDraft()); setAddressDraftOrderId(null); setAddressDraftGeneration(null); setAddressInitializing(true); setShadowfaxPincodeRecommendation(null); setSelectedOrderId(null); setSelectedOrderSnapshot(null) }}
           onSaveCallLog={() => void saveCallLog()}
           onSaveAddress={saveAndVerifyAddress}
           onSaveAddressConfirmation={() => void saveAddressConfirmation()}
@@ -1114,6 +1123,7 @@ function App() {
           courierQuoteFingerprint={courierQuoteFingerprint}
           shadowfaxPincodeRecommendation={shadowfaxPincodeRecommendation?.pincode === addressDraft.pincode.trim() ? shadowfaxPincodeRecommendation : null}
           selectedCourierKey={selectedCourierKey}
+          selectingCourierKey={selectingCourierKey}
           persistedCourierSelection={operations?.selected_courier ?? null}
           onCheckCouriers={checkCouriers}
           onSelectCourier={(courier, contextKey, packageNumbers) => void selectCourier(courier, contextKey, packageNumbers)}
@@ -1247,6 +1257,7 @@ const OrderDrawer = memo(function OrderDrawer({
   courierQuoteFingerprint,
   shadowfaxPincodeRecommendation,
   selectedCourierKey,
+  selectingCourierKey,
   persistedCourierSelection,
   onCheckCouriers,
   onSelectCourier,
@@ -1318,6 +1329,7 @@ const OrderDrawer = memo(function OrderDrawer({
   courierQuoteFingerprint: string | null
   shadowfaxPincodeRecommendation: OrderOperations['shadowfax_pincode_recommendation']
   selectedCourierKey: string | null
+  selectingCourierKey: string | null
   persistedCourierSelection: OrderOperations['selected_courier']
   onCheckCouriers: (packageNumbers: QuotePackage, quoteContext: { key: string; address: QuoteAddress; generation: number }) => void
   onSelectCourier: (courier: CourierQuote, quoteContextKey: string, packageNumbers: QuotePackage) => void
@@ -1424,6 +1436,8 @@ const OrderDrawer = memo(function OrderDrawer({
   ]
   const bookingBlocker = preparingBooking
     ? 'Preparing booking…'
+    : selectingCourierKey
+    ? 'Selecting courier…'
     : bookingEligibility?.shipment_exists
     ? 'Shipment already booked'
     : visibleMissing[0]
@@ -1620,15 +1634,17 @@ const OrderDrawer = memo(function OrderDrawer({
                   {courierOptions.map(option => {
                     const optionSelectionKey = courierSelectionKey(option)
                     const selected = optionSelectionKey === selectedCourierKey
+                    const selecting = optionSelectionKey === selectingCourierKey
                     const shadowfaxRecommendation = option.provider === 'shadowfax' ? shadowfaxRecommendationPresentation(shadowfaxPincodeRecommendation) : null
                     return (
-                      <button key={optionSelectionKey ?? `${option.provider}-${option.courier_name}-${option.courier_id}-${option.mode ?? ''}`} disabled={!quoteGate.enabled} onClick={() => void onSelectCourier(option, currentQuoteContextKey, packageNumbers)} className={`w-full rounded-xl border p-2.5 text-left transition disabled:cursor-not-allowed disabled:opacity-70 ${selected ? 'border-[#ff6b35] bg-orange-50/60' : 'border-slate-200 bg-white enabled:hover:bg-slate-50'}`}>
+                      <button key={optionSelectionKey ?? `${option.provider}-${option.courier_name}-${option.courier_id}-${option.mode ?? ''}`} disabled={!quoteGate.enabled || Boolean(selectingCourierKey)} onClick={() => void onSelectCourier(option, currentQuoteContextKey, packageNumbers)} className={`w-full rounded-xl border p-2.5 text-left transition disabled:cursor-not-allowed disabled:opacity-70 ${selected || selecting ? 'border-[#ff6b35] bg-orange-50/60' : 'border-slate-200 bg-white enabled:hover:bg-slate-50'}`}>
                         <div className="flex items-start justify-between gap-3">
                           <div>
                             <div className="flex items-center gap-2">
                               <p className="text-sm font-semibold text-slate-800">{option.courier_name}</p>
                               <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase text-slate-500">{option.provider}</span>
                               {selected && <span className="rounded-full bg-[#ff6b35] px-2 py-0.5 text-[10px] font-bold text-white">Selected</span>}
+                              {selecting && <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-bold text-[#c84a1e]"><span className="h-2 w-2 animate-spin rounded-full border border-orange-300 border-t-[#ff6b35]" />Selecting</span>}
                               {shadowfaxRecommendation && <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${shadowfaxRecommendation.className}`}>{shadowfaxRecommendation.label}</span>}
                             </div>
                             <p className="mt-1 text-xs text-slate-500">{option.mode || 'mode n/a'} · {option.estimated_delivery_days ?? '—'} days · ETA {option.expected_delivery_date || '—'}</p>
@@ -1795,7 +1811,7 @@ const OrderDrawer = memo(function OrderDrawer({
               className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
             >
               <Icon name="truck" size={16} />
-              {bookingLoading ? (selectedCourier?.provider === 'shadowfax' ? 'Checking Shadowfax...' : `Saving ${selectedCourier?.courier_name || 'courier'}…`) : selectedCourier?.provider === 'shadowfax' ? 'Reconcile Shadowfax Shipment' : selectedCourierKey ? 'Book Shipment' : 'Select a courier above'}
+              {selectingCourierKey ? <><span className="h-3 w-3 animate-spin rounded-full border border-slate-300 border-t-white" />Selecting courier</> : bookingLoading ? (selectedCourier?.provider === 'shadowfax' ? 'Checking Shadowfax...' : `Saving ${selectedCourier?.courier_name || 'courier'}…`) : selectedCourier?.provider === 'shadowfax' ? 'Reconcile Shadowfax Shipment' : selectedCourierKey ? 'Book Shipment' : 'Select a courier above'}
             </button>{!canBookShipment && bookingBlocker && <p className="text-center text-[11px] font-medium text-amber-700">{bookingBlocker}</p>}</div>
           )}
           <button onClick={onClose} className="rounded-lg px-2 py-2.5 text-sm font-semibold text-slate-500 hover:bg-slate-50">Close</button>
