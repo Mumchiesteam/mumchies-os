@@ -27,6 +27,14 @@ def eligibility():
     )
 
 
+def verified_address(pincode: str = "400001") -> dict[str, str]:
+    return {
+        "customer_name": "Lookup", "phone": "9876543210", "address_line1": "Street",
+        "address_line2": "", "landmark": "", "city": "Mumbai", "state": "Maharashtra",
+        "pincode": pincode,
+    }
+
+
 @pytest.fixture
 def lookup_context(monkeypatch):
     async def load(_order_id, _db):
@@ -164,14 +172,49 @@ async def test_courier_check_readiness_uses_submitted_quote_address(monkeypatch,
     assert result["booking_readiness"]["eligible"] is True
 
 
+@pytest.mark.anyio
+async def test_courier_check_readiness_locks_when_quote_address_is_not_verified(monkeypatch):
+    address = verified_address("400001")
+    cod_order = order().model_copy(update={"payment_type": "cod", "payment_status": "pending"})
+
+    async def load(_order_id, _db):
+        return cod_order, {
+            "address_verified": True,
+            "corrected_address": address,
+            "verified_address_snapshot": address,
+            "package_details": {"weight_kg": .5, "length_cm": 10, "breadth_cm": 11, "height_cm": 12},
+            "call_logs": [{"result": "Confirmed"}],
+        }, None
+
+    async def pickup(*_args):
+        return "560076", "400002", True
+
+    async def no_shiprocket_quotes(*_args):
+        return []
+
+    monkeypatch.setattr(couriers, "_load_context", load)
+    monkeypatch.setattr(couriers, "_serviceability_query", pickup)
+    monkeypatch.setattr(couriers.ShiprocketService, "serviceability", no_shiprocket_quotes)
+    monkeypatch.setattr(couriers.DelhiveryService, "configured", property(lambda _self: False))
+    payload = CourierCheckPayload(
+        weight_kg=.5, courier_payment_mode="COD", drawer_generation=9, client_context_key="drawer-9",
+        quote_address=verified_address("400002"),
+    )
+
+    result = await couriers.shiprocket_serviceability("1", payload, SimpleNamespace(), SimpleNamespace(rollback=lambda: None))
+
+    assert result["couriers"]
+    assert result["booking_readiness"]["eligible"] is False
+    assert "address must be verified" in result["booking_readiness"]["missing_requirements"]
+
+
 def test_partial_cod_eligibility_uses_cod_requirements_for_partially_paid_status():
     partial = order().model_copy(update={"payment_type": "partial_cod", "payment_status": "partially_paid"})
+    address = verified_address()
     operations = {
         "address_verified": True,
-        "corrected_address": {
-            "customer_name": "Lookup", "phone": "9876543210", "address_line1": "Street",
-            "address_line2": "", "landmark": "", "city": "Mumbai", "state": "Maharashtra", "pincode": "400001",
-        },
+        "corrected_address": address,
+        "verified_address_snapshot": address,
         "package_details": {"weight_kg": .5, "length_cm": 10, "breadth_cm": 11, "height_cm": 12},
         "call_logs": [],
     }
@@ -184,3 +227,56 @@ def test_partial_cod_eligibility_uses_cod_requirements_for_partially_paid_status
     confirmed = service.evaluate_booking_eligibility(partial, {**operations, "call_logs": [{"result": "Confirmed"}]}, None)
     assert confirmed.payment_mode == "COD"
     assert confirmed.eligible is True
+
+
+def test_confirmed_cod_still_requires_verified_address_for_booking_readiness():
+    cod_order = order().model_copy(update={"payment_type": "cod", "payment_status": "pending"})
+    address = verified_address()
+    operations = {
+        "address_verified": False,
+        "corrected_address": address,
+        "verified_address_snapshot": None,
+        "package_details": {"weight_kg": .5, "length_cm": 10, "breadth_cm": 11, "height_cm": 12},
+        "call_logs": [{"result": "Confirmed"}],
+    }
+    result = ShiprocketService(pickup_location="Warehouse").evaluate_booking_eligibility(cod_order, operations, None)
+
+    assert result.payment_mode == "COD"
+    assert result.eligible is False
+    assert result.operational_status == "Address Verification Pending"
+    assert "address must be verified" in result.missing_requirements
+
+
+def test_confirmed_cod_with_matching_verified_address_is_booking_ready():
+    cod_order = order().model_copy(update={"payment_type": "cod", "payment_status": "pending"})
+    address = verified_address()
+    operations = {
+        "address_verified": True,
+        "corrected_address": address,
+        "verified_address_snapshot": address,
+        "package_details": {"weight_kg": .5, "length_cm": 10, "breadth_cm": 11, "height_cm": 12},
+        "call_logs": [{"result": "Confirmed"}],
+    }
+    result = ShiprocketService(pickup_location="Warehouse").evaluate_booking_eligibility(cod_order, operations, None)
+
+    assert result.payment_mode == "COD"
+    assert result.eligible is True
+    assert result.operational_status == "Ready for Booking"
+
+
+def test_partial_cod_confirmed_still_requires_verified_address():
+    partial = order().model_copy(update={"payment_type": "partial_cod", "payment_status": "partially_paid"})
+    address = verified_address()
+    operations = {
+        "address_verified": False,
+        "corrected_address": address,
+        "verified_address_snapshot": None,
+        "package_details": {"weight_kg": .5, "length_cm": 10, "breadth_cm": 11, "height_cm": 12},
+        "call_logs": [{"result": "Confirmed"}],
+    }
+    result = ShiprocketService(pickup_location="Warehouse").evaluate_booking_eligibility(partial, operations, None)
+
+    assert result.payment_mode == "COD"
+    assert result.eligible is False
+    assert result.operational_status == "Address Verification Pending"
+    assert "address must be verified" in result.missing_requirements

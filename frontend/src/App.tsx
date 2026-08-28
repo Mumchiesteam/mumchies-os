@@ -598,7 +598,7 @@ function App() {
       // order that already has an existing shipment/fulfilment must never be downgraded back to
       // "Ready for Booking" (or any other local state) by a call outcome - see Part 2/3 of the
       // 2026-07-21 shipment-state regression fix.
-      setOrders(prev => prev.map(order => order.internalId === orderId ? { ...order, latestCallResult: updated.call_logs?.[0]?.result || null, operationalStatus: (hasShipmentEvidence(order) ? order.operationalStatus : (updated.call_logs?.[0]?.result === 'Callback Requested' ? 'Callback Required' : updated.call_logs?.[0]?.result === 'Confirmed' ? (order.payment === 'Prepaid' && !updated.address_verified ? 'Address Verification Pending' : 'Ready for Booking') : updated.call_logs?.[0]?.result === 'Wrong Number' ? 'Needs Review' : updated.call_logs?.[0]?.result === 'Cancelled' ? 'Cancelled' : 'Call Pending')) as OperationalStatus | null, addressVerified: updated.address_verified, addressVerifiedAt: updated.address_verified_at, addressVerifiedBy: updated.address_verified_by, verifiedAddressSnapshot: updated.verified_address_snapshot, correctedAddress: updated.corrected_address, courierSyncStatus: updated.courier_sync_status, courierSyncError: updated.courier_sync_error } : order).filter(order => {
+      setOrders(prev => prev.map(order => order.internalId === orderId ? { ...order, latestCallResult: updated.call_logs?.[0]?.result || null, operationalStatus: (hasShipmentEvidence(order) ? order.operationalStatus : (updated.call_logs?.[0]?.result === 'Callback Requested' ? 'Callback Required' : updated.call_logs?.[0]?.result === 'Confirmed' ? (updated.address_verified ? 'Ready for Booking' : 'Address Verification Pending') : updated.call_logs?.[0]?.result === 'Wrong Number' ? 'Needs Review' : updated.call_logs?.[0]?.result === 'Cancelled' ? 'Cancelled' : 'Call Pending')) as OperationalStatus | null, addressVerified: updated.address_verified, addressVerifiedAt: updated.address_verified_at, addressVerifiedBy: updated.address_verified_by, verifiedAddressSnapshot: updated.verified_address_snapshot, correctedAddress: updated.corrected_address, courierSyncStatus: updated.courier_sync_status, courierSyncError: updated.courier_sync_error } : order).filter(order => {
         if (order.internalId !== orderId) return true
         if (queue === 'fresh') return false
         if (queue !== 'previous') return true
@@ -607,7 +607,7 @@ function App() {
       setSelectedOrderSnapshot(previous => previous ? {
         ...previous,
         latestCallResult: updated.call_logs?.[0]?.result || null,
-        operationalStatus: hasShipmentEvidence(previous) ? previous.operationalStatus : updated.call_logs?.[0]?.result === 'Confirmed' ? 'Ready for Booking' : updated.call_logs?.[0]?.result === 'Cancelled' ? 'Cancelled' : 'Call Pending',
+        operationalStatus: hasShipmentEvidence(previous) ? previous.operationalStatus : updated.call_logs?.[0]?.result === 'Confirmed' ? (updated.address_verified ? 'Ready for Booking' : 'Address Verification Pending') : updated.call_logs?.[0]?.result === 'Cancelled' ? 'Cancelled' : 'Call Pending',
       } : previous)
       setCallComment('')
       setNotice('Call attempt saved')
@@ -656,8 +656,11 @@ function App() {
       if (generation === drawerGenerationRef.current && selectedOrderId === orderId) setBookingEligibility(freshEligibility)
       return result
     } catch (err) {
-      setNotice((err as Error).message)
-      throw err
+      if (generation === drawerGenerationRef.current && selectedOrderId === orderId) {
+        setNotice((err as Error).message)
+        throw err
+      }
+      return undefined
     }
   }
 

@@ -135,7 +135,7 @@ def derive_operational_status(order: Any, operations: dict[str, Any] | None, shi
         return "Ready for Booking" if operations.get("address_verified") else "Address Verification Pending"
     if payment_type in {"cod", "partial_cod"}:
         if latest_call == "Confirmed":
-            return "Ready for Booking"
+            return "Ready for Booking" if operations.get("address_verified") else "Address Verification Pending"
         if latest_call == "Callback Requested":
             return "Callback Required"
         return "Call Pending"
@@ -143,7 +143,7 @@ def derive_operational_status(order: Any, operations: dict[str, Any] | None, shi
     if payment_status and payment_status not in {"pending", "cod", "partially paid", "partially_paid"}:
         return "Ready for Booking" if operations.get("address_verified") else "Address Verification Pending"
     if latest_call == "Confirmed":
-        return "Ready for Booking"
+        return "Ready for Booking" if operations.get("address_verified") else "Address Verification Pending"
     if latest_call == "Callback Requested":
         return "Callback Required"
     return "Call Pending"

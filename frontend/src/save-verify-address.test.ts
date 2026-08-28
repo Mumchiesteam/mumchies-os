@@ -18,14 +18,14 @@ describe('Save & Verify address errors', () => {
 
   it('gives a clear stale token message', () => {
     expect(readableApiError({ detail: 'Address draft identity could not be verified. Reload before saving.' }))
-      .toBe('Address verification token expired. Reload the order.')
+      .toBe('Address details changed. Reload the order and verify the address again.')
   })
 
   it('uses the structured error reader for the Save & Verify transport', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       detail: [{ loc: ['body', 'draft_token'], msg: 'Field required', type: 'missing' }],
     }), { status: 422, headers: { 'Content-Type': 'application/json' } })))
-    await expect(saveAndVerifyOrderAddress('325270', {})).rejects.toThrow('Address verification token expired. Reload the order.')
+    await expect(saveAndVerifyOrderAddress('325270', {})).rejects.toThrow('Address details changed. Reload the order and verify the address again.')
   })
 })
 
@@ -41,6 +41,7 @@ describe('Save & Verify drawer state propagation', () => {
   it('keeps the cross-order generation and order guards intact', () => {
     expect(flow).toContain('canUseDraft(')
     expect(flow).toContain('generation !== drawerGenerationRef.current || selectedOrderId !== orderId')
+    expect(flow).toContain('if (generation === drawerGenerationRef.current && selectedOrderId === orderId) {')
     expect(flow).toContain('draft_order_id: orderId')
     expect(flow).toContain('expected_revision: operations.address_revision')
     expect(flow).toContain('draft_token: operations.address_draft_token')

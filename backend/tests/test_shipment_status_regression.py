@@ -47,11 +47,13 @@ def order(**overrides) -> SimpleNamespace:
 
 
 def confirmed_call_ops(**overrides) -> dict:
+    address = {"pincode": "411001", "address_line1": "Line 1", "address_line2": "", "landmark": "", "city": "Pune", "state": "MH", "customer_name": "Cust", "phone": "9999999999"}
     base = {
         "call_logs": [{"result": "Confirmed"}],
         "address_verified": True,
         "package_details": {"weight_kg": 0.95, "length_cm": 5, "breadth_cm": 5, "height_cm": 5},
-        "corrected_address": {"pincode": "411001", "address_line1": "Line 1", "city": "Pune", "state": "MH", "customer_name": "Cust", "phone": "9999999999"},
+        "corrected_address": address,
+        "verified_address_snapshot": address,
     }
     base.update(overrides)
     return base
@@ -231,6 +233,15 @@ def test_unshipped_confirmed_cod_order_remains_eligible():
     result = service.evaluate_booking_eligibility(plain_order, confirmed_call_ops(), shipment=None)
     assert result.eligible is True
     assert result.operational_status == "Ready for Booking"
+
+
+def test_confirmed_cod_without_verified_address_is_address_verification_pending():
+    service = ShiprocketService(email="a@b.com", password="x", pickup_location="Mumchies Factory")
+    operations = confirmed_call_ops(address_verified=False, verified_address_snapshot=None)
+    result = service.evaluate_booking_eligibility(order(fulfillment_status=None, payment_status="pending"), operations, shipment=None)
+    assert result.eligible is False
+    assert result.operational_status == "Address Verification Pending"
+    assert "address must be verified" in result.missing_requirements
 
 
 def test_shiprocket_order_id_without_shipment_does_not_mark_order_booked():

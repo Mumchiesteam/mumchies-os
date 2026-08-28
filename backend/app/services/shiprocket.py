@@ -351,6 +351,21 @@ class ShiprocketService:
         result = logs[0].get("result")
         return str(result) if result is not None else None
 
+    @staticmethod
+    def _address_dict(address: Any) -> dict[str, Any] | None:
+        if hasattr(address, "model_dump"):
+            address = address.model_dump()
+        return address if isinstance(address, dict) else None
+
+    @classmethod
+    def _address_matches(cls, left: Any, right: Any) -> bool:
+        left_dict = cls._address_dict(left)
+        right_dict = cls._address_dict(right)
+        if not left_dict or not right_dict:
+            return False
+        keys = ("customer_name", "phone", "address_line1", "address_line2", "landmark", "city", "state", "pincode")
+        return all(str(left_dict.get(key) or "").strip() == str(right_dict.get(key) or "").strip() for key in keys)
+
     def evaluate_booking_eligibility(
         self,
         order: Any,
@@ -389,6 +404,9 @@ class ShiprocketService:
         latest_operational_address = corrected_address or verified_snapshot or shipping_address
         if not latest_operational_address:
             missing.append("latest operational address")
+        address_verified_for_context = bool(operations.get("address_verified")) and bool(
+            verified_snapshot and self._address_matches(latest_operational_address, verified_snapshot)
+        )
         address_phone = None
         for address in (corrected_address, verified_snapshot, shipping_address):
             if hasattr(address, "model_dump"):
@@ -417,10 +435,12 @@ class ShiprocketService:
         if payment == "COD":
             if latest_call != "Confirmed":
                 missing.append("latest call must be Confirmed")
+            if not address_verified_for_context:
+                missing.append("address must be verified")
             if status != "Ready for Booking":
                 missing.append("operational status must be Ready for Booking")
         else:
-            if not operations.get("address_verified"):
+            if not address_verified_for_context:
                 missing.append("address must be verified")
             if status != "Ready for Booking":
                 missing.append("operational status must be Ready for Booking")

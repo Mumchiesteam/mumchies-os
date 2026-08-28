@@ -105,6 +105,20 @@ describe('Orders latency regressions', () => {
     expect(flow).toContain('setBookingEligibility(freshEligibility)')
   })
 
+  it('does not surface stale Save & Verify completion or error after switching drawer order', () => {
+    const flow = source.slice(source.indexOf('const saveAndVerifyAddress'), source.indexOf('const checkCouriers'))
+    expect(flow).toContain('if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return')
+    expect(flow).toContain('if (generation === drawerGenerationRef.current && selectedOrderId === orderId) setBookingEligibility(freshEligibility)')
+    expect(flow).toContain('if (generation === drawerGenerationRef.current && selectedOrderId === orderId) {')
+    expect(flow).toContain('setNotice((err as Error).message)')
+    expect(flow).toContain('return undefined')
+  })
+
+  it('does not mark COD confirmation as Ready for Booking until address is verified', () => {
+    const flow = source.slice(source.indexOf('const saveCallLog'), source.indexOf('const saveAddressConfirmation'))
+    expect(flow).toContain("updated.call_logs?.[0]?.result === 'Confirmed' ? (updated.address_verified ? 'Ready for Booking' : 'Address Verification Pending')")
+  })
+
   it('shows booked before the secondary canonical readback', () => {
     const flow = source.slice(source.indexOf('const bookShipment'), source.indexOf('const saveManualShadowfax'))
     expect(flow).toContain("setNotice(result.existing ? 'Existing shipment loaded' : 'Shipment booked')")

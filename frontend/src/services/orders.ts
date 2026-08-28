@@ -376,7 +376,7 @@ export function readableApiError(body: unknown, fallback = 'Request failed.'): s
     return 'Address changed since this drawer was opened. Reload and verify again.'
   }
   if (normalized.includes('draft identity could not be verified') || normalized.includes('draft_token')) {
-    return 'Address verification token expired. Reload the order.'
+    return 'Address details changed. Reload the order and verify the address again.'
   }
   if (normalized.includes('different order') || normalized.includes('order identity mismatch') || normalized.includes('draft_order_id')) {
     return 'Address belongs to a different order. Reload the order before verifying.'

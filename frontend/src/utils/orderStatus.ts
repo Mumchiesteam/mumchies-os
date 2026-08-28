@@ -38,7 +38,7 @@ export const listStatus = (order: Order): OperationalStatus => {
   return order.payment === 'Prepaid'
     ? order.addressVerified ? 'Ready for Booking' : 'Address Verification Pending'
     : order.latestCallResult === 'Callback Requested' ? 'Callback Required'
-      : order.latestCallResult === 'Confirmed' ? 'Ready for Booking'
+      : order.latestCallResult === 'Confirmed' ? order.addressVerified ? 'Ready for Booking' : 'Address Verification Pending'
         : order.latestCallResult === 'Wrong Number' ? 'Needs Review'
           : 'Call Pending'
 }

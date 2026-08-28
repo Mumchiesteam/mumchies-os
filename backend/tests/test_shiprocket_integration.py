@@ -85,11 +85,15 @@ def test_provider_neutral_booking_route_is_registered() -> None:
     assert any(getattr(route, "path", None) == "/orders/{order_id}/book" for route in booking_router.routes)
 
 
-def test_confirmed_cod_order_maps_to_ready_for_booking() -> None:
+def test_confirmed_cod_order_maps_to_ready_for_booking_after_address_verification() -> None:
     service = ShiprocketService(email="operator@example.com", password="secret", pickup_location="Mumchies Factory")
     order = SimpleNamespace(payment_status="pending", phone="9999999999", shipping_address={"pincode": "249407"}, operational_status=None)
+    address = {"customer_name": "Customer", "phone": "9999999999", "address_line1": "Line 1", "address_line2": "", "landmark": "", "city": "Haridwar", "state": "Uttarakhand", "pincode": "249407"}
     operations = {
         "call_logs": [{"result": "Confirmed"}],
+        "address_verified": True,
+        "corrected_address": address,
+        "verified_address_snapshot": address,
         "package_details": {"weight_kg": 0.95, "length_cm": 5, "breadth_cm": 5, "height_cm": 5},
     }
 
@@ -97,6 +101,22 @@ def test_confirmed_cod_order_maps_to_ready_for_booking() -> None:
 
     assert result.operational_status == "Ready for Booking"
     assert result.eligible is True
+
+
+def test_confirmed_cod_order_without_address_verification_is_not_ready_for_booking() -> None:
+    service = ShiprocketService(email="operator@example.com", password="secret", pickup_location="Mumchies Factory")
+    order = SimpleNamespace(payment_status="pending", phone="9999999999", shipping_address={"pincode": "249407"}, operational_status=None)
+    operations = {
+        "call_logs": [{"result": "Confirmed"}],
+        "address_verified": False,
+        "package_details": {"weight_kg": 0.95, "length_cm": 5, "breadth_cm": 5, "height_cm": 5},
+    }
+
+    result = service.evaluate_booking_eligibility(order, operations)
+
+    assert result.operational_status == "Address Verification Pending"
+    assert result.eligible is False
+    assert "address must be verified" in result.missing_requirements
 
 
 @pytest.mark.anyio

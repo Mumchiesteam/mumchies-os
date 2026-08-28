@@ -3,9 +3,9 @@ import { describe, expect, it } from 'vitest'
 
 import { OrderStatusBadge } from './components/OrderStatusBadge'
 import type { Order } from './services/orders'
-import { isBooked } from './utils/orderStatus'
+import { isBooked, listStatus } from './utils/orderStatus'
 
-const order = (operationalStatus: string, shipment: Order['shipment'] = null) => ({
+const order = (operationalStatus: string | null, shipment: Order['shipment'] = null) => ({
   operationalStatus,
   shipment,
   cancelledAt: null,
@@ -37,5 +37,10 @@ describe('order status rendering', () => {
     expect(isBooked(order('Ready for Booking', { provider_order_id: '323693', booking_status: 'failed' } as Order['shipment']))).toBe(false)
     expect(isBooked(order('Booked', { awb: 'AWB1' } as Order['shipment']))).toBe(true)
     expect(isBooked(order('Booked', { provider_order_id: 'P1', booking_status: 'booked' } as Order['shipment']))).toBe(true)
+  })
+
+  it('does not show COD confirmed orders as ready before address verification', () => {
+    expect(listStatus({ ...order(null), operationalStatus: null, latestCallResult: 'Confirmed', addressVerified: false } as Order)).toBe('Address Verification Pending')
+    expect(listStatus({ ...order(null), operationalStatus: null, latestCallResult: 'Confirmed', addressVerified: true } as Order)).toBe('Ready for Booking')
   })
 })
