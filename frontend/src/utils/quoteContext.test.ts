@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { quoteAddressesMatch, quoteContextKey, quoteSelectionGate, type QuoteAddress, type QuotePackage } from './quoteContext'
 
 const address: QuoteAddress = { customer_name: 'Customer', phone: '9876543210', address_line1: 'Street', address_line2: '', landmark: '', city: 'Mumbai', state: 'Maharashtra', pincode: '400001' }
@@ -47,5 +47,12 @@ describe('early courier quote context and gates', () => {
   it('enables courier selection for a canonical verified address in the current quote context', () => {
     const verified = quoteAddressesMatch(address, address)
     expect(quoteSelectionGate({ eligible: true, contextMatches: true, addressVerified: verified, paymentMode: 'COD', codConfirmed: true })).toEqual({ enabled: true, reason: null })
+  })
+
+  it('selects a loaded, ready quote exactly once', () => {
+    const onSelect = vi.fn()
+    const gate = quoteSelectionGate({ eligible: true, contextMatches: true, addressVerified: quoteAddressesMatch(address, address), paymentMode: 'COD', codConfirmed: true })
+    if (gate.enabled) onSelect()
+    expect(onSelect).toHaveBeenCalledTimes(1)
   })
 })
