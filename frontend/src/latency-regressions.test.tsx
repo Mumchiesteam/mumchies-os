@@ -36,7 +36,7 @@ describe('Orders latency regressions', () => {
 
   it('clears stale frontend selection whenever lookup clears backend persistence', () => {
     const flow = source.slice(source.indexOf('const checkCouriers'), source.indexOf('const selectCourier'))
-    expect(flow).toContain('setSelectedCourierId(null)')
+    expect(flow).toContain('setSelectedCourierKey(null)')
     expect(flow).toContain('selected_courier: null')
     expect(flow).not.toContain('!sorted.some')
   })
@@ -61,10 +61,41 @@ describe('Orders latency regressions', () => {
     expect(flow).toContain('courierSelectionMatches')
   })
 
+  it('guards COD confirmation eligibility readback by current drawer identity', () => {
+    const flow = source.slice(source.indexOf('const saveCallLog'), source.indexOf('const saveAddressConfirmation'))
+    expect(flow).toContain('const orderId = selectedOrder.internalId')
+    expect(flow).toContain('const generation = drawerGenerationRef.current')
+    expect(flow).toContain('if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return')
+    expect(flow).toContain('if (generation === drawerGenerationRef.current && selectedOrderId === orderId) setBookingEligibility(result)')
+    expect(flow).not.toContain('.then(setBookingEligibility)')
+  })
+
+  it('keeps courier selection identity composite in drawer state and rendering', () => {
+    expect(source).toContain('const [selectedCourierKey, setSelectedCourierKey]')
+    expect(source).toContain('setSelectedCourierKey(courierSelectionKey(result.selected_courier))')
+    expect(source).toContain('const selectedCourier = courierOptions.find(option => courierSelectionKey(option) === selectedCourierKey)')
+    expect(source).toContain('const optionSelectionKey = courierSelectionKey(option)')
+    expect(source).toContain('key={optionSelectionKey')
+  })
+
   it('keeps Book Shipment disabled without a matching persisted selection', () => {
     expect(source).toContain('const selectedCourierPersisted = courierSelectionMatches')
     const guard = source.slice(source.indexOf('const canBookShipment'), source.indexOf('const requirementLabels'))
     expect(guard).toContain('selectedCourierPersisted')
+  })
+
+  it('still sends one select request from one eligible card click', () => {
+    const card = source.slice(source.indexOf('{courierOptions.map(option =>'), source.indexOf("{selectedCourier?.provider === 'shadowfax'"))
+    const calls = card.match(/onSelectCourier\(option, currentQuoteContextKey, packageNumbers\)/g) || []
+    expect(calls).toHaveLength(1)
+    expect(card).toContain('disabled={!quoteGate.enabled}')
+  })
+
+  it('rejects delayed select responses from a previous drawer order', () => {
+    const flow = source.slice(source.indexOf('const selectCourier'), source.indexOf('const bookShipment'))
+    expect(flow).toContain('const orderId = selectedOrder.internalId')
+    expect(flow).toContain('const generation = drawerGenerationRef.current')
+    expect(flow).toContain('if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return')
   })
 
   it('applies saved address and awaits authoritative eligibility before completing Save & Verify', () => {

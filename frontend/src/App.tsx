@@ -76,7 +76,7 @@ import { selectAllLabelIds, selectAllLabelState } from './utils/labelSelection'
 import { engageCategory } from './utils/engage'
 import { hasShipmentEvidence, listStatus, type OperationalStatus } from './utils/orderStatus'
 import { displayedOrderNumber, orderNumberClipboardValue, stopCopyPropagation } from './utils/orderNumber'
-import { courierSelectionMatches } from './utils/courierSelection'
+import { courierSelectionKey, courierSelectionMatches } from './utils/courierSelection'
 import { applyConfirmedBookingState, isConfirmedLabelBooking, mergeCanonicalShipment } from './utils/postBooking'
 import { CourierIssuesPage } from './components/CourierIssuesPage'
 import { DispatchQueueModal } from './components/DispatchQueueModal'
@@ -278,7 +278,7 @@ function App() {
   const [courierWarnings, setCourierWarnings] = useState<string[]>([])
   const [courierQuoteContextKey, setCourierQuoteContextKey] = useState<string | null>(null)
   const [courierQuoteFingerprint, setCourierQuoteFingerprint] = useState<string | null>(null)
-  const [selectedCourierId, setSelectedCourierId] = useState<string | null>(null)
+  const [selectedCourierKey, setSelectedCourierKey] = useState<string | null>(null)
   const [bookingLoading, setBookingLoading] = useState(false)
   const [shadowfaxTestState, setShadowfaxTestState] = useState<ShadowfaxDirectTestState | null>(null)
   const [shadowfaxShipmentRow, setShadowfaxShipmentRow] = useState<ShadowfaxShipmentRowDiagnostic | null>(null)
@@ -445,7 +445,7 @@ function App() {
       setCourierWarnings([])
       setCourierQuoteContextKey(null)
       setCourierQuoteFingerprint(null)
-      setSelectedCourierId(null)
+      setSelectedCourierKey(null)
       setCourierError('')
       setCancellationPreflight(null)
       setShadowfaxPincodeRecommendation(null)
@@ -472,7 +472,7 @@ function App() {
       setAddressDraftOrderId(orderId)
       setAddressDraftGeneration(generation)
       setAddressInitializing(false)
-      setSelectedCourierId(ops.selected_courier?.courier_id ?? null)
+      setSelectedCourierKey(courierSelectionKey(ops.selected_courier))
       setBookingEligibility(eligibility)
     })().catch((err) => {
       if (controller.signal.aborted) return
@@ -498,7 +498,7 @@ function App() {
     setCourierWarnings([])
     setCourierQuoteContextKey(null)
     setCourierQuoteFingerprint(null)
-    setSelectedCourierId(null)
+    setSelectedCourierKey(null)
     setCourierError('')
     setCourierLoading(false)
     setCancellationPreflight(null)
@@ -570,6 +570,10 @@ function App() {
 
   const saveCallLog = async () => {
     if (!selectedOrder) return
+    const orderId = selectedOrder.internalId
+    const generation = drawerGenerationRef.current
+    const submittedCallResult = callResult
+    const submittedCallComment = callComment
     if (callResult === 'On Hold' && callComment.trim().length < 3) {
       setNotice('Add a reason before placing the order On Hold.')
       return
@@ -581,23 +585,24 @@ function App() {
       return
     }
     try {
-      setSelectedCourierId(null)
+      setSelectedCourierKey(null)
       setCourierError('')
       setBookingEligibility(null)
-      const updated = await addOrderCallLog(selectedOrder.internalId, {
-        result: callResult,
-        comment: callComment,
+      const updated = await addOrderCallLog(orderId, {
+        result: submittedCallResult,
+        comment: submittedCallComment,
       })
+      if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return
       setOperations(updated)
       // A call log can only move a not-yet-shipped order between local operational states. An
       // order that already has an existing shipment/fulfilment must never be downgraded back to
       // "Ready for Booking" (or any other local state) by a call outcome - see Part 2/3 of the
       // 2026-07-21 shipment-state regression fix.
-      setOrders(prev => prev.map(order => order.internalId === selectedOrder.internalId ? { ...order, latestCallResult: updated.call_logs?.[0]?.result || null, operationalStatus: (hasShipmentEvidence(order) ? order.operationalStatus : (updated.call_logs?.[0]?.result === 'Callback Requested' ? 'Callback Required' : updated.call_logs?.[0]?.result === 'Confirmed' ? (order.payment === 'Prepaid' && !updated.address_verified ? 'Address Verification Pending' : 'Ready for Booking') : updated.call_logs?.[0]?.result === 'Wrong Number' ? 'Needs Review' : updated.call_logs?.[0]?.result === 'Cancelled' ? 'Cancelled' : 'Call Pending')) as OperationalStatus | null, addressVerified: updated.address_verified, addressVerifiedAt: updated.address_verified_at, addressVerifiedBy: updated.address_verified_by, verifiedAddressSnapshot: updated.verified_address_snapshot, correctedAddress: updated.corrected_address, courierSyncStatus: updated.courier_sync_status, courierSyncError: updated.courier_sync_error } : order).filter(order => {
-        if (order.internalId !== selectedOrder.internalId) return true
+      setOrders(prev => prev.map(order => order.internalId === orderId ? { ...order, latestCallResult: updated.call_logs?.[0]?.result || null, operationalStatus: (hasShipmentEvidence(order) ? order.operationalStatus : (updated.call_logs?.[0]?.result === 'Callback Requested' ? 'Callback Required' : updated.call_logs?.[0]?.result === 'Confirmed' ? (order.payment === 'Prepaid' && !updated.address_verified ? 'Address Verification Pending' : 'Ready for Booking') : updated.call_logs?.[0]?.result === 'Wrong Number' ? 'Needs Review' : updated.call_logs?.[0]?.result === 'Cancelled' ? 'Cancelled' : 'Call Pending')) as OperationalStatus | null, addressVerified: updated.address_verified, addressVerifiedAt: updated.address_verified_at, addressVerifiedBy: updated.address_verified_by, verifiedAddressSnapshot: updated.verified_address_snapshot, correctedAddress: updated.corrected_address, courierSyncStatus: updated.courier_sync_status, courierSyncError: updated.courier_sync_error } : order).filter(order => {
+        if (order.internalId !== orderId) return true
         if (queue === 'fresh') return false
         if (queue !== 'previous') return true
-        return pendingView === 'on_hold' ? callResult === 'On Hold' : ['No Answer', 'Busy', 'Switched Off'].includes(callResult)
+        return pendingView === 'on_hold' ? submittedCallResult === 'On Hold' : ['No Answer', 'Busy', 'Switched Off'].includes(submittedCallResult)
       }))
       setSelectedOrderSnapshot(previous => previous ? {
         ...previous,
@@ -606,11 +611,13 @@ function App() {
       } : previous)
       setCallComment('')
       setNotice('Call attempt saved')
-      if (callResult === 'Confirmed') {
-        void getBookingEligibility(selectedOrder.internalId).then(setBookingEligibility).catch(() => undefined)
+      if (submittedCallResult === 'Confirmed') {
+        void getBookingEligibility(orderId).then(result => {
+          if (generation === drawerGenerationRef.current && selectedOrderId === orderId) setBookingEligibility(result)
+        }).catch(() => undefined)
       }
     } catch (err) {
-      setNotice((err as Error).message)
+      if (generation === drawerGenerationRef.current && selectedOrderId === orderId) setNotice((err as Error).message)
     }
   }
 
@@ -673,7 +680,7 @@ function App() {
     setCourierQuoteFingerprint(null)
     // Every changed quote context invalidates the prior visible selection locally;
     // drawer-open lookup itself does not write order operations.
-    setSelectedCourierId(null)
+    setSelectedCourierKey(null)
     setOperations(previous => previous ? { ...previous, selected_courier: null } : previous)
     const lookupStarted = performance.now()
     try {
@@ -720,14 +727,14 @@ function App() {
     const orderId = selectedOrder.internalId
     const generation = drawerGenerationRef.current
     setCourierError('')
-    setSelectedCourierId(null)
+    setSelectedCourierKey(null)
     setOperations(previous => previous ? { ...previous, selected_courier: null } : previous)
     try {
       const result = await selectShiprocketCourier(orderId, { ...courier, ...packageNumbers, courier_id: courier.courier_id })
       if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return
       if (!courierSelectionMatches(result.selected_courier, courier)) throw new Error('The courier selection could not be persisted consistently. Select it again.')
       setOperations(prev => prev ? { ...prev, selected_courier: result.selected_courier } : prev)
-      setSelectedCourierId(result.selected_courier?.courier_id ?? null)
+      setSelectedCourierKey(courierSelectionKey(result.selected_courier))
     } catch (err) {
       if (generation === drawerGenerationRef.current && selectedOrderId === orderId) setCourierError((err as Error).message)
     } finally {
@@ -736,8 +743,8 @@ function App() {
   }
 
   const bookShipment = async (packageNumbers: { weight_kg: number; length_cm: number | null; breadth_cm: number | null; height_cm: number | null }) => {
-    if (!selectedOrder || !selectedCourierId || !bookingEligibility?.eligible || bookingRequestInFlight.current) return
-    const selectedQuote = courierOptions.find(option => option.courier_id === selectedCourierId)
+    if (!selectedOrder || !selectedCourierKey || !bookingEligibility?.eligible || bookingRequestInFlight.current) return
+    const selectedQuote = courierOptions.find(option => courierSelectionKey(option) === selectedCourierKey)
     const persistedSelection = operations?.selected_courier
     if (!selectedQuote?.booking_supported || !persistedSelection || !courierSelectionMatches(persistedSelection, selectedQuote)) {
       setCourierError('Select and save a courier before booking.')
@@ -1094,7 +1101,7 @@ function App() {
           courierQuoteContextKey={courierQuoteContextKey}
           courierQuoteFingerprint={courierQuoteFingerprint}
           shadowfaxPincodeRecommendation={shadowfaxPincodeRecommendation?.pincode === addressDraft.pincode.trim() ? shadowfaxPincodeRecommendation : null}
-          selectedCourierId={selectedCourierId}
+          selectedCourierKey={selectedCourierKey}
           persistedCourierSelection={operations?.selected_courier ?? null}
           onCheckCouriers={checkCouriers}
           onSelectCourier={(courier, contextKey, packageNumbers) => void selectCourier(courier, contextKey, packageNumbers)}
@@ -1226,7 +1233,7 @@ const OrderDrawer = memo(function OrderDrawer({
   courierQuoteContextKey,
   courierQuoteFingerprint,
   shadowfaxPincodeRecommendation,
-  selectedCourierId,
+  selectedCourierKey,
   persistedCourierSelection,
   onCheckCouriers,
   onSelectCourier,
@@ -1304,7 +1311,7 @@ const OrderDrawer = memo(function OrderDrawer({
   courierQuoteContextKey: string | null
   courierQuoteFingerprint: string | null
   shadowfaxPincodeRecommendation: OrderOperations['shadowfax_pincode_recommendation']
-  selectedCourierId: string | null
+  selectedCourierKey: string | null
   persistedCourierSelection: OrderOperations['selected_courier']
   onCheckCouriers: (packageNumbers: QuotePackage, quoteContext: { key: string; address: QuoteAddress; generation: number }) => void
   onSelectCourier: (courier: CourierQuote, quoteContextKey: string, packageNumbers: QuotePackage) => void
@@ -1373,7 +1380,7 @@ const OrderDrawer = memo(function OrderDrawer({
     paymentMode: order.payment, codAmount: order.codCollectableAmount, package: packageNumbers,
   }), [drawerGeneration, order.codCollectableAmount, order.internalId, order.payment, packageNumbers, quoteAddress])
   const canCheckCouriers = !addressInitializing && drawerGeneration !== null && packageValid && /^\d{6}$/.test(addressDraft.pincode.trim()) && !bookingEligibility?.shipment_exists
-  const selectedCourier = courierOptions.find(option => option.courier_id === selectedCourierId)
+  const selectedCourier = courierOptions.find(option => courierSelectionKey(option) === selectedCourierKey)
   const selectedCourierPersisted = courierSelectionMatches(persistedCourierSelection, selectedCourier)
   const codConfirmed = isPrepaid || callLog[0]?.result === 'Confirmed'
   const verifiedAddressForContext = hasVerifiedAddress && quoteAddressesMatch(quoteAddress, order.correctedAddress ?? order.verifiedAddressSnapshot)
@@ -1382,7 +1389,7 @@ const OrderDrawer = memo(function OrderDrawer({
   const canBookShipment = bookingEligibility !== null
     && nonPackageMissing.length === 0
     && packageValid
-    && Boolean(selectedCourierId)
+    && Boolean(selectedCourierKey)
     && selectedCourierPersisted
     && Boolean(selectedCourier?.booking_supported)
     && quoteGate.enabled
@@ -1414,7 +1421,7 @@ const OrderDrawer = memo(function OrderDrawer({
     : bookingEligibility?.shipment_exists
     ? 'Shipment already booked'
     : visibleMissing[0]
-      || (!selectedCourierId ? 'Select a courier service'
+      || (!selectedCourierKey ? 'Select a courier service'
         : !selectedCourier ? 'Selected courier response is incomplete'
           : !selectedCourierPersisted ? 'Select and save a courier service'
           : !selectedCourier.booking_supported ? (selectedCourier.provider === 'delhivery' ? 'Direct booking is unavailable for this rate' : 'Selected courier does not support booking')
@@ -1605,10 +1612,11 @@ const OrderDrawer = memo(function OrderDrawer({
               {courierOptions.length > 0 && (
                 <div className="space-y-1.5">
                   {courierOptions.map(option => {
-                    const selected = option.courier_id === selectedCourierId
+                    const optionSelectionKey = courierSelectionKey(option)
+                    const selected = optionSelectionKey === selectedCourierKey
                     const shadowfaxRecommendation = option.provider === 'shadowfax' ? shadowfaxRecommendationPresentation(shadowfaxPincodeRecommendation) : null
                     return (
-                      <button key={`${option.courier_name}-${option.courier_id}`} disabled={!quoteGate.enabled} onClick={() => void onSelectCourier(option, currentQuoteContextKey, packageNumbers)} className={`w-full rounded-xl border p-2.5 text-left transition disabled:cursor-not-allowed disabled:opacity-70 ${selected ? 'border-[#ff6b35] bg-orange-50/60' : 'border-slate-200 bg-white enabled:hover:bg-slate-50'}`}>
+                      <button key={optionSelectionKey ?? `${option.provider}-${option.courier_name}-${option.courier_id}-${option.mode ?? ''}`} disabled={!quoteGate.enabled} onClick={() => void onSelectCourier(option, currentQuoteContextKey, packageNumbers)} className={`w-full rounded-xl border p-2.5 text-left transition disabled:cursor-not-allowed disabled:opacity-70 ${selected ? 'border-[#ff6b35] bg-orange-50/60' : 'border-slate-200 bg-white enabled:hover:bg-slate-50'}`}>
                         <div className="flex items-start justify-between gap-3">
                           <div>
                             <div className="flex items-center gap-2">
@@ -1781,7 +1789,7 @@ const OrderDrawer = memo(function OrderDrawer({
               className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
             >
               <Icon name="truck" size={16} />
-              {bookingLoading ? (selectedCourier?.provider === 'shadowfax' ? 'Checking Shadowfax...' : `Saving ${selectedCourier?.courier_name || 'courier'}…`) : selectedCourier?.provider === 'shadowfax' ? 'Reconcile Shadowfax Shipment' : selectedCourierId ? 'Book Shipment' : 'Select a courier above'}
+              {bookingLoading ? (selectedCourier?.provider === 'shadowfax' ? 'Checking Shadowfax...' : `Saving ${selectedCourier?.courier_name || 'courier'}…`) : selectedCourier?.provider === 'shadowfax' ? 'Reconcile Shadowfax Shipment' : selectedCourierKey ? 'Book Shipment' : 'Select a courier above'}
             </button>{!canBookShipment && bookingBlocker && <p className="text-center text-[11px] font-medium text-amber-700">{bookingBlocker}</p>}</div>
           )}
           <button onClick={onClose} className="rounded-lg px-2 py-2.5 text-sm font-semibold text-slate-500 hover:bg-slate-50">Close</button>

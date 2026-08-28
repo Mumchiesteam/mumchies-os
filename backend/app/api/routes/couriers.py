@@ -715,9 +715,9 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
         # the persisted courier selection. Package persistence remains an
         # explicit consequence of the operator selecting a quote.
         quote_operations["package_details"] = package.model_dump()
-        eligibility = ShiprocketService().evaluate_booking_eligibility(order, quote_operations, shipment)
         if payload.quote_address is not None:
             quote_operations["corrected_address"] = payload.quote_address.model_dump()
+        eligibility = ShiprocketService().evaluate_booking_eligibility(order, quote_operations, shipment)
         pickup_started = time.perf_counter()
         delivery_postcode = ShiprocketService().delivery_postcode(order, quote_operations) or ""
         # Use the authoritative Shopify classification for provider pricing.

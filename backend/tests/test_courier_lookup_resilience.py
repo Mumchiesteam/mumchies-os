@@ -10,7 +10,7 @@ from app.api.routes import couriers
 from app.api.routes.couriers import CourierCheckPayload
 from app.schemas.orders import ShopifyOrder
 from app.services.delhivery import DelhiveryQuote
-from app.services.shiprocket import CourierQuote
+from app.services.shiprocket import CourierQuote, ShiprocketService
 
 
 def order() -> ShopifyOrder:
@@ -135,3 +135,52 @@ async def test_explicit_selection_persists_package_before_courier(monkeypatch):
 def test_partial_cod_uses_authoritative_cod_provider_mode():
     partial = order().model_copy(update={"payment_type": "partial_cod"})
     assert couriers._order_payment_mode(partial) == "COD"
+
+
+@pytest.mark.anyio
+async def test_courier_check_readiness_uses_submitted_quote_address(monkeypatch, lookup_context):
+    captured_operations = []
+
+    def evaluate(_self, _order, operations, _shipment):
+        captured_operations.append(operations)
+        result = eligibility()
+        result.eligible = operations["corrected_address"]["pincode"] == "400001"
+        return result
+
+    async def no_shiprocket_quotes(*_args):
+        return []
+
+    monkeypatch.setattr(couriers.ShiprocketService, "evaluate_booking_eligibility", evaluate)
+    monkeypatch.setattr(couriers.ShiprocketService, "serviceability", no_shiprocket_quotes)
+    monkeypatch.setattr(couriers.DelhiveryService, "configured", property(lambda _self: False))
+    payload = CourierCheckPayload(
+        weight_kg=.5, courier_payment_mode="Prepaid", drawer_generation=9, client_context_key="drawer-9",
+        quote_address={"customer_name": "Lookup", "phone": "9876543210", "address_line1": "Street", "address_line2": "", "landmark": "", "city": "Mumbai", "state": "Maharashtra", "pincode": "400001"},
+    )
+
+    result = await couriers.shiprocket_serviceability("1", payload, SimpleNamespace(), lookup_context)
+
+    assert captured_operations[0]["corrected_address"]["pincode"] == "400001"
+    assert result["booking_readiness"]["eligible"] is True
+
+
+def test_partial_cod_eligibility_uses_cod_requirements_for_partially_paid_status():
+    partial = order().model_copy(update={"payment_type": "partial_cod", "payment_status": "partially_paid"})
+    operations = {
+        "address_verified": True,
+        "corrected_address": {
+            "customer_name": "Lookup", "phone": "9876543210", "address_line1": "Street",
+            "address_line2": "", "landmark": "", "city": "Mumbai", "state": "Maharashtra", "pincode": "400001",
+        },
+        "package_details": {"weight_kg": .5, "length_cm": 10, "breadth_cm": 11, "height_cm": 12},
+        "call_logs": [],
+    }
+    service = ShiprocketService(pickup_location="Warehouse")
+
+    pending = service.evaluate_booking_eligibility(partial, operations, None)
+    assert pending.payment_mode == "COD"
+    assert "latest call must be Confirmed" in pending.missing_requirements
+
+    confirmed = service.evaluate_booking_eligibility(partial, {**operations, "call_logs": [{"result": "Confirmed"}]}, None)
+    assert confirmed.payment_mode == "COD"
+    assert confirmed.eligible is True

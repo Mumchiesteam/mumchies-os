@@ -368,7 +368,13 @@ class ShiprocketService:
         # that already has an existing shipment/fulfilment (local or Shopify-native) is never
         # eligible, regardless of call logs or address-verification state.
         status = derive_operational_status(order, operations, shipment)
-        payment = "COD" if str(getattr(order, "payment_status", "")).lower() in {"pending", "cod", "partially paid"} else "Prepaid"
+        payment_type = str(getattr(order, "payment_type", "") or "").strip().casefold()
+        if payment_type in {"cod", "partial_cod"}:
+            payment = "COD"
+        elif payment_type == "prepaid":
+            payment = "Prepaid"
+        else:
+            payment = "COD" if str(getattr(order, "payment_status", "")).strip().casefold() in {"pending", "cod", "partially paid", "partially_paid"} else "Prepaid"
         shipment_exists = has_persisted_provider_booking_evidence(shipment)
         shipment_status = shipment.get("booking_status") if shipment else None
 

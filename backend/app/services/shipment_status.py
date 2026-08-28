@@ -130,8 +130,17 @@ def derive_operational_status(order: Any, operations: dict[str, Any] | None, shi
         return "On Hold"
     if latest_call == "Wrong Number":
         return "Needs Review"
+    payment_type = _text(getattr(order, "payment_type", None))
+    if payment_type == "prepaid":
+        return "Ready for Booking" if operations.get("address_verified") else "Address Verification Pending"
+    if payment_type in {"cod", "partial_cod"}:
+        if latest_call == "Confirmed":
+            return "Ready for Booking"
+        if latest_call == "Callback Requested":
+            return "Callback Required"
+        return "Call Pending"
     payment_status = _text(getattr(order, "payment_status", None))
-    if payment_status and payment_status not in {"pending", "cod", "partially paid"}:
+    if payment_status and payment_status not in {"pending", "cod", "partially paid", "partially_paid"}:
         return "Ready for Booking" if operations.get("address_verified") else "Address Verification Pending"
     if latest_call == "Confirmed":
         return "Ready for Booking"
