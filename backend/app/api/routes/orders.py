@@ -26,7 +26,7 @@ from app.services.order_operations import OrderOperationsStore
 from app.services.shadowfax_pincode_reference import shadowfax_pincode_recommendation
 from app.services.report_snapshots import ReportSnapshotStore
 from app.services.delhivery import DelhiveryError, DelhiveryService
-from app.services.shipment_status import customer_cancellation_requires_action, derive_operational_status, has_existing_shipment_evidence, has_persisted_provider_booking_evidence, merge_shopify_fulfillment_evidence
+from app.services.shipment_status import customer_cancellation_requires_action, derive_operational_status, has_current_verified_address, has_existing_shipment_evidence, has_persisted_provider_booking_evidence, merge_shopify_fulfillment_evidence
 from app.services.shiprocket import ShiprocketAPIError, ShiprocketConfigurationError, ShiprocketService
 from app.services.shopify import ShopifyConfigurationError, ShopifyService, ShopifySyncError
 from app.services.shopify_fulfillment import ShopifyFulfillmentSynchronizer, ShopifyFulfillmentSyncError
@@ -156,7 +156,7 @@ def _merged_operational_state(order: ShopifyOrder, operations: dict[str, object]
     return order.model_copy(update={
         "latest_call_result": latest_call,
         "operational_status": operational_status,
-        "address_verified": bool(operations.get("address_verified")),
+        "address_verified": has_current_verified_address(order, operations),
         "address_verified_at": operations.get("address_verified_at"),
         "address_verified_by": operations.get("address_verified_by"),
         "verified_address_snapshot": operations.get("verified_address_snapshot"),
@@ -514,7 +514,13 @@ async def get_order_operations(order_id: str, db: Session = Depends(get_db)) -> 
         (time.perf_counter() - request_started) * 1000, store_ms, shopify_ms,
         (time.perf_counter() - shipment_started) * 1000,
     )
-    return {**operations, "address_revision": revision, "address_draft_token": _address_draft_token(order_id, revision), "shadowfax_pincode_recommendation": recommendation}
+    return {
+        **operations,
+        "address_verified": has_current_verified_address(order, operations) if order is not None else bool(operations.get("address_verified")),
+        "address_revision": revision,
+        "address_draft_token": _address_draft_token(order_id, revision),
+        "shadowfax_pincode_recommendation": recommendation,
+    }
 
 
 @router.post("/{order_id}/shopify-fulfillment/sync")

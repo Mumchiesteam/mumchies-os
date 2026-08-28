@@ -43,4 +43,9 @@ describe('early courier quote context and gates', () => {
     expect(quoteAddressesMatch({ ...address, pincode: '400002' }, address)).toBe(false)
     expect(quoteAddressesMatch(address, null)).toBe(false)
   })
+
+  it('enables courier selection for a canonical verified address in the current quote context', () => {
+    const verified = quoteAddressesMatch(address, address)
+    expect(quoteSelectionGate({ eligible: true, contextMatches: true, addressVerified: verified, paymentMode: 'COD', codConfirmed: true })).toEqual({ enabled: true, reason: null })
+  })
 })

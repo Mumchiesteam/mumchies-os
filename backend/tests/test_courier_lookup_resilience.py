@@ -251,7 +251,9 @@ def test_confirmed_cod_with_matching_verified_address_is_booking_ready():
     cod_order = order().model_copy(update={"payment_type": "cod", "payment_status": "pending"})
     address = verified_address()
     operations = {
-        "address_verified": True,
+        # A historic verification can retain a stale boolean flag. The matching snapshot is
+        # the canonical evidence for the current persisted address.
+        "address_verified": False,
         "corrected_address": address,
         "verified_address_snapshot": address,
         "package_details": {"weight_kg": .5, "length_cm": 10, "breadth_cm": 11, "height_cm": 12},

@@ -32,6 +32,37 @@ def _tags_text(order: Any) -> str:
     return " ".join(str(tag) for tag in (getattr(order, "tags", None) or [])).casefold()
 
 
+def _address_dict(address: Any) -> dict[str, Any] | None:
+    if hasattr(address, "model_dump"):
+        address = address.model_dump()
+    return address if isinstance(address, dict) else None
+
+
+def _address_value(address: dict[str, Any], key: str) -> str:
+    aliases = {
+        "customer_name": ("customer_name", "name"),
+        "address_line1": ("address_line1", "address"),
+    }
+    for candidate in aliases.get(key, (key,)):
+        value = str(address.get(candidate) or "").strip()
+        if value:
+            return value.casefold()
+    return ""
+
+
+def has_current_verified_address(order: Any, operations: dict[str, Any] | None) -> bool:
+    """A matching persisted verification snapshot is authoritative over a stale flag."""
+    operations = operations or {}
+    verified = _address_dict(operations.get("verified_address_snapshot"))
+    current = _address_dict(operations.get("corrected_address")) or _address_dict(getattr(order, "shipping_address", None))
+    if not verified or not current:
+        return False
+    keys = ("customer_name", "phone", "address_line1", "address_line2", "landmark", "city", "state", "pincode")
+    return bool(_address_value(verified, "pincode")) and all(
+        _address_value(verified, key) == _address_value(current, key) for key in keys
+    )
+
+
 def has_customer_cancellation_request(order: Any, shipment: dict[str, Any] | None = None) -> bool:
     """Engage order-confirmation value 3 is a request, not Shopify cancellation evidence."""
     value = getattr(order, "order_confirmation", None)
@@ -132,18 +163,18 @@ def derive_operational_status(order: Any, operations: dict[str, Any] | None, shi
         return "Needs Review"
     payment_type = _text(getattr(order, "payment_type", None))
     if payment_type == "prepaid":
-        return "Ready for Booking" if operations.get("address_verified") else "Address Verification Pending"
+        return "Ready for Booking" if has_current_verified_address(order, operations) else "Address Verification Pending"
     if payment_type in {"cod", "partial_cod"}:
         if latest_call == "Confirmed":
-            return "Ready for Booking" if operations.get("address_verified") else "Address Verification Pending"
+            return "Ready for Booking" if has_current_verified_address(order, operations) else "Address Verification Pending"
         if latest_call == "Callback Requested":
             return "Callback Required"
         return "Call Pending"
     payment_status = _text(getattr(order, "payment_status", None))
     if payment_status and payment_status not in {"pending", "cod", "partially paid", "partially_paid"}:
-        return "Ready for Booking" if operations.get("address_verified") else "Address Verification Pending"
+        return "Ready for Booking" if has_current_verified_address(order, operations) else "Address Verification Pending"
     if latest_call == "Confirmed":
-        return "Ready for Booking" if operations.get("address_verified") else "Address Verification Pending"
+        return "Ready for Booking" if has_current_verified_address(order, operations) else "Address Verification Pending"
     if latest_call == "Callback Requested":
         return "Callback Required"
     return "Call Pending"

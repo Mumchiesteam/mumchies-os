@@ -55,3 +55,27 @@ async def test_orders_endpoint_merges_persisted_operations(monkeypatch: pytest.M
     assert orders[0].operational_status == "Ready for Booking"
     assert orders[0].address_verified is True
     assert orders[0].address_verified_by == "Amit Kumar"
+
+
+@pytest.mark.anyio
+async def test_matching_verified_snapshot_repairs_stale_address_verified_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    sample_order = ShopifyOrder(
+        order_id="326084", order_number="326084", shopify_name="326084", created_date="2026-07-17T10:00:00+05:30",
+        cancelled_at=None, shopify_status=None, customer_name="Test Customer", phone="9999999999", email=None,
+        shipping_address=ShippingAddress(name="Test Customer", phone="9999999999", address="Line 1", landmark=None, city="Pune", state="Maharashtra", pincode="411001"),
+        customer_id="42", customer_orders_count=1,
+        products=[OrderProduct(product_name="Item", sku=None, quantity=1, weight_grams=None, price=100)],
+        total_amount=100, shipping_amount=0, payment_status="pending", payment_type="cod", fulfillment_status=None, tags=[],
+    )
+
+    async def fake_get_latest_orders(self, **_kwargs):  # noqa: ANN001
+        return [sample_order]
+
+    snapshot = {"customer_name": "Test Customer", "phone": "9999999999", "address_line1": "Line 1", "address_line2": None, "landmark": None, "city": "Pune", "state": "Maharashtra", "pincode": "411001"}
+    monkeypatch.setattr("app.api.routes.orders.ShopifyService.get_latest_orders", fake_get_latest_orders)
+    monkeypatch.setattr("app.api.routes.orders.get_shipments_by_order_id", lambda _db, _order_ids=None: {})
+    monkeypatch.setattr("app.api.routes.orders.OrderOperationsStore.all", lambda: {"326084": {"call_logs": [{"result": "Confirmed"}], "address_verified": False, "verified_address_snapshot": snapshot, "corrected_address": snapshot}})
+
+    result = (await list_orders()).items[0]
+    assert result.address_verified is True
+    assert result.operational_status == "Ready for Booking"

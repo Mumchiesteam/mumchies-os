@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.repositories.shiprocket import get_shipment, snapshot, upsert_shipment
-from app.services.shipment_status import customer_cancellation_requires_action, derive_operational_status, has_existing_shipment_evidence, has_persisted_provider_booking_evidence
+from app.services.shipment_status import customer_cancellation_requires_action, derive_operational_status, has_current_verified_address, has_existing_shipment_evidence, has_persisted_provider_booking_evidence
 from app.services.courier_platform.models import TrackingResult
 from app.services.courier_platform.status import is_terminal, normalize_status
 from app.services.shipment_events import append_tracking_events
@@ -404,9 +404,7 @@ class ShiprocketService:
         latest_operational_address = corrected_address or verified_snapshot or shipping_address
         if not latest_operational_address:
             missing.append("latest operational address")
-        address_verified_for_context = bool(operations.get("address_verified")) and bool(
-            verified_snapshot and self._address_matches(latest_operational_address, verified_snapshot)
-        )
+        address_verified_for_context = has_current_verified_address(order, operations)
         address_phone = None
         for address in (corrected_address, verified_snapshot, shipping_address):
             if hasattr(address, "model_dump"):

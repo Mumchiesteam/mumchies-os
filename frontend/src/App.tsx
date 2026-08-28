@@ -1362,7 +1362,7 @@ const OrderDrawer = memo(function OrderDrawer({
 
   const shipping = order.shippingAmount == null ? 'Courier rates not connected' : formatMoney(order.shippingAmount)
   const verificationLine = addressVerificationLine
-  const hasVerifiedAddress = verificationLine.startsWith('Address Verified by')
+  const hasVerifiedAddress = order.addressVerified
   const isPrepaid = order.payment === 'Prepaid'
   const shipment = order.shipment
   const missing = bookingEligibility?.missing_requirements ?? []
@@ -1386,7 +1386,7 @@ const OrderDrawer = memo(function OrderDrawer({
   const selectedCourier = courierOptions.find(option => courierSelectionKey(option) === selectedCourierKey)
   const selectedCourierPersisted = courierSelectionMatches(persistedCourierSelection, selectedCourier)
   const codConfirmed = isPrepaid || callLog[0]?.result === 'Confirmed'
-  const verifiedAddressForContext = hasVerifiedAddress && quoteAddressesMatch(quoteAddress, order.correctedAddress ?? order.verifiedAddressSnapshot)
+  const verifiedAddressForContext = order.addressVerified && quoteAddressesMatch(quoteAddress, order.correctedAddress ?? order.verifiedAddressSnapshot)
   const quoteGate = quoteSelectionGate({ eligible: Boolean(bookingEligibility?.eligible), contextMatches: Boolean(currentQuoteContextKey && courierQuoteContextKey === currentQuoteContextKey), addressVerified: verifiedAddressForContext, paymentMode: order.payment, codConfirmed })
   const preparingBooking = addressInitializing || bookingEligibility === null || courierLoading
   const canBookShipment = bookingEligibility !== null
