@@ -111,7 +111,7 @@ describe('Orders latency regressions', () => {
 
   it('does not send a duplicate select request while a courier is pending', () => {
     const flow = source.slice(source.indexOf('const selectCourier'), source.indexOf('const bookShipment'))
-    expect(flow).toContain('courierSelectionInFlight.current')
+    expect(flow).toContain('isCurrentDrawerRequest(courierSelectionInFlight.current, selectedOrderId, drawerGenerationRef.current)')
     const card = source.slice(source.indexOf('{courierOptions.map(option =>'), source.indexOf("{selectedCourier?.provider === 'shadowfax'"))
     expect(card).toContain('disabled={!quoteGate.enabled || Boolean(selectingCourierKey)}')
   })
@@ -128,6 +128,26 @@ describe('Orders latency regressions', () => {
     expect(flow).toContain('const orderId = selectedOrder.internalId')
     expect(flow).toContain('const generation = drawerGenerationRef.current')
     expect(flow).toContain('if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return')
+    expect(flow).toContain('courierSelectionInFlight.current?.orderId === orderId')
+  })
+
+  it('rebinds every courier gate input when moving directly from A to B', () => {
+    const open = source.slice(source.indexOf('const openOrder'), source.indexOf('const statusFromOrder'))
+    for (const reset of ['setBookingEligibility(null)', 'setCourierQuoteReadiness(null)', 'setCourierQuoteContextKey(null)', 'setCourierQuoteFingerprint(null)', 'setSelectedCourierKey(null)', 'setSelectingCourierKey(null)', 'setOperations(null)', 'setAddressDraft(emptyAddressDraft())']) {
+      expect(open).toContain(reset)
+    }
+    expect(source).toContain('key={selectedOrder.internalId}')
+    const gate = source.slice(source.indexOf('const currentQuoteContextKey'), source.indexOf('const preparingBooking'))
+    expect(gate).toContain('orderId: order.internalId')
+    expect(gate).toContain('courierQuoteContextKey === currentQuoteContextKey')
+    expect(gate).toContain('courierQuoteReadiness?.eligible')
+  })
+
+  it('does not carry A disabled readiness into an eligible B quote', () => {
+    const flow = source.slice(source.indexOf('const checkCouriers'), source.indexOf('const selectCourier'))
+    expect(flow).toContain('setCourierQuoteReadiness(null)')
+    expect(flow).toContain('setCourierQuoteReadiness(result.booking_readiness)')
+    expect(flow).toContain('result.client_context_key !== quoteContext.key')
   })
 
   it('applies saved address and awaits authoritative eligibility before completing Save & Verify', () => {

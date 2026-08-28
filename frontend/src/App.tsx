@@ -289,7 +289,7 @@ function App() {
   const courierRequestOrderRef = useRef<string | null>(null)
   const courierRequestContextRef = useRef<string | null>(null)
   const courierRequestControllerRef = useRef<AbortController | null>(null)
-  const courierSelectionInFlight = useRef(false)
+  const courierSelectionInFlight = useRef<{ orderId: string; generation: number } | null>(null)
   const drawerGenerationRef = useRef(0)
   const [shipmentRefreshLoading, setShipmentRefreshLoading] = useState(false)
   const [shopifySyncLoading, setShopifySyncLoading] = useState(false)
@@ -746,10 +746,10 @@ function App() {
   }
 
   const selectCourier = async (courier: CourierQuote, expectedQuoteContextKey: string, packageNumbers: QuotePackage) => {
-    if (!selectedOrder || !courier.courier_id || courierSelectionInFlight.current || courierQuoteContextKey !== expectedQuoteContextKey || !courierQuoteReadiness?.eligible) return
-    courierSelectionInFlight.current = true
+    if (!selectedOrder || !courier.courier_id || (courierSelectionInFlight.current && isCurrentDrawerRequest(courierSelectionInFlight.current, selectedOrderId, drawerGenerationRef.current)) || courierQuoteContextKey !== expectedQuoteContextKey || !courierQuoteReadiness?.eligible) return
     const orderId = selectedOrder.internalId
     const generation = drawerGenerationRef.current
+    courierSelectionInFlight.current = { orderId, generation }
     setCourierError('')
     setSelectedCourierKey(null)
     setSelectingCourierKey(courierSelectionKey(courier))
@@ -767,7 +767,7 @@ function App() {
         setCourierError((err as Error).message)
       }
     } finally {
-      courierSelectionInFlight.current = false
+      if (courierSelectionInFlight.current?.orderId === orderId && courierSelectionInFlight.current.generation === generation) courierSelectionInFlight.current = null
     }
   }
 
