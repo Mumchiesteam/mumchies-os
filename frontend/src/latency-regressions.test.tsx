@@ -125,7 +125,7 @@ describe('Orders latency regressions', () => {
 
   it('rejects delayed select responses from a previous drawer order', () => {
     const flow = source.slice(source.indexOf('const selectCourier'), source.indexOf('const bookShipment'))
-    expect(flow).toContain('const orderId = selectedOrder.internalId')
+    expect(flow).toContain('const orderId = selectedOrder?.internalId')
     expect(flow).toContain('const generation = drawerGenerationRef.current')
     expect(flow).toContain('if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return')
     expect(flow).toContain('courierSelectionInFlight.current?.orderId === orderId')
@@ -140,13 +140,14 @@ describe('Orders latency regressions', () => {
     const gate = source.slice(source.indexOf('const currentQuoteContextKey'), source.indexOf('const preparingBooking'))
     expect(gate).toContain('orderId: order.internalId')
     expect(gate).toContain('courierQuoteContextKey === currentQuoteContextKey')
-    expect(gate).toContain('courierQuoteReadiness?.eligible')
+    expect(gate).toContain('isCurrentDrawerQuote(courierQuoteReadiness')
+    expect(gate).toContain('currentQuoteReadiness?.eligible')
   })
 
   it('does not carry A disabled readiness into an eligible B quote', () => {
     const flow = source.slice(source.indexOf('const checkCouriers'), source.indexOf('const selectCourier'))
     expect(flow).toContain('setCourierQuoteReadiness(null)')
-    expect(flow).toContain('setCourierQuoteReadiness(result.booking_readiness)')
+    expect(flow).toContain('setCourierQuoteReadiness({ orderId, generation, contextKey: quoteContext.key, readiness: result.booking_readiness })')
     expect(flow).toContain('result.client_context_key !== quoteContext.key')
   })
 

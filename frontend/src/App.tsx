@@ -60,7 +60,7 @@ import {
   type ManualExternalShipmentPayload,
 } from './services/orders'
 import { logout } from './services/auth'
-import { canUseDraft, emptyAddressDraft, isCurrentDrawerRequest } from './order-drawer-integrity'
+import { canUseDraft, emptyAddressDraft, isCurrentDrawerQuote, isCurrentDrawerRequest } from './order-drawer-integrity'
 import { useAuth } from './auth-context'
 import { UsersPage } from './components/UsersPage'
 import { NDRPage } from './components/NDRPage'
@@ -111,6 +111,12 @@ type BookingReadiness = {
   shipment_exists: boolean
   shipment_status: string | null
   shipment: Order['shipment']
+}
+type CourierQuoteReadiness = {
+  orderId: string
+  generation: number
+  contextKey: string
+  readiness: BookingReadiness
 }
 
 const navItems = ['Dashboard', 'Orders', 'Analytics', 'NDR', 'Reconciliation', 'Reports', 'Settings'] as const
@@ -273,7 +279,7 @@ function App() {
   const [cancellationLoading, setCancellationLoading] = useState(false)
   const [cancellationResult, setCancellationResult] = useState<Record<string, { status: string; error?: string }> | null>(null)
   const [bookingEligibility, setBookingEligibility] = useState<BookingReadiness | null>(null)
-  const [courierQuoteReadiness, setCourierQuoteReadiness] = useState<BookingReadiness | null>(null)
+  const [courierQuoteReadiness, setCourierQuoteReadiness] = useState<CourierQuoteReadiness | null>(null)
   const [courierOptions, setCourierOptions] = useState<CourierQuote[]>([])
   const [courierLoading, setCourierLoading] = useState(false)
   const [courierError, setCourierError] = useState('')
@@ -719,7 +725,7 @@ function App() {
       // Package provenance is persisted only if the operator explicitly selects
       // one of these matching quotes.
       setBookingEligibility(result.booking_readiness)
-      setCourierQuoteReadiness(result.booking_readiness)
+      setCourierQuoteReadiness({ orderId, generation, contextKey: quoteContext.key, readiness: result.booking_readiness })
       const sorted = [...(result.couriers ?? [])].sort((a, b) => a.total_estimated_shipping_cost - b.total_estimated_shipping_cost)
       setCourierOptions(sorted)
       setCourierQuoteContextKey(result.client_context_key)
@@ -746,9 +752,10 @@ function App() {
   }
 
   const selectCourier = async (courier: CourierQuote, expectedQuoteContextKey: string, packageNumbers: QuotePackage) => {
-    if (!selectedOrder || !courier.courier_id || (courierSelectionInFlight.current && isCurrentDrawerRequest(courierSelectionInFlight.current, selectedOrderId, drawerGenerationRef.current)) || courierQuoteContextKey !== expectedQuoteContextKey || !courierQuoteReadiness?.eligible) return
-    const orderId = selectedOrder.internalId
+    const orderId = selectedOrder?.internalId
     const generation = drawerGenerationRef.current
+    const currentQuoteReadiness = courierQuoteReadiness && isCurrentDrawerQuote(courierQuoteReadiness, orderId ? { orderId, generation, contextKey: expectedQuoteContextKey } : null) ? courierQuoteReadiness.readiness : null
+    if (!selectedOrder || !orderId || !courier.courier_id || (courierSelectionInFlight.current && isCurrentDrawerRequest(courierSelectionInFlight.current, selectedOrderId, drawerGenerationRef.current)) || courierQuoteContextKey !== expectedQuoteContextKey || !currentQuoteReadiness?.eligible) return
     courierSelectionInFlight.current = { orderId, generation }
     setCourierError('')
     setSelectedCourierKey(null)
@@ -1325,7 +1332,7 @@ const OrderDrawer = memo(function OrderDrawer({
   onSaveAddress: () => Promise<{ operations: OrderOperations; validation: { status: string; blockers: string[]; warnings: string[]; shiprocket_message: string }; verified: boolean } | undefined>
   onSaveAddressConfirmation: () => void
   bookingEligibility: BookingReadiness | null
-  courierQuoteReadiness: BookingReadiness | null
+  courierQuoteReadiness: CourierQuoteReadiness | null
   courierOptions: CourierQuote[]
   courierLoading: boolean
   bookingLoading: boolean
@@ -1411,7 +1418,8 @@ const OrderDrawer = memo(function OrderDrawer({
   const selectedCourierPersisted = courierSelectionMatches(persistedCourierSelection, selectedCourier)
   const codConfirmed = isPrepaid || callLog[0]?.result === 'Confirmed'
   const verifiedAddressForContext = order.addressVerified && quoteAddressesMatch(quoteAddress, order.correctedAddress ?? order.verifiedAddressSnapshot)
-  const quoteGate = quoteSelectionGate({ eligible: Boolean(courierQuoteReadiness?.eligible), contextMatches: Boolean(currentQuoteContextKey && courierQuoteContextKey === currentQuoteContextKey), addressVerified: verifiedAddressForContext, paymentMode: order.payment, codConfirmed })
+  const currentQuoteReadiness = courierQuoteReadiness && isCurrentDrawerQuote(courierQuoteReadiness, drawerGeneration === null || !currentQuoteContextKey ? null : { orderId: order.internalId, generation: drawerGeneration, contextKey: currentQuoteContextKey }) ? courierQuoteReadiness.readiness : null
+  const quoteGate = quoteSelectionGate({ eligible: Boolean(currentQuoteReadiness?.eligible), contextMatches: Boolean(currentQuoteReadiness && courierQuoteContextKey === currentQuoteContextKey), addressVerified: verifiedAddressForContext, paymentMode: order.payment, codConfirmed })
   const preparingBooking = addressInitializing || bookingEligibility === null || courierLoading
   const canBookShipment = bookingEligibility !== null
     && nonPackageMissing.length === 0
