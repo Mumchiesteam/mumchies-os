@@ -34,22 +34,20 @@ describe('Orders latency regressions', () => {
     expect(flow).not.toContain('refreshEligibility(orderId)')
   })
 
-  it('clears stale frontend selection whenever lookup clears backend persistence', () => {
+  it('keeps persisted selection during a same-context read-only refresh and clears it only for changed context', () => {
     const flow = source.slice(source.indexOf('const checkCouriers'), source.indexOf('const selectCourier'))
-    expect(flow).toContain('setSelectedCourierKey(null)')
-    expect(flow).toContain('selected_courier: null')
-    expect(flow).not.toContain('!sorted.some')
+    expect(flow).toContain('const contextChanged = previous.contextKey !== null && previous.contextKey !== quoteContext.key')
+    expect(flow).toContain('selectedKey: contextChanged ? null : previous.selectedKey')
+    expect(flow).not.toContain('selected_courier: null')
   })
 
-  it('keeps one lookup in flight, clears loading, and rejects stale drawer responses', () => {
+  it('binds each lookup response to one courier session and settles a timed-out refresh', () => {
     const flow = source.slice(source.indexOf('const checkCouriers'), source.indexOf('const selectCourier'))
-    expect(flow).toContain('courierRequestContextRef.current === quoteContext.key')
-    expect(flow).toContain('courierRequestControllerRef.current?.abort()')
-    expect(flow).toContain('controller.signal.aborted || generation !== drawerGenerationRef.current')
+    expect(flow).toContain("courierRequestRef.current?.controller.abort()")
+    expect(flow).toContain('isCurrentCourierSession(current, { orderId, generation, contextKey: quoteContext.key, requestId })')
     expect(flow).toContain('result.client_context_key !== quoteContext.key')
-    expect(flow).toContain('courierRequestOrderRef.current = null')
-    expect(flow).toContain('courierRequestControllerRef.current = null')
-    expect(flow).toContain('setCourierLoading(false)')
+    expect(flow).toContain('const timeout = window.setTimeout')
+    expect(flow).toContain("phase: active.rates.length > 0 ? 'ready' : 'error'")
     expect(flow).toContain("result.lookup_status === 'manual_only'")
     expect(flow).toContain("message === 'Failed to fetch'")
     expect(flow).toContain('Courier lookup request failed before reaching the server.')
@@ -71,8 +69,7 @@ describe('Orders latency regressions', () => {
   })
 
   it('keeps courier selection identity composite in drawer state and rendering', () => {
-    expect(source).toContain('const [selectedCourierKey, setSelectedCourierKey]')
-    expect(source).toContain('setSelectedCourierKey(courierSelectionKey(result.selected_courier))')
+    expect(source).toContain('selectedKey: courierSelectionKey(result.selected_courier)')
     expect(source).toContain('const selectedCourier = courierOptions.find(option => courierSelectionKey(option) === selectedCourierKey)')
     expect(source).toContain('const optionSelectionKey = courierSelectionKey(option)')
     expect(source).toContain('key={optionSelectionKey')
@@ -93,10 +90,9 @@ describe('Orders latency regressions', () => {
 
   it('shows pending selection feedback without treating it as a persisted courier', () => {
     const flow = source.slice(source.indexOf('const selectCourier'), source.indexOf('const bookShipment'))
-    expect(flow).toContain('setSelectingCourierKey(courierSelectionKey(courier))')
-    expect(flow).toContain('setSelectedCourierKey(courierSelectionKey(result.selected_courier))')
-    expect(flow).toContain('setSelectingCourierKey(null)')
-    expect(flow).toContain('if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return')
+    expect(flow).toContain('selectingKey: courierSelectionKey(courier)')
+    expect(flow).toContain('selectedKey: courierSelectionKey(result.selected_courier), selectingKey: null')
+    expect(flow).toContain('isCurrentCourierSession(current, courierSelectionInFlight.current)')
     const card = source.slice(source.indexOf('{courierOptions.map(option =>'), source.indexOf("{selectedCourier?.provider === 'shadowfax'"))
     expect(card).toContain('Selecting</span>')
     expect(card).toContain('Boolean(selectingCourierKey)')
@@ -111,7 +107,7 @@ describe('Orders latency regressions', () => {
 
   it('does not send a duplicate select request while a courier is pending', () => {
     const flow = source.slice(source.indexOf('const selectCourier'), source.indexOf('const bookShipment'))
-    expect(flow).toContain('isCurrentDrawerRequest(courierSelectionInFlight.current, selectedOrderId, drawerGenerationRef.current)')
+    expect(flow).toContain('courierSelectionInFlight.current !== null')
     const card = source.slice(source.indexOf('{courierOptions.map(option =>'), source.indexOf("{selectedCourier?.provider === 'shadowfax'"))
     expect(card).toContain('disabled={!quoteGate.enabled || Boolean(selectingCourierKey)}')
   })
@@ -119,36 +115,48 @@ describe('Orders latency regressions', () => {
   it('restores the unselected UI after a failed courier selection', () => {
     const flow = source.slice(source.indexOf('const selectCourier'), source.indexOf('const bookShipment'))
     expect(flow).toContain('} catch (err) {')
-    expect(flow).toContain('setSelectingCourierKey(null)')
-    expect(flow).toContain('setCourierError((err as Error).message)')
+    expect(flow).toContain('selectingKey: null, error: (err as Error).message')
   })
 
   it('rejects delayed select responses from a previous drawer order', () => {
     const flow = source.slice(source.indexOf('const selectCourier'), source.indexOf('const bookShipment'))
     expect(flow).toContain('const orderId = selectedOrder?.internalId')
     expect(flow).toContain('const generation = drawerGenerationRef.current')
-    expect(flow).toContain('if (generation !== drawerGenerationRef.current || selectedOrderId !== orderId) return')
-    expect(flow).toContain('courierSelectionInFlight.current?.orderId === orderId')
+    expect(flow).toContain('isCurrentCourierSession(current, courierSelectionInFlight.current)')
+    expect(flow).toContain('courierSelectionInFlight.current.orderId === orderId')
   })
 
   it('rebinds every courier gate input when moving directly from A to B', () => {
     const open = source.slice(source.indexOf('const openOrder'), source.indexOf('const statusFromOrder'))
-    for (const reset of ['setBookingEligibility(null)', 'setCourierQuoteReadiness(null)', 'setCourierQuoteContextKey(null)', 'setCourierQuoteFingerprint(null)', 'setSelectedCourierKey(null)', 'setSelectingCourierKey(null)', 'setOperations(null)', 'setAddressDraft(emptyAddressDraft())']) {
+    for (const reset of ['courierRequestRef.current?.controller.abort()', 'courierSelectionInFlight.current = null', 'setCourierSession(newCourierSession(orderId, drawerGenerationRef.current))', 'setBookingEligibility(null)', 'setOperations(null)', 'setAddressDraft(emptyAddressDraft())']) {
       expect(open).toContain(reset)
     }
     expect(source).toContain('key={selectedOrder.internalId}')
     const gate = source.slice(source.indexOf('const currentQuoteContextKey'), source.indexOf('const preparingBooking'))
     expect(gate).toContain('orderId: order.internalId')
-    expect(gate).toContain('courierQuoteContextKey === currentQuoteContextKey')
-    expect(gate).toContain('isCurrentDrawerQuote(courierQuoteReadiness')
-    expect(gate).toContain('currentQuoteReadiness?.eligible')
+    expect(gate).toContain('isCurrentCourierSession(courierSession')
+    expect(gate).toContain('activeQuoteSession.bookingReadiness.eligible')
   })
 
   it('does not carry A disabled readiness into an eligible B quote', () => {
     const flow = source.slice(source.indexOf('const checkCouriers'), source.indexOf('const selectCourier'))
-    expect(flow).toContain('setCourierQuoteReadiness(null)')
-    expect(flow).toContain('setCourierQuoteReadiness({ orderId, generation, contextKey: quoteContext.key, readiness: result.booking_readiness })')
+    expect(flow).toContain('setCourierSession(next)')
+    expect(flow).toContain('bookingReadiness: result.booking_readiness')
     expect(flow).toContain('result.client_context_key !== quoteContext.key')
+  })
+
+  it('keeps same-context rates usable during refresh and returns to ready after refresh failure', () => {
+    const flow = source.slice(source.indexOf('const checkCouriers'), source.indexOf('const selectCourier'))
+    expect(flow).toContain("phase: retainPriorRates ? 'refreshing' : 'loading'")
+    expect(flow).toContain("phase: active.rates.length > 0 ? 'ready' : 'error'")
+    const gate = source.slice(source.indexOf('const quoteGate'), source.indexOf('const preparingBooking'))
+    expect(gate).toContain("activeQuoteSession?.phase === 'refreshing'")
+  })
+
+  it('does not auto-loop a failed or timed-out quote request', () => {
+    const effect = source.slice(source.indexOf('if (!canCheckCouriers'), source.indexOf("console.info('courier_prefetch_started'"))
+    expect(effect).toContain("courierSession.phase === 'error'")
+    expect(source).toContain("Courier lookup timed out. Existing courier options are still available.")
   })
 
   it('applies saved address and awaits authoritative eligibility before completing Save & Verify', () => {
