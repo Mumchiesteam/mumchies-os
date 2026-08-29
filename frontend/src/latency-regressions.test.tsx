@@ -41,12 +41,15 @@ describe('Orders latency regressions', () => {
     expect(flow).not.toContain('selected_courier: null')
   })
 
-  it('binds each lookup response to one courier session and settles a timed-out refresh', () => {
+  it('binds each lookup response to one courier session and settles the timeout without waiting for fetch rejection', () => {
     const flow = source.slice(source.indexOf('const checkCouriers'), source.indexOf('const selectCourier'))
     expect(flow).toContain("courierRequestRef.current?.controller.abort()")
     expect(flow).toContain('isCurrentCourierSession(current, { orderId, generation, contextKey: quoteContext.key, requestId })')
     expect(flow).toContain('result.client_context_key !== quoteContext.key')
     expect(flow).toContain('const timeout = window.setTimeout')
+    expect(flow).toContain('requestId: requestId + 1')
+    expect(flow).toContain("phase: hasValidRates ? 'ready' : 'error'")
+    expect(flow).toContain('Courier options refresh timed out. Displayed rates are still available.')
     expect(flow).toContain("phase: active.rates.length > 0 ? 'ready' : 'error'")
     expect(flow).toContain("result.lookup_status === 'manual_only'")
     expect(flow).toContain("message === 'Failed to fetch'")
@@ -145,18 +148,21 @@ describe('Orders latency regressions', () => {
     expect(flow).toContain('result.client_context_key !== quoteContext.key')
   })
 
-  it('keeps same-context rates usable during refresh and returns to ready after refresh failure', () => {
+  it('keeps same-context rates selectable during refresh and returns to ready after refresh failure', () => {
     const flow = source.slice(source.indexOf('const checkCouriers'), source.indexOf('const selectCourier'))
     expect(flow).toContain("phase: retainPriorRates ? 'refreshing' : 'loading'")
     expect(flow).toContain("phase: active.rates.length > 0 ? 'ready' : 'error'")
     const gate = source.slice(source.indexOf('const quoteGate'), source.indexOf('const preparingBooking'))
     expect(gate).toContain("activeQuoteSession?.phase === 'refreshing'")
+    const selection = source.slice(source.indexOf('const selectCourier'), source.indexOf('const bookShipment'))
+    expect(selection).toContain("session.phase !== 'ready' && session.phase !== 'refreshing'")
   })
 
-  it('does not auto-loop a failed or timed-out quote request', () => {
+  it('does not auto-loop a failed, timed-out, or already-refreshing quote request', () => {
     const effect = source.slice(source.indexOf('if (!canCheckCouriers'), source.indexOf("console.info('courier_prefetch_started'"))
     expect(effect).toContain("courierSession.phase === 'error'")
-    expect(source).toContain("Courier lookup timed out. Existing courier options are still available.")
+    expect(effect).toContain("courierSession.phase === 'refreshing'")
+    expect(source).toContain('previous.contextKey === quoteContext.key && (previous.phase === \'loading\' || previous.phase === \'refreshing\')')
   })
 
   it('applies saved address and awaits authoritative eligibility before completing Save & Verify', () => {

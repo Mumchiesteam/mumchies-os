@@ -715,7 +715,24 @@ function App() {
     setCourierSession(next)
     const lookupStarted = performance.now()
     let timedOut = false
-    const timeout = window.setTimeout(() => { timedOut = true; controller.abort() }, 30000)
+    const timeout = window.setTimeout(() => {
+      timedOut = true
+      const current = courierSessionRef.current
+      if (isCurrentCourierSession(current, { orderId, generation, contextKey: quoteContext.key, requestId })) {
+        const active = current as CourierSession
+        const hasValidRates = active.rates.length > 0 && active.bookingReadiness !== null
+        setCourierSession({
+          ...active,
+          // Invalidate the hung owner before aborting so a late response cannot revive it.
+          requestId: requestId + 1,
+          phase: hasValidRates ? 'ready' : 'error',
+          error: hasValidRates ? '' : 'Courier lookup timed out. Retry courier lookup.',
+          warnings: hasValidRates ? [...active.warnings, 'Courier options refresh timed out. Displayed rates are still available.'] : active.warnings,
+        })
+      }
+      if (courierRequestRef.current?.requestId === requestId) courierRequestRef.current = null
+      controller.abort()
+    }, 30000)
     try {
       const result = await checkShiprocketCouriers(orderId, {
         ...packageNumbers,

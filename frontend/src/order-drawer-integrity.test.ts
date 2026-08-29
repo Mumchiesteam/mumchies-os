@@ -41,4 +41,10 @@ describe('cross-order drawer integrity', () => {
     expect(isCurrentCourierSession({ ...active, requestId: 2 }, active)).toBe(false)
     expect(isCurrentCourierSession({ ...active }, active)).toBe(true)
   })
+  it('rejects a hung refresh response after its timeout settles the same-context session', () => {
+    const timedOutSession = { orderId: 'B', generation: 2, contextKey: 'B-2', requestId: 8 }
+    const hungRefreshOwner = { ...timedOutSession, requestId: 7 }
+    expect(isCurrentCourierSession(hungRefreshOwner, timedOutSession)).toBe(false)
+    expect(isCurrentCourierSession({ ...timedOutSession }, timedOutSession)).toBe(true)
+  })
 })
