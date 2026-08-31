@@ -690,6 +690,24 @@ export async function testShadowfaxDirect324663(): Promise<{ booking: { provider
 }
 
 export type ShadowfaxDirectTestState = Record<string, unknown>
+export type ShadowfaxHealthCheck = {
+  overall: 'PASS' | 'FAIL'
+  configuration: { status: string; message: string }
+  authentication: { status: string; message: string }
+  serviceability: { status: string; message: string }
+  client_mapping: { status: string; message: string }
+  create_order_api: { status: string; message: string }
+  shadowfax_status_code: number | null
+  message: string
+}
+
+export async function getShadowfaxHealthCheck(): Promise<ShadowfaxHealthCheck> {
+  const response = await apiFetch(`${apiBase}/api/v1/shadowfax/health-check`)
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(readableApiError(body, 'Could not test the Shadowfax API.'))
+  return body
+}
+
 export type ShadowfaxShipmentRowDiagnostic = {
   order_number: '324663'
   shopify_order_id: string

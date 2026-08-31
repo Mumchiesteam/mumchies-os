@@ -8,7 +8,9 @@ import {
   testShadowfaxDirect324663,
   getShadowfaxDirect324663Status,
   getShadowfaxShipmentRow324663,
+  getShadowfaxHealthCheck,
   type ShadowfaxDirectTestState,
+  type ShadowfaxHealthCheck,
   type ShadowfaxShipmentRowDiagnostic,
   addAddressConfirmationComment,
   cancelOrder,
@@ -290,6 +292,8 @@ function App() {
   const [courierSession, setCourierSessionState] = useState<CourierSession | null>(null)
   const [bookingLoading, setBookingLoading] = useState(false)
   const [shadowfaxTestState, setShadowfaxTestState] = useState<ShadowfaxDirectTestState | null>(null)
+  const [shadowfaxHealthCheck, setShadowfaxHealthCheck] = useState<ShadowfaxHealthCheck | null>(null)
+  const [shadowfaxHealthChecking, setShadowfaxHealthChecking] = useState(false)
   const [shadowfaxShipmentRow, setShadowfaxShipmentRow] = useState<ShadowfaxShipmentRowDiagnostic | null>(null)
   const bookingRequestInFlight = useRef(false)
   const courierSessionRef = useRef<CourierSession | null>(null)
@@ -883,6 +887,23 @@ function App() {
     }
   }
 
+  const testShadowfaxApi = async () => {
+    setShadowfaxHealthChecking(true)
+    setShadowfaxHealthCheck(null)
+    try {
+      setShadowfaxHealthCheck(await getShadowfaxHealthCheck())
+    } catch (error) {
+      setShadowfaxHealthCheck({
+        overall: 'FAIL', configuration: { status: 'unknown', message: 'Diagnostic request failed.' },
+        authentication: { status: 'unknown', message: 'Not tested.' }, serviceability: { status: 'unknown', message: 'Not tested.' },
+        client_mapping: { status: 'not_verifiable', message: 'Not tested.' }, create_order_api: { status: 'not_safely_testable_without_mutation', message: 'Not tested.' },
+        shadowfax_status_code: null, message: (error as Error).message,
+      })
+    } finally {
+      setShadowfaxHealthChecking(false)
+    }
+  }
+
   const refreshShipment = async () => {
     if (!selectedOrder) return
     setShipmentRefreshLoading(true)
@@ -1153,6 +1174,10 @@ function App() {
           onSaveManualShadowfax={saveManualShadowfax}
           onSaveManualExternal={saveManualExternal}
           showShadowfaxDirectTest={selectedOrder.orderNumber === '324663' && ['owner', 'admin'].includes(authUser?.role || '')}
+          showShadowfaxApiTest={['owner', 'admin'].includes(authUser?.role || '')}
+          shadowfaxHealthCheck={shadowfaxHealthCheck}
+          shadowfaxHealthChecking={shadowfaxHealthChecking}
+          onTestShadowfaxApi={() => void testShadowfaxApi()}
           onTestShadowfaxDirect={() => void testShadowfaxDirect()}
           shadowfaxTestState={shadowfaxTestState}
           shadowfaxShipmentRow={shadowfaxShipmentRow}
@@ -1279,6 +1304,10 @@ const OrderDrawer = memo(function OrderDrawer({
   onSaveManualShadowfax,
   onSaveManualExternal,
   showShadowfaxDirectTest,
+  showShadowfaxApiTest,
+  shadowfaxHealthCheck,
+  shadowfaxHealthChecking,
+  onTestShadowfaxApi,
   onTestShadowfaxDirect,
   shadowfaxTestState,
   shadowfaxShipmentRow,
@@ -1348,6 +1377,10 @@ const OrderDrawer = memo(function OrderDrawer({
   onSaveManualShadowfax: (payload: { awb?: string; service_name?: string; booked_at?: string; freight?: number; note?: string }) => Promise<void>
   onSaveManualExternal: (payload: ManualExternalShipmentPayload) => Promise<void>
   showShadowfaxDirectTest: boolean
+  showShadowfaxApiTest: boolean
+  shadowfaxHealthCheck: ShadowfaxHealthCheck | null
+  shadowfaxHealthChecking: boolean
+  onTestShadowfaxApi: () => void
   onTestShadowfaxDirect: () => void
   shadowfaxTestState: ShadowfaxDirectTestState | null
   shadowfaxShipmentRow: ShadowfaxShipmentRowDiagnostic | null
@@ -1683,6 +1716,17 @@ const OrderDrawer = memo(function OrderDrawer({
               )}
               {selectedCourier?.provider === 'shadowfax' && <p className="rounded-lg bg-amber-50 px-3 py-2 font-semibold text-amber-800">Ship this order in Shadowfax 360, then reconcile it here.</p>}
               {shadowfaxWorkflowStatus && selectedCourier?.provider === 'shadowfax' && <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700" role="status">{shadowfaxWorkflowStatus}</p>}
+              {showShadowfaxApiTest && <div className="space-y-2 border-t border-slate-100 pt-3">
+                <button type="button" disabled={shadowfaxHealthChecking} onClick={onTestShadowfaxApi} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:opacity-50">{shadowfaxHealthChecking ? 'Testing...' : 'Test Shadowfax API'}</button>
+                {shadowfaxHealthCheck && <div className={`rounded-lg border px-3 py-2 text-xs ${shadowfaxHealthCheck.overall === 'PASS' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-rose-200 bg-rose-50 text-rose-900'}`} role="status">
+                  <p className="font-semibold">Overall: {shadowfaxHealthCheck.overall}</p>
+                  <p>Auth: {shadowfaxHealthCheck.authentication.status} - {shadowfaxHealthCheck.authentication.message}</p>
+                  <p>Serviceability: {shadowfaxHealthCheck.serviceability.status} - {shadowfaxHealthCheck.serviceability.message}</p>
+                  <p>Client Mapping: {shadowfaxHealthCheck.client_mapping.status} - {shadowfaxHealthCheck.client_mapping.message}</p>
+                  <p>Create Order API: {shadowfaxHealthCheck.create_order_api.status} - {shadowfaxHealthCheck.create_order_api.message}</p>
+                  <p>Status: {shadowfaxHealthCheck.shadowfax_status_code ?? 'not returned'} - {shadowfaxHealthCheck.message}</p>
+                </div>}
+              </div>}
               {showShadowfaxDirectTest && <div className="flex flex-wrap gap-2"><button type="button" disabled={bookingLoading || shadowfaxTestState?.eligible_for_test !== true || Boolean(shadowfaxTestState?.create_request_started_at)} onClick={onTestShadowfaxDirect} className="rounded-lg border border-violet-300 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:opacity-50">Test Shadowfax Direct</button></div>}
               {showShadowfaxDirectTest && shadowfaxTestState && <details open className="rounded-lg border border-violet-200 bg-violet-50/40 p-3 text-xs text-slate-700">
                 <summary className="cursor-pointer font-semibold text-violet-900">Shadowfax direct test status</summary>
