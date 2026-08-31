@@ -40,6 +40,7 @@ class ShadowfaxHTTPTransport:
         base_url: str,
         client: httpx.AsyncClient | None = None,
         timeout_seconds: float = 20.0,
+        request_observer: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         parsed = urlsplit(base_url.rstrip("/"))
         if parsed.scheme != "https" or not parsed.hostname:
@@ -62,12 +63,21 @@ class ShadowfaxHTTPTransport:
         self._headers = {"Authorization": f"Token {token.strip()}", "Content-Type": "application/json"}
         self._client = client
         self._timeout = httpx.Timeout(timeout_seconds, connect=min(timeout_seconds, 10.0))
+        self._request_observer = request_observer
 
     async def _request(self, method: str, path: str, *, params: dict[str, Any] | None = None,
                        json: dict[str, Any] | None = None) -> httpx.Response:
         owns_client = self._client is None
         client = self._client or httpx.AsyncClient(timeout=self._timeout, follow_redirects=False)
+        request_url = str(httpx.URL(f"{self._base_url}{path}", params=params))
         try:
+            if self._request_observer is not None:
+                self._request_observer({
+                    "event": "request",
+                    "method": method.upper(),
+                    "url": request_url,
+                    "authorization_attached": "Authorization" in self._headers,
+                })
             observer = _outbound_observer.get()
             if observer is not None and method.upper() == "POST" and path == self.CREATE_ORDER_PATH:
                 authorization = str(self._headers.get("Authorization") or "")
@@ -84,6 +94,21 @@ class ShadowfaxHTTPTransport:
                 method, f"{self._base_url}{path}", headers=self._headers, params=params, json=json,
                 timeout=self._timeout,
             )
+            if self._request_observer is not None:
+                self._request_observer({
+                    "event": "response",
+                    "method": method.upper(),
+                    "url": str(response.request.url),
+                    "status": response.status_code,
+                    "content_type": response.headers.get("content-type"),
+                    "body": response.text,
+                    "location": response.headers.get("location"),
+                    "headers": {
+                        name: response.headers[name]
+                        for name in ("server", "via", "cf-ray", "x-request-id", "x-cache")
+                        if name in response.headers
+                    },
+                })
         except httpx.TimeoutException as error:
             raise ProviderError(
                 "Shadowfax request timed out. No automatic retry was attempted.",
