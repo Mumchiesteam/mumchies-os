@@ -182,10 +182,10 @@ async def main() -> None:
     from app.core.config import settings
     from app.services.courier_platform.shadowfax_http import ShadowfaxHTTPTransport
     from app.api.routes.couriers import PackageDetailsPayload, _assert_booking_payload, _booking_context
-    token = str(settings.shadowfax_token or "").strip()
+    token = str(settings.shadowfax_effective_token or "").strip()
     base_url = str(settings.shadowfax_base_url or "").rstrip("/")
     if not token or not base_url:
-        raise RuntimeError("SHADOWFAX_TOKEN and SHADOWFAX_BASE_URL must be configured.")
+        raise RuntimeError("SHADOWFAX_API_TOKEN (or legacy SHADOWFAX_TOKEN) and SHADOWFAX_BASE_URL must be configured.")
     _progress("Configuration loaded.")
 
     _progress(f"Loading order {ORDER_NUMBER}...")

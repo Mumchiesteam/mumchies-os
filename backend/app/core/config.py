@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     shiprocket_pickup: str | None = None
     delhivery_token: str | None = None
     delhivery_pickup: str | None = None
+    shadowfax_api_token: str | None = None
     shadowfax_token: str | None = None
     shadowfax_email: str | None = None
     shadowfax_password_secret: str | None = None
@@ -61,9 +62,10 @@ class Settings(BaseSettings):
         return {
             "shiprocket": {"configured": bool(self.shiprocket_email and self.shiprocket_password)},
             "shadowfax": {
-                "configured": bool((self.shadowfax_email and self.shadowfax_password_secret) or self.shadowfax_token),
+                "configured": bool((self.shadowfax_email and self.shadowfax_password_secret) or self.shadowfax_effective_token),
                 "login_configured": bool(self.shadowfax_email and self.shadowfax_password_secret),
                 "token_fallback_configured": bool(self.shadowfax_token),
+                "api_token_configured": bool(self.shadowfax_api_token),
             },
             "delhivery": {"configured": bool(self.delhivery_token)},
             "shopify": {
@@ -73,6 +75,11 @@ class Settings(BaseSettings):
             },
             "gdrive": {"configured": bool(self.gdrive_folder_id and self.gdrive_service_account_json)},
         }
+
+    @property
+    def shadowfax_effective_token(self) -> str | None:
+        """Use the explicit production variable, with a temporary legacy fallback."""
+        return self.shadowfax_api_token or self.shadowfax_token
 
     @field_validator("database_url", mode="before")
     @classmethod

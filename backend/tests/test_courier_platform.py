@@ -220,8 +220,11 @@ async def test_shadowfax_create_captures_final_sanitized_outbound_request():
 def test_shadowfax_http_transport_accepts_configured_https_base_url_and_rejects_http():
     transport = ShadowfaxHTTPTransport(token="secret", base_url="https://shadowfax.example/api")
     assert transport._base_url == "https://shadowfax.example/api"
+    assert transport.LABEL_PATH == "/client/generate_label/"
     with pytest.raises(ProviderConfigurationError, match="valid HTTPS URL"):
         ShadowfaxHTTPTransport(token="secret", base_url="http://shadowfax.example/api")
+    with pytest.raises(ProviderConfigurationError, match="API root"):
+        ShadowfaxHTTPTransport(token="secret", base_url="https://dale.shadowfax.in/api/v3/clients/orders/")
 
 
 @pytest.mark.anyio

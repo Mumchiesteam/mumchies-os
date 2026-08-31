@@ -157,7 +157,7 @@ class ShadowfaxAdapter(CourierAdapter):
     capabilities = ProviderCapabilities(serviceability=True, booking=True, tracking=True, cancellation=True, labels=True, ndr=True, webhooks=False, polling=True)
 
     def __init__(self, *, token: str | None = None, base_url: str | None = None, transport: ShadowfaxTransport | None = None) -> None:
-        self._token = token if token is not None else settings.shadowfax_token
+        self._token = token if token is not None else settings.shadowfax_effective_token
         self._base_url = (base_url if base_url is not None else settings.shadowfax_base_url or "").rstrip("/")
         if transport is None and self._token and self._base_url:
             from app.services.courier_platform.shadowfax_http import ShadowfaxHTTPTransport
@@ -172,7 +172,7 @@ class ShadowfaxAdapter(CourierAdapter):
 
     def configuration_errors(self) -> list[str]:
         errors = []
-        if not self._token: errors.append("SHADOWFAX_TOKEN is not configured.")
+        if not self._token: errors.append("SHADOWFAX_API_TOKEN is not configured (SHADOWFAX_TOKEN remains a legacy fallback).")
         if not self._base_url: errors.append("SHADOWFAX_BASE_URL is not configured.")
         if self._transport is None: errors.append("Shadowfax Direct transport is not configured.")
         return errors

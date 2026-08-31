@@ -29,6 +29,10 @@ class ShadowfaxHTTPTransport:
     The deployment-selected API base URL is accepted only over HTTPS.
     """
 
+    SERVICEABILITY_PATH = "/v1/clients/serviceability/"
+    CREATE_ORDER_PATH = "/v3/clients/orders/"
+    LABEL_PATH = "/client/generate_label/"
+
     def __init__(
         self,
         *,
@@ -41,6 +45,12 @@ class ShadowfaxHTTPTransport:
         if parsed.scheme != "https" or not parsed.hostname:
             raise ProviderConfigurationError(
                 "SHADOWFAX_BASE_URL must be a valid HTTPS URL.",
+                provider="shadowfax",
+                operation="configuration",
+            )
+        if "/clients/orders" in parsed.path.rstrip("/"):
+            raise ProviderConfigurationError(
+                "SHADOWFAX_BASE_URL must be the API root (for example https://dale.shadowfax.in/api), not the create-order endpoint.",
                 provider="shadowfax",
                 operation="configuration",
             )
@@ -59,7 +69,7 @@ class ShadowfaxHTTPTransport:
         client = self._client or httpx.AsyncClient(timeout=self._timeout, follow_redirects=False)
         try:
             observer = _outbound_observer.get()
-            if observer is not None and method.upper() == "POST" and path == "/v3/clients/orders/":
+            if observer is not None and method.upper() == "POST" and path == self.CREATE_ORDER_PATH:
                 authorization = str(self._headers.get("Authorization") or "")
                 observer({
                     "method": method.upper(),
@@ -107,7 +117,7 @@ class ShadowfaxHTTPTransport:
 
     async def authenticate(self) -> bool:
         response = await self._request(
-            "GET", "/v1/clients/serviceability/",
+            "GET", self.SERVICEABILITY_PATH,
             params={"service": "customer_delivery", "page": 1, "count": 1, "pincodes": "560077"},
         )
         payload = self._json(response, "authenticate")
@@ -118,7 +128,7 @@ class ShadowfaxHTTPTransport:
         if not (pincode.isdigit() and len(pincode) == 6):
             raise ProviderError("A valid six-digit delivery pincode is required.", provider="shadowfax", operation="serviceability")
         response = await self._request(
-            "GET", "/v1/clients/serviceability/",
+            "GET", self.SERVICEABILITY_PATH,
             params={"service": "customer_delivery", "page": 1, "count": 1, "pincodes": pincode},
         )
         payload = self._json(response, "serviceability")
@@ -153,7 +163,7 @@ class ShadowfaxHTTPTransport:
 
     async def create_booking(self, request: dict[str, Any]) -> dict[str, Any]:
         self._validate_booking_payload(request)
-        response = await self._request("POST", "/v3/clients/orders/", json=request)
+        response = await self._request("POST", self.CREATE_ORDER_PATH, json=request)
         payload = self._json(response, "booking")
         if not isinstance(payload, dict):
             raise ProviderError("Shadowfax returned an invalid booking response.", provider="shadowfax", operation="booking", uncertain=True)
@@ -191,6 +201,19 @@ class ShadowfaxHTTPTransport:
             "The official Shadowfax specification does not document lookup by client_order_id. Reconcile using a known AWB.",
             provider="shadowfax", operation="reconciliation",
         )
+
+    async def generate_label(self, awb_number: str) -> tuple[bytes, str]:
+        """Documented POST label API, intentionally unused until a separately approved label flow calls it."""
+        awb = awb_number.strip()
+        if not awb:
+            raise ProviderError("Shadowfax label generation requires an AWB.", provider="shadowfax", operation="label")
+        response = await self._request(
+            "POST", self.LABEL_PATH,
+            json={"awb_number": awb, "file_type": "pdf", "include_sku_details": False},
+        )
+        if response.status_code >= 400:
+            self._json(response, "label")
+        return response.content, response.headers.get("content-type", "application/pdf")
 
     async def track_shipment(self, shipment: dict[str, Any]) -> dict[str, Any]:
         awb = str(shipment.get("awb") or "").strip()

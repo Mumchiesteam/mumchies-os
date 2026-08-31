@@ -25,7 +25,8 @@ Set these secret or environment-specific values in the Render Blueprint form:
   `SHOPIFY_API_VERSION`.
 - Courier integrations in use: `SHIPROCKET_EMAIL`, `SHIPROCKET_PASSWORD`,
   `SHIPROCKET_PICKUP`, `DELHIVERY_TOKEN`, `DELHIVERY_PICKUP`, and
-  `SHADOWFAX_TOKEN`.
+  `SHADOWFAX_API_TOKEN`. `SHADOWFAX_TOKEN` remains a temporary legacy fallback.
+  Set `SHADOWFAX_BASE_URL` to `https://dale.shadowfax.in/api`, not a full endpoint.
 
 `DATABASE_URL` is supplied directly by the managed database. Provider URLs using
 `postgres://` or `postgresql://` are normalized to the installed psycopg driver.

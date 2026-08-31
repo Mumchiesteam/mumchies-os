@@ -203,7 +203,7 @@ async def fetch_shadowfax() -> SourceResult:
                         token=body.get("token") or body.get("auth_token") or body.get("key") or nested.get("token") or nested.get("auth_token") or nested.get("key")
                     else: login_error=f"Shadowfax auto-login HTTP {login.status_code}."
                 except Exception as error: login_error=_safe_http_error("Shadowfax auto-login",error)
-            token = token or settings.shadowfax_token
+            token = token or settings.shadowfax_effective_token
             if not token: raise RuntimeError(login_error or "No Shadowfax login credentials or token are configured.")
             headers={"Authorization":f"Token {token}","Content-Type":"application/json"}; today=datetime.now(); page=1
             while True:

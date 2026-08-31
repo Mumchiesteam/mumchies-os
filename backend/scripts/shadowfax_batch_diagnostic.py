@@ -143,7 +143,7 @@ async def run(*, input_fn=input) -> int:
     from app.services.courier_platform.base import ProviderError
     from app.services.courier_platform.shadowfax_http import ShadowfaxHTTPTransport
 
-    token = str(settings.shadowfax_token or "").strip()
+    token = str(settings.shadowfax_effective_token or "").strip()
     base_url = str(settings.shadowfax_base_url or "").rstrip("/")
     fingerprint = f"{token[:4]}...{token[-4:]}" if len(token) >= 8 else "[TOO SHORT]"
     print(f"token present: {'yes' if token else 'no'}")
@@ -151,11 +151,11 @@ async def run(*, input_fn=input) -> int:
     print(f"token length: {len(token)}")
     print("Authorization scheme = Token")
     if not token.strip() or not base_url:
-        print("SHADOWFAX_TOKEN and SHADOWFAX_BASE_URL must be configured.")
+        print("SHADOWFAX_API_TOKEN (or legacy SHADOWFAX_TOKEN) and SHADOWFAX_BASE_URL must be configured.")
         return 2
     async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=10.0), follow_redirects=False) as client:
         # Use the same direct transport as the proven single-order diagnostic.
-        # It applies Authorization: Token <SHADOWFAX_TOKEN> to every GET and POST.
+        # It applies Authorization: Token <effective Shadowfax token> to every GET and POST.
         transport = ShadowfaxHTTPTransport(token=token, base_url=base_url, client=client)
         orders = await _load_orders()
         rows = [await _preflight(number, orders.get(number), transport) for number in ORDER_NUMBERS]

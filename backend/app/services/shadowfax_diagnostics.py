@@ -17,11 +17,11 @@ def _check(status: str, message: str, **extra: Any) -> dict[str, Any]:
 
 async def shadowfax_health_check() -> dict[str, Any]:
     """Run only documented GET checks. This function never creates or changes a shipment."""
-    token_present = bool(settings.shadowfax_token and settings.shadowfax_token.strip())
+    token_present = bool(settings.shadowfax_effective_token and settings.shadowfax_effective_token.strip())
     base_url_present = bool(settings.shadowfax_base_url and settings.shadowfax_base_url.strip())
     configuration = _check(
         "PASS" if token_present and base_url_present else "FAIL",
-        "Shadowfax configuration is present." if token_present and base_url_present else "SHADOWFAX_TOKEN and SHADOWFAX_BASE_URL are required.",
+        "Shadowfax configuration is present." if token_present and base_url_present else "SHADOWFAX_API_TOKEN (or legacy SHADOWFAX_TOKEN) and SHADOWFAX_BASE_URL are required.",
         token_present=token_present,
         base_url_present=base_url_present,
     )
@@ -41,7 +41,7 @@ async def shadowfax_health_check() -> dict[str, Any]:
 
     if token_present and base_url_present:
         try:
-            transport = ShadowfaxHTTPTransport(token=settings.shadowfax_token or "", base_url=settings.shadowfax_base_url or "")
+            transport = ShadowfaxHTTPTransport(token=settings.shadowfax_effective_token or "", base_url=settings.shadowfax_base_url or "")
             authenticated = await transport.authenticate()
             authentication = _check("PASS" if authenticated else "FAIL", "Token authentication succeeded." if authenticated else "Shadowfax did not accept the configured token.")
             raw = await transport.serviceability({"delivery_pincode": SAFE_TEST_PINCODE})
