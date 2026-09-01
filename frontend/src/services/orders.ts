@@ -64,6 +64,7 @@ export interface Order {
   products: OrderProduct[]
   tags: string[]
   firstActionAt: string | null
+  previousPendingEnteredAt?: string | null
   humanActionCount: number
   callAttemptCount: number
   latestCallResult: string | null
@@ -234,6 +235,7 @@ interface ApiOrder {
   cancelled_at: string | null
   tags: string[]
   first_action_at: string | null
+  previous_pending_entered_at?: string | null
   human_action_count: number
   call_attempt_count: number
   latest_call_result: string | null
@@ -416,6 +418,8 @@ export interface OrderCounts {
   operations: number
   fresh: number
   previous: number
+  previous_today?: number
+  previous_days?: number
   follow_up: number
   on_hold: number
   all: number
@@ -470,7 +474,7 @@ export const mapApiOrder = (item: ApiOrder): Order => {
       pincode: item.shipping_address.pincode,
     } : null,
     products: item.products.map(product => ({ productName: product.product_name, sku: product.sku, quantity: product.quantity, weightGrams: product.weight_grams, price: Number(product.price) })),
-    tags: item.tags, firstActionAt: item.first_action_at, humanActionCount: item.human_action_count, callAttemptCount: item.call_attempt_count,
+    tags: item.tags, firstActionAt: item.first_action_at, previousPendingEnteredAt: item.previous_pending_entered_at ?? null, humanActionCount: item.human_action_count, callAttemptCount: item.call_attempt_count,
     latestCallResult: item.latest_call_result, operationalStatus: item.operational_status, addressVerified: item.address_verified,
     addressVerifiedAt: item.address_verified_at, addressVerifiedBy: item.address_verified_by, verifiedAddressSnapshot: item.verified_address_snapshot,
     correctedAddress: item.corrected_address, courierSyncStatus: item.courier_sync_status, courierSyncError: item.courier_sync_error,

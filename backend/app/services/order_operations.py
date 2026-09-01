@@ -17,6 +17,7 @@ from app.services.runtime_metrics import rss_mb
 OPS_FILE = settings.data_dir / "order_operations.json"
 OPS_FILE.parent.mkdir(parents=True, exist_ok=True)
 LOGGER = logging.getLogger(__name__)
+PREVIOUS_PENDING_CALL_RESULTS = {"No Answer", "Busy", "Switched Off", "Callback Requested", "On Hold"}
 
 
 class _TimedLock:
@@ -63,6 +64,7 @@ class OrderOperationsStore:
         },
         "human_actions": [],
         "first_action_at": None,
+        "previous_pending_entered_at": None,
         "shadowfax_direct_test": None,
     }
 
@@ -230,6 +232,11 @@ class OrderOperationsStore:
         with cls._lock:
             data = cls._read_all()
             record = data.get(order_id, deepcopy(cls._default_record))
+            prior_logs = record.get("call_logs", [])
+            prior_result = str(prior_logs[0].get("result") or "") if prior_logs and isinstance(prior_logs[0], dict) else ""
+            next_result = str(entry.get("result") or "")
+            if next_result in PREVIOUS_PENDING_CALL_RESULTS and prior_result not in PREVIOUS_PENDING_CALL_RESULTS:
+                record["previous_pending_entered_at"] = entry.get("timestamp") or datetime.now(timezone.utc).isoformat()
             record["call_logs"] = [entry, *record.get("call_logs", [])]
             cls._record_action(record, "call_logged", entry.get("timestamp"), entry.get("operator"))
             data[order_id] = record

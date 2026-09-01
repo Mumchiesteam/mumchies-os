@@ -76,6 +76,7 @@ class ShopifyOrder(BaseModel):
     selected_courier: dict[str, str | float | None] | None = None
     shipment: dict[str, object] | None = None
     first_action_at: str | None = None
+    previous_pending_entered_at: str | None = None
     human_action_count: int = 0
     call_attempt_count: int = 0
     external_tracking: ExternalTracking | None = None

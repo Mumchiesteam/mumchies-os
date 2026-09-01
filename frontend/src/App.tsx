@@ -81,6 +81,7 @@ import { displayedOrderNumber, orderNumberClipboardValue, stopCopyPropagation } 
 import { courierSelectionKey, courierSelectionMatches } from './utils/courierSelection'
 import { applyConfirmedBookingState, isConfirmedLabelBooking, mergeCanonicalShipment } from './utils/postBooking'
 import { CourierIssuesPage } from './components/CourierIssuesPage'
+import { isPreviousPendingToday } from './utils/previousPending'
 import { DispatchQueueModal } from './components/DispatchQueueModal'
 import { QueueDateFilterControl } from './components/QueueDateFilterControl'
 import { matchesOrderQueueFilters, type QueueDateFilter } from './utils/queueDateFilter'
@@ -559,6 +560,10 @@ function App() {
   }
 
   const displayedOrders = useMemo(() => orders.filter(order => matchesOrderQueueFilters(order, dateFilter, payment, risk)), [dateFilter, orders, payment, risk])
+  const previousPendingSections = useMemo(() => {
+    const movedToday = displayedOrders.filter(order => isPreviousPendingToday(order.previousPendingEnteredAt))
+    return { movedToday, previousDays: displayedOrders.filter(order => !movedToday.includes(order)) }
+  }, [displayedOrders])
   const displayedLabelShipments = useMemo(() => (queue==='manifested'?labelQueue.manifested:labelQueue.ready_to_ship).filter(shipment => {
     const order = orders.find(value => value.internalId === shipment.order_id)
     return `${order?.orderNumber || ''} ${order?.customerName || ''} ${shipment.awb || ''}`.toLowerCase().includes(labelSearch.toLowerCase())
@@ -1112,7 +1117,16 @@ function App() {
             <>
               {loading && <div className="border-b border-slate-100 bg-slate-50 px-4 py-2 text-xs font-medium text-slate-500">Updating orders…</div>}
               {queue === 'printed_today' && orders.length > 0 && <div className="divide-y divide-slate-100 border-b border-slate-200 bg-slate-50/60">{orders.map(order => <div key={order.internalId} className="flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3 text-xs"><span className="font-semibold text-slate-700">#{order.orderNumber}</span><span className="text-slate-500">Confirmed {order.shipment?.label_last_printed_at ? formatDateTime(order.shipment.label_last_printed_at) : '—'}</span><span className="text-slate-500">Operator: {order.shipment?.label_last_printed_by || '—'}</span><button onClick={() => void requestLabelReprint(order.internalId).then(() => { setNotice('Label returned to print queue.'); refreshLabels(); void loadOrders() }).catch(error => setNotice(error.message))} className="ml-auto font-semibold text-orange-600">Reprint</button></div>)}</div>}
-              <OrdersTable orders={displayedOrders} repeatIds={repeatIds} onOpen={openOrder} loading={loading} emptyMessage={queue === 'printed_today' ? 'No labels have been confirmed today.' : 'No orders match your filters.'} />
+              {queue === 'previous' ? <div className="divide-y divide-slate-200">
+                <section aria-label="Moved to Previous Pending Today" className="py-4">
+                  <div className="flex items-baseline justify-between gap-3 px-4 pb-3"><h3 className="text-sm font-bold text-slate-800">Moved to Previous Pending Today</h3><span className="text-xs font-semibold text-slate-500">{counts.previous_today ?? 0}</span></div>
+                  <OrdersTable orders={previousPendingSections.movedToday} repeatIds={repeatIds} onOpen={openOrder} loading={loading} emptyMessage="No orders moved to Previous Pending today." />
+                </section>
+                <section aria-label="Previous Days Pending" className="py-4">
+                  <div className="flex items-baseline justify-between gap-3 px-4 pb-3"><h3 className="text-sm font-bold text-slate-800">Previous Days Pending</h3><span className="text-xs font-semibold text-slate-500">{counts.previous_days ?? 0}</span></div>
+                  <OrdersTable orders={previousPendingSections.previousDays} repeatIds={repeatIds} onOpen={openOrder} loading={loading} emptyMessage="No previous-days pending orders." />
+                </section>
+              </div> : <OrdersTable orders={displayedOrders} repeatIds={repeatIds} onOpen={openOrder} loading={loading} emptyMessage={queue === 'printed_today' ? 'No labels have been confirmed today.' : 'No orders match your filters.'} />}
               {queue !== 'shiprocket_cleanup' && <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-4 py-3">
                 <p className="text-xs text-slate-500">Showing <span className="font-semibold text-slate-700">{total === 0 ? 0 : (page - 1) * pageSize + 1}–{Math.min(page * pageSize, total)}</span> of {total} orders</p>
                 <div className="flex items-center gap-3 text-xs text-slate-500">
@@ -1244,7 +1258,7 @@ const OrderRow = memo(function OrderRow({ order, repeat, onClick, drawerEnabled 
   const attempt = order.callAttemptCount > 0 ? `Attempt ${order.callAttemptCount > 5 ? '5+' : order.callAttemptCount}` : null
   return (
     <tr onClick={() => { if (drawerEnabled) onClick() }} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 56px' }} className={`${drawerEnabled ? 'cursor-pointer' : ''} text-sm text-slate-600 hover:bg-orange-50/50`}>
-      <td className="px-4 py-3.5 font-semibold text-slate-800"><span className="inline-flex items-center gap-1">{displayedOrderNumber(order.orderNumber)}<CopyButton value={orderNumberClipboardValue(order.orderNumber)} label="order number" stopPropagation /></span></td>
+      <td className="px-4 py-3.5 font-semibold text-slate-800"><span className="inline-flex items-center gap-1">{displayedOrderNumber(order.orderNumber)}<CopyButton value={orderNumberClipboardValue(order.orderNumber)} label="order number" stopPropagation /></span>{order.previousPendingEnteredAt && <p className="mt-1 text-[10px] font-medium text-slate-400">Moved at {formatOrderDateTime(order.previousPendingEnteredAt).time}</p>}</td>
       <td className="whitespace-nowrap px-4 py-3.5"><p className="font-medium text-slate-700">{placed.date}</p><p className="text-xs text-slate-400">{placed.time}</p></td>
       <td className="px-4 py-3.5">
         <div className="flex items-center gap-2">

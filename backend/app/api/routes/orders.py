@@ -168,6 +168,7 @@ def _merged_operational_state(order: ShopifyOrder, operations: dict[str, object]
         "selected_courier": operations.get("selected_courier"),
         "shipment": operations.get("shipment"),
         "first_action_at": first_action_at,
+        "previous_pending_entered_at": operations.get("previous_pending_entered_at"),
         "human_action_count": len(human_actions) or (1 if first_action_at else 0),
         "call_attempt_count": len(call_logs),
         "engage_order_id": (operations.get("shipment") or {}).get("engage_order_id"),
@@ -346,6 +347,18 @@ def _operational_queue_partition(orders: list[ShopifyOrder], now: datetime | Non
     return {"fresh": fresh, "follow_up": follow_up, "on_hold": on_hold, "previous": follow_up + on_hold, "operations": fresh + follow_up + on_hold}
 
 
+def _previous_pending_section(order: ShopifyOrder, now: datetime) -> str:
+    """Classify only from the durable entry timestamp, never the Shopify order date."""
+    entered_at = order.previous_pending_entered_at
+    if not entered_at:
+        return "previous_days"
+    try:
+        entered_date = datetime.fromisoformat(entered_at.replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Kolkata")).date()
+    except ValueError:
+        return "previous_days"
+    return "today" if entered_date == now.astimezone(ZoneInfo("Asia/Kolkata")).date() else "previous_days"
+
+
 def _engage_category(value: object) -> str:
     raw = str(value) if value is not None else ""
     return {
@@ -384,6 +397,7 @@ def _base_filtered_orders(orders: list[ShopifyOrder], search: str, payment: str,
 def _full_counts(orders: list[ShopifyOrder], now: datetime, db: Session) -> dict[str, int | float]:
     queues = _operational_queue_partition(orders, now)
     fresh, follow_up, on_hold, previous = queues["fresh"], queues["follow_up"], queues["on_hold"], queues["previous"]
+    previous_today = [order for order in previous if _previous_pending_section(order, now) == "today"]
     cod = [order for order in orders if order.payment_type in {"cod", "partial_cod"}]
     prepaid = [order for order in orders if order.payment_type == "prepaid"]
     high_risk = [order for order in orders if "high" in " ".join(order.tags).casefold() and not _is_inactive(order)]
@@ -394,7 +408,7 @@ def _full_counts(orders: list[ShopifyOrder], now: datetime, db: Session) -> dict
     manifested = [value for value in shipments if value.dispatch_status == "manifested"]
     return {
         "operations": len(queues["operations"]), "fresh": len(fresh), "previous": len(previous),
-        "follow_up": len(follow_up), "on_hold": len(on_hold), "all": len(orders),
+        "follow_up": len(follow_up), "on_hold": len(on_hold), "previous_today": len(previous_today), "previous_days": len(previous) - len(previous_today), "all": len(orders),
         "ready_to_ship": len(ready), "manifested": len(manifested), "new_orders": len(fresh),
         "cod": len(cod), "prepaid": len(prepaid), "high_risk": len(high_risk), "repeat_customers": len(repeat),
         "cod_collectable": sum(float(order.cod_collectable_amount) for order in cod),
@@ -465,13 +479,22 @@ async def list_orders(
     if attempt != "all" and pending_view == "follow_up":
         filtered = [order for order in filtered if _call_outcome_requires_follow_up(order) and (order.call_attempt_count >= 4 if attempt == "4_plus" else order.call_attempt_count == int(attempt))]
     reverse = sort not in {"oldest", "value_asc"}
-    if sort in {"value_asc", "value_desc"}:
-        filtered.sort(key=lambda value: float(value.total_amount), reverse=reverse)
-    elif sort in {"cod_first", "prepaid_first"}:
-        preferred = "prepaid" if sort == "prepaid_first" else "cod"
-        filtered.sort(key=lambda value: (value.payment_type != preferred and not (preferred == "cod" and value.payment_type == "partial_cod"), -datetime.fromisoformat(value.created_date.replace("Z", "+00:00")).timestamp()))
+    def sort_orders(values: list[ShopifyOrder]) -> None:
+        if sort in {"value_asc", "value_desc"}:
+            values.sort(key=lambda value: float(value.total_amount), reverse=reverse)
+        elif sort in {"cod_first", "prepaid_first"}:
+            preferred = "prepaid" if sort == "prepaid_first" else "cod"
+            values.sort(key=lambda value: (value.payment_type != preferred and not (preferred == "cod" and value.payment_type == "partial_cod"), -datetime.fromisoformat(value.created_date.replace("Z", "+00:00")).timestamp()))
+        else:
+            values.sort(key=lambda value: datetime.fromisoformat(value.created_date.replace("Z", "+00:00")), reverse=reverse)
+    if effective_queue == "previous":
+        today = [order for order in filtered if _previous_pending_section(order, now) == "today"]
+        previous_days = [order for order in filtered if _previous_pending_section(order, now) == "previous_days"]
+        today.sort(key=lambda value: datetime.fromisoformat(str(value.previous_pending_entered_at).replace("Z", "+00:00")), reverse=True)
+        sort_orders(previous_days)
+        filtered = today + previous_days
     else:
-        filtered.sort(key=lambda value: datetime.fromisoformat(value.created_date.replace("Z", "+00:00")), reverse=reverse)
+        sort_orders(filtered)
     total = len(filtered)
     total_pages = max(1, (total + page_size - 1) // page_size)
     effective_page = min(page, total_pages)
