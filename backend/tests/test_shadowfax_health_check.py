@@ -101,6 +101,8 @@ def test_shadowfax_health_logging_never_emits_full_token(caplog):
         )
 
     emitted = caplog.text
+    assert "shadowfax_health_request" in emitted
+    assert "shadowfax_health_response" in emitted
     assert "full-secret-token-69c7" not in emitted
     assert "Authorization:" not in emitted
     assert "token_last4=69c7" in emitted

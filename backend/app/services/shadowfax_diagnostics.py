@@ -11,7 +11,9 @@ from app.services.courier_platform.shadowfax_http import ShadowfaxHTTPTransport
 SAFE_TEST_PINCODE = "560076"
 EXPECTED_CLIENT_NAME = "Mumchies Foods"
 EXPECTED_CLIENT_ID = "4500"
-logger = logging.getLogger(__name__)
+# Uvicorn configures this logger with its stderr handler in production, which
+# Render captures as Application Logs. Module INFO loggers are not enabled there.
+logger = logging.getLogger("uvicorn.error")
 
 
 def _check(status: str, message: str, **extra: Any) -> dict[str, Any]:
