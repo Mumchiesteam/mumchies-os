@@ -541,7 +541,21 @@ def _build_delhivery_payload(order: ShopifyOrder, operations: dict[str, object],
     }
 
 
-async def _build_provider_booking_request(order: ShopifyOrder, operations: dict[str, object], package: PackageDetailsPayload) -> dict[str, object]:
+def _cached_shiprocket_pickup_location_details() -> dict[str, object] | None:
+    """Return a warm pickup snapshot without making a Shiprocket request."""
+    cached = ShiprocketService._pickup_location_cache
+    if not cached or cached[0] <= time.monotonic() or not isinstance(cached[2], dict):
+        return None
+    return dict(cached[2])
+
+
+async def _build_provider_booking_request(
+    order: ShopifyOrder,
+    operations: dict[str, object],
+    package: PackageDetailsPayload,
+    *,
+    warehouse: dict[str, object] | None = None,
+) -> dict[str, object]:
     """Build the documented Shadowfax warehouse payload from existing OS data."""
     address = _order_latest_address(order, operations)
     if not isinstance(address, dict):
@@ -564,7 +578,7 @@ async def _build_provider_booking_request(order: ShopifyOrder, operations: dict[
     if missing_customer:
         raise HTTPException(status_code=400, detail=f"Shipping address is missing: {', '.join(missing_customer)}.")
 
-    warehouse = await ShiprocketService().pickup_location_details()
+    warehouse = warehouse if warehouse is not None else await ShiprocketService().pickup_location_details()
     if not isinstance(warehouse, dict):
         raise HTTPException(status_code=400, detail="The configured Mumchies warehouse address could not be resolved.")
 
