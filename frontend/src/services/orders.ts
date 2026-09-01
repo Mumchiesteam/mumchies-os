@@ -721,6 +721,22 @@ export type ShadowfaxShipmentRowDiagnostic = {
   reset_blocker: { evaluates_true: boolean; condition: string; true_fields: string[] }
 }
 
+export type ShadowfaxCreateOnlyDiagnostic = {
+  outcome: string
+  http_status: number | null
+  message: string | null
+  validation_errors: string[] | Record<string, unknown> | null
+  data: { id: string | number | null; awb_number: string | null }
+  payload: Record<string, unknown>
+}
+
+export async function testShadowfaxCreateOnly(orderId: string): Promise<ShadowfaxCreateOnlyDiagnostic> {
+  const response = await apiFetch(`${apiBase}/api/v1/shadowfax/test-create-order/${orderId}`, { method: 'POST' })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(readableApiError(body, 'Shadowfax create diagnostic failed before the provider request.'))
+  return body as ShadowfaxCreateOnlyDiagnostic
+}
+
 export async function getShadowfaxDirect324663Status(): Promise<ShadowfaxDirectTestState> {
   const response = await apiFetch(`${apiBase}/api/v1/orders/shadowfax-test-324663/status`)
   const body = await response.json().catch(() => null)
