@@ -63,6 +63,7 @@ import { engageCategory } from './utils/engage'
 import { hasShipmentEvidence, isCancelled, listStatus, type OperationalStatus } from './utils/orderStatus'
 import { OrderSessionGuard } from './utils/orderSession'
 import { AbortableRequestGate } from './utils/requestGate'
+import { canTestShadowfaxCreate, getShadowfaxHealth, testShadowfaxCreateOrder, type ShadowfaxCreateTestResult, type ShadowfaxHealth } from './services/shadowfax-diagnostic'
 
 type IconName = 'grid' | 'bag' | 'alert' | 'users' | 'chart' | 'settings' | 'search' | 'bell' | 'filter' | 'chevron' | 'more' | 'eye' | 'truck' | 'calendar' | 'close' | 'copy' | 'phone' | 'external' | 'repeat' | 'tag' | 'edit' | 'call'
 type TabKey = 'fresh' | 'previous' | 'all' | 'labels_to_print' | 'awaiting_confirmation' | 'printed_today' | 'shiprocket_cleanup'
@@ -209,6 +210,9 @@ function App() {
   const [shipmentRefreshLoading, setShipmentRefreshLoading] = useState(false)
   const [shopifySyncLoading, setShopifySyncLoading] = useState(false)
   const [labelLoading, setLabelLoading] = useState(false)
+  const [shadowfaxHealth, setShadowfaxHealth] = useState<ShadowfaxHealth | null>(null)
+  const [shadowfaxTestLoading, setShadowfaxTestLoading] = useState(false)
+  const [shadowfaxTestResult, setShadowfaxTestResult] = useState<ShadowfaxCreateTestResult | null>(null)
   const [addressDraft, setAddressDraft] = useState({
     customer_name: '',
     phone: '',
@@ -319,6 +323,8 @@ function App() {
       setSelectedCourierId(null)
       setCourierError('')
       setCancellationPreflight(null)
+      setShadowfaxHealth(null)
+      setShadowfaxTestResult(null)
       const [ops, eligibility] = await Promise.all([
         getOrderOperations(order.internalId, controller.signal),
         getBookingEligibility(order.internalId, controller.signal),
@@ -339,13 +345,16 @@ function App() {
       })
       setSelectedCourierId(ops.selected_courier?.courier_id ?? null)
       setBookingEligibility(eligibility)
+      if (authUser?.role === 'owner' || authUser?.role === 'admin') {
+        getShadowfaxHealth().then(setShadowfaxHealth).catch(() => setShadowfaxHealth(null))
+      }
     })().catch((err) => {
       if (controller.signal.aborted || !drawerSession.current.isCurrent(token)) return
       setOperations(null)
       setCourierError((err as Error).message || 'Could not load order operations and courier eligibility.')
     })
     return () => controller.abort()
-  }, [resetCourierLookup, selectedOrderId])
+  }, [authUser?.role, resetCourierLookup, selectedOrderId])
 
   const openOrder = (orderId: string) => {
     resetCourierLookup()
@@ -357,6 +366,8 @@ function App() {
     setSelectedCourierId(null)
     setCourierError('')
     setCancellationPreflight(null)
+    setShadowfaxHealth(null)
+    setShadowfaxTestResult(null)
     setSelectedOrderId(orderId)
   }
 
@@ -624,6 +635,20 @@ function App() {
     window.setTimeout(() => setLabelLoading(false), 1_000)
   }
 
+  const testShadowfaxCreate = async () => {
+    if (!selectedOrder || shadowfaxTestLoading || !canTestShadowfaxCreate(selectedOrder, shadowfaxHealth, authUser?.role)) return
+    setShadowfaxTestLoading(true)
+    setShadowfaxTestResult(null)
+    try {
+      const result = await testShadowfaxCreateOrder(selectedOrder.internalId)
+      setShadowfaxTestResult(result)
+    } catch (err) {
+      setShadowfaxTestResult({ outcome: 'request_failed', http_status: null, message: (err as Error).message, validation_errors: null, data: { id: null, awb_number: null }, payload: {} })
+    } finally {
+      setShadowfaxTestLoading(false)
+    }
+  }
+
   const navigateReports = useCallback((path: string) => {
     window.history.pushState({}, '', path)
     setReportPath(path)
@@ -815,6 +840,10 @@ function App() {
           onSyncShopifyFulfillment={() => void syncFulfillment()}
           onDownloadLabel={() => retrieveLabel('download')}
           onPrintLabel={() => retrieveLabel('print')}
+          canTestShadowfaxCreate={canTestShadowfaxCreate(selectedOrder, shadowfaxHealth, authUser?.role)}
+          shadowfaxTestLoading={shadowfaxTestLoading}
+          shadowfaxTestResult={shadowfaxTestResult}
+          onTestShadowfaxCreate={() => void testShadowfaxCreate()}
         />
       )}
 
@@ -932,6 +961,10 @@ const OrderDrawer = memo(function OrderDrawer({
   onSyncShopifyFulfillment,
   onDownloadLabel,
   onPrintLabel,
+  canTestShadowfaxCreate,
+  shadowfaxTestLoading,
+  shadowfaxTestResult,
+  onTestShadowfaxCreate,
 }: {
   order: Order
   repeat: boolean
@@ -1007,6 +1040,10 @@ const OrderDrawer = memo(function OrderDrawer({
   onSyncShopifyFulfillment: () => void
   onDownloadLabel: () => void
   onPrintLabel: () => void
+  canTestShadowfaxCreate: boolean
+  shadowfaxTestLoading: boolean
+  shadowfaxTestResult: ShadowfaxCreateTestResult | null
+  onTestShadowfaxCreate: () => void
 }) {
   const [packageDraft, setPackageDraft] = useState(() => ({
     weight_kg: order.packageDetails?.weight_kg?.toString() || (order.products.reduce((sum, product) => sum + (product.weightGrams ? product.weightGrams * product.quantity : 0), 0) > 0 ? (order.products.reduce((sum, product) => sum + (product.weightGrams ? product.weightGrams * product.quantity : 0), 0) / 1000).toFixed(2) : ''),
@@ -1193,6 +1230,13 @@ const OrderDrawer = memo(function OrderDrawer({
 
           <Section title="Courier Booking">
             <div className="space-y-4 text-sm text-slate-600">
+              {canTestShadowfaxCreate && <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div><p className="font-semibold text-amber-900">Admin diagnostic</p><p className="text-xs text-amber-800">Creates one Shadowfax test order only. It does not book in OS, clean up Shiprocket, sync Shopify, or create a label.</p></div>
+                  <button disabled={shadowfaxTestLoading || shadowfaxTestResult?.outcome === 'success'} onClick={onTestShadowfaxCreate} className="rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm font-semibold text-amber-900 disabled:cursor-not-allowed disabled:opacity-60">{shadowfaxTestLoading ? 'Testing Shadowfax...' : 'Test Shadowfax Create'}</button>
+                </div>
+                {shadowfaxTestResult && <div className="mt-3 space-y-1 rounded-md bg-white p-2 text-xs text-slate-700"><p><span className="font-semibold">Outcome:</span> {shadowfaxTestResult.outcome}</p><p><span className="font-semibold">HTTP:</span> {shadowfaxTestResult.http_status ?? '—'}</p><p><span className="font-semibold">Message:</span> {shadowfaxTestResult.message || '—'}</p><p><span className="font-semibold">Validation:</span> {shadowfaxTestResult.validation_errors ? JSON.stringify(shadowfaxTestResult.validation_errors) : '—'}</p><p><span className="font-semibold">Shadowfax order:</span> {shadowfaxTestResult.data.id || '—'}</p><p><span className="font-semibold">AWB:</span> {shadowfaxTestResult.data.awb_number || '—'}</p><p><span className="font-semibold">Sanitized payload:</span> {JSON.stringify(shadowfaxTestResult.payload)}</p>{shadowfaxTestResult.outcome === 'success' && <p className="pt-1 font-semibold text-emerald-700">Shadowfax order created. Do not test again.</p>}</div>}
+              </div>}
               {hasShipmentEvidence(order) && !shipment ? (
                 <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-600">
                   This order already has an existing shipment or fulfilment (see Tracking above). Booking controls are unavailable to prevent a duplicate shipment.
