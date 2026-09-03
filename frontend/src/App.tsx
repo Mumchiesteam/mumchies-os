@@ -84,7 +84,7 @@ import { courierSelectionKey, courierSelectionMatches } from './utils/courierSel
 import { applyConfirmedBookingState, isConfirmedLabelBooking, mergeCanonicalShipment } from './utils/postBooking'
 import { CourierIssuesPage } from './components/CourierIssuesPage'
 import { isPreviousPendingToday } from './utils/previousPending'
-import { canTestShadowfaxCreate } from './utils/shadowfaxCreateDiagnostic'
+import { getShadowfaxCreateTestAvailability } from './utils/shadowfaxCreateDiagnostic'
 import { DispatchQueueModal } from './components/DispatchQueueModal'
 import { QueueDateFilterControl } from './components/QueueDateFilterControl'
 import { matchesOrderQueueFilters, type QueueDateFilter } from './utils/queueDateFilter'
@@ -1231,7 +1231,8 @@ function App() {
           onSaveManualExternal={saveManualExternal}
           showShadowfaxDirectTest={selectedOrder.orderNumber === '324663' && ['owner', 'admin'].includes(authUser?.role || '')}
           showShadowfaxApiTest={['owner', 'admin'].includes(authUser?.role || '')}
-            showShadowfaxCreateTest={canTestShadowfaxCreate(selectedOrder, authUser?.role, shadowfaxHealthCheck)}
+            showShadowfaxCreateTest={['owner', 'admin'].includes(authUser?.role || '')}
+            shadowfaxCreateTestAvailability={getShadowfaxCreateTestAvailability(selectedOrder, authUser?.role, shadowfaxHealthCheck)}
           shadowfaxHealthCheck={shadowfaxHealthCheck}
           shadowfaxHealthChecking={shadowfaxHealthChecking}
           onTestShadowfaxApi={() => void testShadowfaxApi()}
@@ -1366,6 +1367,7 @@ const OrderDrawer = memo(function OrderDrawer({
   showShadowfaxDirectTest,
   showShadowfaxApiTest,
   showShadowfaxCreateTest,
+  shadowfaxCreateTestAvailability,
   shadowfaxHealthCheck,
   shadowfaxHealthChecking,
   onTestShadowfaxApi,
@@ -1443,6 +1445,7 @@ const OrderDrawer = memo(function OrderDrawer({
   showShadowfaxDirectTest: boolean
   showShadowfaxApiTest: boolean
   showShadowfaxCreateTest: boolean
+  shadowfaxCreateTestAvailability: { canCreate: boolean; blocker: string | null }
   shadowfaxHealthCheck: ShadowfaxHealthCheck | null
   shadowfaxHealthChecking: boolean
   onTestShadowfaxApi: () => void
@@ -1796,7 +1799,7 @@ const OrderDrawer = memo(function OrderDrawer({
                 </div>}
               </div>}
               {showShadowfaxCreateTest && <div className="space-y-2 border-t border-slate-100 pt-3">
-                <button type="button" disabled={shadowfaxCreateTesting || Boolean(shadowfaxCreateResult)} onClick={onTestShadowfaxCreate} className="rounded-lg border border-violet-300 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:opacity-50">{shadowfaxCreateTesting ? 'Testing Shadowfax...' : 'Test Shadowfax Create'}</button>
+                <div className="flex flex-wrap items-center gap-2"><button type="button" disabled={!shadowfaxCreateTestAvailability.canCreate || shadowfaxCreateTesting || Boolean(shadowfaxCreateResult)} onClick={onTestShadowfaxCreate} className="rounded-lg border border-violet-300 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:opacity-50">{shadowfaxCreateTesting ? 'Testing Shadowfax...' : 'Test Shadowfax Create'}</button>{shadowfaxCreateTestAvailability.blocker && <span className="text-xs font-medium text-violet-900">{shadowfaxCreateTestAvailability.blocker}</span>}</div>
                 {shadowfaxCreateResult && <div className={`rounded-lg border px-3 py-2 text-xs ${shadowfaxCreateResult.outcome === 'success' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-rose-200 bg-rose-50 text-rose-900'}`} role="status">
                   <p className="font-semibold">Outcome: {shadowfaxCreateResult.outcome}</p>
                   <p>HTTP status: {shadowfaxCreateResult.http_status ?? 'not returned'}</p>

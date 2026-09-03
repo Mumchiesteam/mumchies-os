@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import appSource from './App.tsx?raw'
 import { testShadowfaxCreateOnly, type Order, type ShadowfaxHealthCheck } from './services/orders'
-import { canTestShadowfaxCreate } from './utils/shadowfaxCreateDiagnostic'
+import { canTestShadowfaxCreate, getShadowfaxCreateTestAvailability } from './utils/shadowfaxCreateDiagnostic'
 
 const healthyShadowfax = { overall: 'PASS' } as ShadowfaxHealthCheck
 const order = (overrides: Partial<Order> = {}): Order => ({
@@ -35,6 +35,12 @@ describe('Shadowfax create-only diagnostic', () => {
     expect(canTestShadowfaxCreate(order(), 'admin', { overall: 'FAIL' } as ShadowfaxHealthCheck)).toBe(false)
   })
 
+  it('keeps the admin diagnostic disabled with the exact blocker message', () => {
+    const availability = getShadowfaxCreateTestAvailability(order({ shipment: { awb: 'AWB-1' } as Order['shipment'] }), 'admin', healthyShadowfax)
+
+    expect(availability).toEqual({ canCreate: false, blocker: 'Order already has shipment evidence' })
+  })
+
   it('calls only the create-only diagnostic endpoint', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       outcome: 'success', http_status: 201, message: 'Success', validation_errors: null,
@@ -51,7 +57,8 @@ describe('Shadowfax create-only diagnostic', () => {
 
   it('wires pending, success, and failure feedback without invoking normal booking', () => {
     expect(appSource).toContain("shadowfaxCreateTesting ? 'Testing Shadowfax...' : 'Test Shadowfax Create'")
-    expect(appSource).toContain('disabled={shadowfaxCreateTesting || Boolean(shadowfaxCreateResult)}')
+    expect(appSource).toContain('disabled={!shadowfaxCreateTestAvailability.canCreate || shadowfaxCreateTesting || Boolean(shadowfaxCreateResult)}')
+    expect(appSource).toContain('shadowfaxCreateTestAvailability.blocker')
     for (const label of ['Outcome:', 'HTTP status:', 'Validation errors:', 'Shadowfax order ID:', 'AWB number:', 'Payload:', 'Shadowfax order created. Do not test again.']) {
       expect(appSource).toContain(label)
     }
