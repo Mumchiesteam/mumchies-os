@@ -41,6 +41,13 @@ describe('Shadowfax create-only diagnostic', () => {
     expect(availability).toEqual({ canCreate: false, blocker: 'Order already has shipment evidence' })
   })
 
+  it('uses the drawer’s Ready for Booking state instead of a stale raw fulfillment field', () => {
+    const availability = getShadowfaxCreateTestAvailability(order({ fulfillmentStatus: 'fulfilled', operationalStatus: 'Ready for Booking', shipment: null, externalTracking: null }), 'admin', healthyShadowfax)
+
+    expect(availability).toEqual({ canCreate: true, blocker: null })
+    expect(availability.blocker).not.toBe('Order already fulfilled')
+  })
+
   it('calls only the create-only diagnostic endpoint', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       outcome: 'success', http_status: 201, message: 'Success', validation_errors: null,
