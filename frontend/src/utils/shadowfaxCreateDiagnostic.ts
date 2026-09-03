@@ -1,6 +1,6 @@
-import type { Order } from '../services/orders'
+import type { Order, ShadowfaxHealthCheck } from '../services/orders'
 
-export const canTestShadowfaxCreate = (order: Order, role: string | undefined): boolean => {
+export const canTestShadowfaxCreate = (order: Order, role: string | undefined, healthCheck: ShadowfaxHealthCheck | null): boolean => {
   const shipment = order.shipment
   const packageDetails = order.packageDetails
   const packageReady = Boolean(
@@ -20,4 +20,5 @@ export const canTestShadowfaxCreate = (order: Order, role: string | undefined): 
     && String(order.fulfillmentStatus || '').toLowerCase() === 'unfulfilled'
     && !shipmentEvidence
     && packageReady
+    && healthCheck?.overall === 'PASS'
 }

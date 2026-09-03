@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import appSource from './App.tsx?raw'
-import { testShadowfaxCreateOnly, type Order } from './services/orders'
+import { testShadowfaxCreateOnly, type Order, type ShadowfaxHealthCheck } from './services/orders'
 import { canTestShadowfaxCreate } from './utils/shadowfaxCreateDiagnostic'
 
+const healthyShadowfax = { overall: 'PASS' } as ShadowfaxHealthCheck
 const order = (overrides: Partial<Order> = {}): Order => ({
   internalId: 'shopify-1', orderNumber: '326446', shopifyName: '#326446', createdAt: '', createdDate: '',
   customerName: 'Customer', amount: 100, shippingAmount: null, payment: 'Prepaid', orderTotal: 100,
@@ -24,12 +25,14 @@ afterEach(() => vi.restoreAllMocks())
 
 describe('Shadowfax create-only diagnostic', () => {
   it('is visible only to an admin or owner for an unfulfilled, unshipped order with a package', () => {
-    expect(canTestShadowfaxCreate(order(), 'admin')).toBe(true)
-    expect(canTestShadowfaxCreate(order(), 'owner')).toBe(true)
-    expect(canTestShadowfaxCreate(order(), 'operator')).toBe(false)
-    expect(canTestShadowfaxCreate(order({ fulfillmentStatus: 'fulfilled' }), 'admin')).toBe(false)
-    expect(canTestShadowfaxCreate(order({ shipment: { awb: 'AWB-1' } as Order['shipment'] }), 'admin')).toBe(false)
-    expect(canTestShadowfaxCreate(order({ packageDetails: null }), 'admin')).toBe(false)
+    expect(canTestShadowfaxCreate(order(), 'admin', healthyShadowfax)).toBe(true)
+    expect(canTestShadowfaxCreate(order(), 'owner', healthyShadowfax)).toBe(true)
+    expect(canTestShadowfaxCreate(order(), 'operator', healthyShadowfax)).toBe(false)
+    expect(canTestShadowfaxCreate(order({ fulfillmentStatus: 'fulfilled' }), 'admin', healthyShadowfax)).toBe(false)
+    expect(canTestShadowfaxCreate(order({ shipment: { awb: 'AWB-1' } as Order['shipment'] }), 'admin', healthyShadowfax)).toBe(false)
+    expect(canTestShadowfaxCreate(order({ packageDetails: null }), 'admin', healthyShadowfax)).toBe(false)
+    expect(canTestShadowfaxCreate(order(), 'admin', null)).toBe(false)
+    expect(canTestShadowfaxCreate(order(), 'admin', { overall: 'FAIL' } as ShadowfaxHealthCheck)).toBe(false)
   })
 
   it('calls only the create-only diagnostic endpoint', async () => {

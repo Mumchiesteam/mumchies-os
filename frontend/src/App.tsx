@@ -451,6 +451,19 @@ function App() {
     setShadowfaxCreateResult(null)
   }, [selectedOrderId])
   useEffect(() => {
+    if (!selectedOrderId || !['owner', 'admin'].includes(authUser?.role || '')) {
+      setShadowfaxHealthCheck(null)
+      return
+    }
+    let cancelled = false
+    void getShadowfaxHealthCheck().then(result => {
+      if (!cancelled) setShadowfaxHealthCheck(result)
+    }).catch(() => {
+      if (!cancelled) setShadowfaxHealthCheck(null)
+    })
+    return () => { cancelled = true }
+  }, [authUser?.role, selectedOrderId])
+  useEffect(() => {
     if (selectedOrder?.orderNumber === '324663' && ['owner', 'admin'].includes(authUser?.role || '')) {
       void getShadowfaxDirect324663Status().then(setShadowfaxTestState).catch(() => setShadowfaxTestState(null))
       void getShadowfaxShipmentRow324663().then(setShadowfaxShipmentRow).catch(() => setShadowfaxShipmentRow(null))
@@ -1218,7 +1231,7 @@ function App() {
           onSaveManualExternal={saveManualExternal}
           showShadowfaxDirectTest={selectedOrder.orderNumber === '324663' && ['owner', 'admin'].includes(authUser?.role || '')}
           showShadowfaxApiTest={['owner', 'admin'].includes(authUser?.role || '')}
-          showShadowfaxCreateTest={canTestShadowfaxCreate(selectedOrder, authUser?.role)}
+            showShadowfaxCreateTest={canTestShadowfaxCreate(selectedOrder, authUser?.role, shadowfaxHealthCheck)}
           shadowfaxHealthCheck={shadowfaxHealthCheck}
           shadowfaxHealthChecking={shadowfaxHealthChecking}
           onTestShadowfaxApi={() => void testShadowfaxApi()}
