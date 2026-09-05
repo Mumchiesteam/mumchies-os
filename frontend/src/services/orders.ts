@@ -712,6 +712,15 @@ export async function getShadowfaxHealthCheck(): Promise<ShadowfaxHealthCheck> {
   return body
 }
 
+export type ShiprocketSearchDiagnostic = Record<string, unknown>
+
+export async function inspectShiprocketSearch(orderNumber: string): Promise<ShiprocketSearchDiagnostic> {
+  const response = await apiFetch(`${apiBase}/api/v1/couriers/shiprocket/debug-search?order_number=${encodeURIComponent(orderNumber)}`)
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(readableApiError(body, 'Could not inspect the Shiprocket search response.'))
+  return body as ShiprocketSearchDiagnostic
+}
+
 export type ShadowfaxShipmentRowDiagnostic = {
   order_number: '324663'
   shopify_order_id: string

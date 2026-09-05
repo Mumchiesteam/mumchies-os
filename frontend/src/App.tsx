@@ -9,11 +9,13 @@ import {
   getShadowfaxDirect324663Status,
   getShadowfaxShipmentRow324663,
   getShadowfaxHealthCheck,
+  inspectShiprocketSearch as inspectShiprocketSearchRequest,
   testShadowfaxCreateOnly,
   type ShadowfaxDirectTestState,
   type ShadowfaxHealthCheck,
   type ShadowfaxCreateOnlyDiagnostic,
   type ShadowfaxShipmentRowDiagnostic,
+  type ShiprocketSearchDiagnostic,
   addAddressConfirmationComment,
   cancelOrder,
   apiBase,
@@ -301,6 +303,8 @@ function App() {
   const [shadowfaxCreateTesting, setShadowfaxCreateTesting] = useState(false)
   const [shadowfaxCreateResult, setShadowfaxCreateResult] = useState<ShadowfaxCreateOnlyDiagnostic | null>(null)
   const [shadowfaxShipmentRow, setShadowfaxShipmentRow] = useState<ShadowfaxShipmentRowDiagnostic | null>(null)
+  const [shiprocketSearchInspecting, setShiprocketSearchInspecting] = useState(false)
+  const [shiprocketSearchResult, setShiprocketSearchResult] = useState<ShiprocketSearchDiagnostic | null>(null)
   const bookingRequestInFlight = useRef(false)
   const shadowfaxCreateInFlight = useRef(false)
   const courierSessionRef = useRef<CourierSession | null>(null)
@@ -951,6 +955,19 @@ function App() {
     }
   }
 
+  const inspectShiprocketSearch = async () => {
+    if (!selectedOrder) return
+    setShiprocketSearchInspecting(true)
+    setShiprocketSearchResult(null)
+    try {
+      setShiprocketSearchResult(await inspectShiprocketSearchRequest(selectedOrder.orderNumber))
+    } catch (error) {
+      setShiprocketSearchResult({ error: (error as Error).message })
+    } finally {
+      setShiprocketSearchInspecting(false)
+    }
+  }
+
   const refreshShipment = async () => {
     if (!selectedOrder) return
     setShipmentRefreshLoading(true)
@@ -1212,7 +1229,7 @@ function App() {
           drawerGeneration={addressDraftGeneration}
           courierSyncMessage={courierSyncMessage}
           addressVerificationLine={addressVerifiedLabel}
-          onClose={() => { drawerGenerationRef.current += 1; courierRequestRef.current?.controller.abort(); courierRequestRef.current = null; courierSelectionInFlight.current = null; shadowfaxCreateInFlight.current = false; setShadowfaxCreateTesting(false); setShadowfaxCreateResult(null); setCourierSession(null); setAddressDraft(emptyAddressDraft()); setAddressDraftOrderId(null); setAddressDraftGeneration(null); setAddressInitializing(true); setShadowfaxPincodeRecommendation(null); setSelectedOrderId(null); setSelectedOrderSnapshot(null) }}
+          onClose={() => { drawerGenerationRef.current += 1; courierRequestRef.current?.controller.abort(); courierRequestRef.current = null; courierSelectionInFlight.current = null; shadowfaxCreateInFlight.current = false; setShadowfaxCreateTesting(false); setShadowfaxCreateResult(null); setShiprocketSearchInspecting(false); setShiprocketSearchResult(null); setCourierSession(null); setAddressDraft(emptyAddressDraft()); setAddressDraftOrderId(null); setAddressDraftGeneration(null); setAddressInitializing(true); setShadowfaxPincodeRecommendation(null); setSelectedOrderId(null); setSelectedOrderSnapshot(null) }}
           onSaveCallLog={() => void saveCallLog()}
           onSaveAddress={saveAndVerifyAddress}
           onSaveAddressConfirmation={() => void saveAddressConfirmation()}
@@ -1231,7 +1248,8 @@ function App() {
           onSaveManualExternal={saveManualExternal}
           showShadowfaxDirectTest={selectedOrder.orderNumber === '324663' && ['owner', 'admin'].includes(authUser?.role || '')}
           showShadowfaxApiTest={['owner', 'admin'].includes(authUser?.role || '')}
-            showShadowfaxCreateTest={['owner', 'admin'].includes(authUser?.role || '')}
+          showShadowfaxCreateTest={['owner', 'admin'].includes(authUser?.role || '')}
+          showShiprocketSearchDiagnostic={['owner', 'admin'].includes(authUser?.role || '')}
             shadowfaxCreateTestAvailability={getShadowfaxCreateTestAvailability(selectedOrder, authUser?.role, shadowfaxHealthCheck)}
           shadowfaxHealthCheck={shadowfaxHealthCheck}
           shadowfaxHealthChecking={shadowfaxHealthChecking}
@@ -1239,6 +1257,9 @@ function App() {
           onTestShadowfaxCreate={() => void testShadowfaxCreate()}
           shadowfaxCreateTesting={shadowfaxCreateTesting}
           shadowfaxCreateResult={shadowfaxCreateResult}
+          shiprocketSearchInspecting={shiprocketSearchInspecting}
+          shiprocketSearchResult={shiprocketSearchResult}
+          onInspectShiprocketSearch={() => void inspectShiprocketSearch()}
           onTestShadowfaxDirect={() => void testShadowfaxDirect()}
           shadowfaxTestState={shadowfaxTestState}
           shadowfaxShipmentRow={shadowfaxShipmentRow}
@@ -1367,6 +1388,7 @@ const OrderDrawer = memo(function OrderDrawer({
   showShadowfaxDirectTest,
   showShadowfaxApiTest,
   showShadowfaxCreateTest,
+  showShiprocketSearchDiagnostic,
   shadowfaxCreateTestAvailability,
   shadowfaxHealthCheck,
   shadowfaxHealthChecking,
@@ -1374,6 +1396,9 @@ const OrderDrawer = memo(function OrderDrawer({
   onTestShadowfaxCreate,
   shadowfaxCreateTesting,
   shadowfaxCreateResult,
+  shiprocketSearchInspecting,
+  shiprocketSearchResult,
+  onInspectShiprocketSearch,
   onTestShadowfaxDirect,
   shadowfaxTestState,
   shadowfaxShipmentRow,
@@ -1445,6 +1470,7 @@ const OrderDrawer = memo(function OrderDrawer({
   showShadowfaxDirectTest: boolean
   showShadowfaxApiTest: boolean
   showShadowfaxCreateTest: boolean
+  showShiprocketSearchDiagnostic: boolean
   shadowfaxCreateTestAvailability: { canCreate: boolean; blocker: string | null }
   shadowfaxHealthCheck: ShadowfaxHealthCheck | null
   shadowfaxHealthChecking: boolean
@@ -1452,6 +1478,9 @@ const OrderDrawer = memo(function OrderDrawer({
   onTestShadowfaxCreate: () => void
   shadowfaxCreateTesting: boolean
   shadowfaxCreateResult: ShadowfaxCreateOnlyDiagnostic | null
+  shiprocketSearchInspecting: boolean
+  shiprocketSearchResult: ShiprocketSearchDiagnostic | null
+  onInspectShiprocketSearch: () => void
   onTestShadowfaxDirect: () => void
   shadowfaxTestState: ShadowfaxDirectTestState | null
   shadowfaxShipmentRow: ShadowfaxShipmentRowDiagnostic | null
@@ -1810,6 +1839,10 @@ const OrderDrawer = memo(function OrderDrawer({
                   <p>Payload: {JSON.stringify(shadowfaxCreateResult.payload)}</p>
                   {shadowfaxCreateResult.outcome === 'success' && <p className="mt-2 font-semibold">Shadowfax order created. Do not test again.</p>}
                 </div>}
+              </div>}
+              {showShiprocketSearchDiagnostic && <div className="space-y-2 border-t border-slate-100 pt-3">
+                <button type="button" disabled={shiprocketSearchInspecting} onClick={onInspectShiprocketSearch} className="rounded-lg border border-sky-300 bg-sky-50 px-3 py-2 text-sm font-semibold text-sky-800 disabled:opacity-50">{shiprocketSearchInspecting ? 'Inspecting Shiprocket...' : 'Inspect Shiprocket Search'}</button>
+                {shiprocketSearchResult && <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-sky-200 bg-sky-50/50 p-3 text-xs text-slate-800" role="status">{JSON.stringify(shiprocketSearchResult, null, 2)}</pre>}
               </div>}
               {showShadowfaxDirectTest && <div className="flex flex-wrap gap-2"><button type="button" disabled={bookingLoading || shadowfaxTestState?.eligible_for_test !== true || Boolean(shadowfaxTestState?.create_request_started_at)} onClick={onTestShadowfaxDirect} className="rounded-lg border border-violet-300 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:opacity-50">Test Shadowfax Direct</button></div>}
               {showShadowfaxDirectTest && shadowfaxTestState && <details open className="rounded-lg border border-violet-200 bg-violet-50/40 p-3 text-xs text-slate-700">

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import appSource from './App.tsx?raw'
-import { testShadowfaxCreateOnly, type Order, type ShadowfaxHealthCheck } from './services/orders'
+import { inspectShiprocketSearch, testShadowfaxCreateOnly, type Order, type ShadowfaxHealthCheck } from './services/orders'
 import { canTestShadowfaxCreate, getShadowfaxCreateTestAvailability } from './utils/shadowfaxCreateDiagnostic'
 
 const healthyShadowfax = { overall: 'PASS' } as ShadowfaxHealthCheck
@@ -24,6 +24,16 @@ const order = (overrides: Partial<Order> = {}): Order => ({
 afterEach(() => vi.restoreAllMocks())
 
 describe('Shadowfax create-only diagnostic', () => {
+  it('uses the authenticated read-only Shiprocket search diagnostic without booking', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ search_input: '326841', rows: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+    await inspectShiprocketSearch('326841')
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/api/v1/couriers/shiprocket/debug-search?order_number=326841')
+    expect((fetchMock.mock.calls[0][1] as RequestInit).credentials).toBe('include')
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain('/book')
+  })
+
   it('is visible only to an admin or owner for an unfulfilled, unshipped order with a package', () => {
     expect(canTestShadowfaxCreate(order(), 'admin', healthyShadowfax)).toBe(true)
     expect(canTestShadowfaxCreate(order(), 'owner', healthyShadowfax)).toBe(true)
@@ -72,6 +82,16 @@ describe('Shadowfax create-only diagnostic', () => {
     const handlerStart = appSource.indexOf('const testShadowfaxCreate = async')
     const handler = appSource.slice(handlerStart, appSource.indexOf('\n  const ', handlerStart + 20))
     expect(handler).toContain('testShadowfaxCreateOnly(selectedOrder.internalId)')
+    expect(handler).not.toContain('bookShiprocketShipment')
+  })
+
+  it('renders the admin-only Shiprocket search inspection control and response panel', () => {
+    expect(appSource).toContain("showShiprocketSearchDiagnostic={['owner', 'admin'].includes(authUser?.role || '')}")
+    expect(appSource).toContain("'Inspect Shiprocket Search'")
+    expect(appSource).toContain('JSON.stringify(shiprocketSearchResult, null, 2)')
+    const handlerStart = appSource.indexOf('const inspectShiprocketSearch = async')
+    const handler = appSource.slice(handlerStart, appSource.indexOf('\n  const ', handlerStart + 20))
+    expect(handler).toContain('inspectShiprocketSearchRequest(selectedOrder.orderNumber)')
     expect(handler).not.toContain('bookShiprocketShipment')
   })
 })
