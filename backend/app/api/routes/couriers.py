@@ -45,6 +45,34 @@ booking_router = APIRouter(prefix="/orders", tags=["couriers"])
 LOGGER = logging.getLogger(__name__)
 
 
+def _require_courier_diagnostic_admin(request: Request) -> None:
+    """Keep temporary provider diagnostics restricted to operational administrators."""
+    user = current_user(request)
+    if user.role not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="Admin or owner access required.")
+
+
+def _shiprocket_debug_comparisons(channel_order_id: object, search_input: str) -> dict[str, bool]:
+    """Describe the resolver's strict match alongside safe, in-memory alternatives."""
+    candidate = "" if channel_order_id is None else str(channel_order_id)
+    trimmed_candidate = candidate.strip()
+    trimmed_search = search_input.strip()
+    hashless_candidate = trimmed_candidate.lstrip("#")
+    hashless_search = trimmed_search.lstrip("#")
+
+    def numeric(value: str) -> str | None:
+        return str(int(value)) if value.isdigit() else None
+
+    candidate_numeric = numeric(hashless_candidate)
+    search_numeric = numeric(hashless_search)
+    return {
+        "raw_equality": candidate == search_input,
+        "trim_whitespace_equality": trimmed_candidate == trimmed_search,
+        "strip_leading_hash_equality": hashless_candidate == hashless_search,
+        "numeric_string_normalization_equality": bool(candidate_numeric is not None and candidate_numeric == search_numeric),
+    }
+
+
 class PackageDetailsPayload(BaseModel):
     weight_kg: float = Field(gt=0)
     length_cm: float = Field(default=5, gt=0)
@@ -681,6 +709,70 @@ async def shiprocket_health() -> dict[str, object]:
         "pickup_exists": result.pickup_exists,
         "pickup_location": result.pickup_location,
         "message": result.message,
+    }
+
+
+@router.get("/debug-search")
+async def shiprocket_debug_search(order_number: str, request: Request) -> dict[str, object]:
+    """Temporary, read-only inspection of the exact Shiprocket order-list response shape."""
+    _require_courier_diagnostic_admin(request)
+    search_input = order_number.strip()
+    if not search_input:
+        raise HTTPException(status_code=422, detail="order_number is required.")
+
+    service = ShiprocketService()
+    try:
+        response = await service._get(
+            "https://apiv2.shiprocket.in/v1/external/orders",
+            params={"search": search_input, "per_page": 50},
+        )
+    except ShiprocketConfigurationError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except httpx.HTTPError as error:
+        raise HTTPException(status_code=502, detail="Shiprocket search request failed.") from error
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    top_level_keys = sorted(str(key) for key in payload.keys()) if isinstance(payload, dict) else []
+    raw_rows = payload.get("data") if isinstance(payload, dict) else None
+    rows = raw_rows if isinstance(raw_rows, list) else []
+    evaluations = []
+    for row in rows:
+        safe_row = row if isinstance(row, dict) else {}
+        channel_order_id = safe_row.get("channel_order_id")
+        comparisons = _shiprocket_debug_comparisons(channel_order_id, search_input)
+        accepted = comparisons["raw_equality"]
+        evaluations.append(
+            {
+                "row": {
+                    "order_id": safe_row.get("id") or safe_row.get("order_id"),
+                    "channel_order_id": channel_order_id,
+                    "shipment_id": safe_row.get("shipment_id"),
+                    "channel": safe_row.get("channel"),
+                    "channel_name": safe_row.get("channel_name"),
+                    "status": safe_row.get("status"),
+                    "created_at": safe_row.get("created_at"),
+                },
+                "accepted": accepted,
+                "reason": "accepted: raw channel_order_id equals search_input" if accepted else "rejected: raw channel_order_id does not equal search_input",
+                "comparisons": comparisons,
+            }
+        )
+
+    resolver_row = next((row for row in rows if isinstance(row, dict) and str(row.get("channel_order_id") or "") == search_input), None)
+    return {
+        "search_input": search_input,
+        "http_status": response.status_code,
+        "top_level_json_keys": top_level_keys,
+        "data_is_list": isinstance(raw_rows, list),
+        "resolver_result": {
+            "found": resolver_row is not None,
+            "channel_order_id": resolver_row.get("channel_order_id") if resolver_row else None,
+            "shiprocket_order_id": (resolver_row.get("id") or resolver_row.get("order_id")) if resolver_row else None,
+        },
+        "rows": evaluations,
     }
 
 

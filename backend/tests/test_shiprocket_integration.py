@@ -14,7 +14,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.api.routes.orders import router as orders_router
-from app.api.routes.couriers import booking_router
+from app.api.routes.couriers import booking_router, _shiprocket_debug_comparisons
 from app.db.session import get_db
 from app.db.base import Base
 from app.models.shiprocket import ShiprocketShipment
@@ -83,6 +83,17 @@ def install_fake_client(monkeypatch: pytest.MonkeyPatch, responses: list[FakeRes
 
 def test_provider_neutral_booking_route_is_registered() -> None:
     assert any(getattr(route, "path", None) == "/orders/{order_id}/book" for route in booking_router.routes)
+
+
+def test_shiprocket_debug_comparisons_leave_resolver_match_strict() -> None:
+    comparisons = _shiprocket_debug_comparisons("#326841 ", "326841")
+
+    assert comparisons == {
+        "raw_equality": False,
+        "trim_whitespace_equality": False,
+        "strip_leading_hash_equality": True,
+        "numeric_string_normalization_equality": True,
+    }
 
 
 def test_confirmed_cod_order_maps_to_ready_for_booking_after_address_verification() -> None:
