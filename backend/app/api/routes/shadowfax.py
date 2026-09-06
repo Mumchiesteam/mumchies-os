@@ -15,7 +15,7 @@ from app.db.session import get_db
 from app.services.courier_platform.adapters import ShadowfaxAdapter
 from app.services.courier_platform.base import ProviderError
 from app.services.shipment_status import has_existing_shipment_evidence
-from app.services.shadowfax_diagnostics import shadowfax_health_check
+from app.services.shadowfax_diagnostics import shadowfax_health_check, shadowfax_shopify_order_diagnostic
 
 router = APIRouter(prefix="/shadowfax", tags=["shadowfax"])
 _create_only_attempted_order_ids: set[str] = set()
@@ -28,6 +28,23 @@ async def shadowfax_read_only_health_check(request: Request) -> dict[str, object
     if user is None or user.role not in {"owner", "admin"}:
         raise HTTPException(status_code=403, detail="Admin access required.")
     return await shadowfax_health_check()
+
+
+@router.get("/shopify-order-diagnostic/{order_id}")
+async def shadowfax_shopify_order_lookup_diagnostic(
+    order_id: str, request: Request, db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Admin-only, read-only resolution of the existing Shopify-synced Shadowfax row."""
+    _require_shadowfax_admin(request)
+    order, _, _ = await _load_context(order_id, db)
+    try:
+        return await shadowfax_shopify_order_diagnostic(
+            shopify_order_id=order.order_id,
+            order_number=order.order_number,
+            shopify_name=order.shopify_name,
+        )
+    except ProviderError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
 
 
 def _require_shadowfax_admin(request: Request) -> None:

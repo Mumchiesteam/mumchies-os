@@ -12,6 +12,7 @@ TEST_FILES = (
     "tests/test_delhivery.py",
     "tests/test_delhivery_native_label.py",
     "tests/test_courier_platform.py",
+    "tests/test_shadowfax_channel_order_diagnostic.py",
     "tests/test_cross_order_booking_integrity.py",
     "tests/test_shopify_fulfillment_sync.py",
     "tests/test_shipment_events.py",
