@@ -776,6 +776,34 @@ async def shiprocket_debug_search(order_number: str, request: Request) -> dict[s
     }
 
 
+@router.get("/safety-smoke")
+async def courier_safety_smoke(request: Request) -> dict[str, object]:
+    """Admin-only, read-only provider readiness summary; no shipment operation is invoked."""
+    _require_courier_diagnostic_admin(request)
+    try:
+        shiprocket = await ShiprocketService().health()
+        shiprocket_result: dict[str, object] = {
+            "configured": shiprocket.configured,
+            "authenticated": shiprocket.authenticated,
+            "pickup_exists": shiprocket.pickup_exists,
+            "message": shiprocket.message,
+        }
+    except (ShiprocketConfigurationError, ShiprocketAPIError, httpx.HTTPError) as error:
+        shiprocket_result = {"configured": False, "authenticated": False, "pickup_exists": False, "message": str(error)}
+
+    shadowfax = ShadowfaxAdapter()
+    return {
+        "read_only": True,
+        "shiprocket": shiprocket_result,
+        "delhivery": {"configured": DelhiveryService().configured, "booking_smoke": "configuration_only"},
+        "shadowfax": {
+            "configured": shadowfax.configured,
+            "serviceability_smoke": "use /api/v1/shadowfax/health-check",
+            "channel_resolution": "not_implemented_manual_workflow",
+        },
+    }
+
+
 @router.post("/orders/{order_id}/package")
 async def save_package_details(order_id: str, payload: PackageDetailsPayload, request: Request) -> dict[str, object]:
     record = OrderOperationsStore.save_package_details_with_timeline(order_id, payload.model_dump(), current_actor(request))

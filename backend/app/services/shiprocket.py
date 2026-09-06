@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import date
 from decimal import Decimal, InvalidOperation
 import time
@@ -20,6 +21,9 @@ from app.services.shipment_status import customer_cancellation_requires_action, 
 from app.services.courier_platform.models import TrackingResult
 from app.services.courier_platform.status import is_terminal, normalize_status
 from app.services.shipment_events import append_tracking_events
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ShiprocketConfigurationError(RuntimeError):
@@ -785,6 +789,8 @@ class ShiprocketService:
         courier_id: str | None = None,
         package_details: dict[str, Any] | None = None,
         courier_name: str | None = None,
+        *,
+        allow_adhoc_create: bool = False,
     ) -> dict[str, Any]:
         existing = get_shipment(db, order_id)
         if existing and has_persisted_provider_booking_evidence(snapshot(existing)):
@@ -803,6 +809,13 @@ class ShiprocketService:
 
         channel_order_id = str(order_payload.get("order_id") or "")
         upstream = await self.find_existing_order(channel_order_id)
+        LOGGER.info(
+            "shiprocket_booking_lookup order_number=%s provider=shiprocket existing_order_found=%s matched_order_id=%s matched_shipment_id=%s adhoc_fallback_attempted=false",
+            channel_order_id,
+            bool(upstream),
+            str(upstream.get("id") or upstream.get("order_id") or "") if upstream else None,
+            str(self._upstream_shipment(upstream)[0] or "") if upstream else None,
+        )
         if upstream:
             upstream_status = str(upstream.get("status") or "").upper()
             shipment_id, awb = self._upstream_shipment(upstream)
@@ -813,6 +826,11 @@ class ShiprocketService:
                 )
             if shipment_id and awb:
                 reconciled = await self.reconcile_existing_shipment(db, order_id, channel_order_id, shipment_id)
+                LOGGER.info(
+                    "shiprocket_booking_result order_number=%s provider=shiprocket result=reconciled shipment_id=%s awb_present=true",
+                    channel_order_id,
+                    shipment_id,
+                )
                 return {"shipment": reconciled, "existing": True, "reconciled": True}
             persisted = upsert_shipment(
                 db, order_id, provider="shiprocket", provider_order_id=channel_order_id,
@@ -830,8 +848,29 @@ class ShiprocketService:
                 booked_at=datetime.now(timezone.utc) if assigned_awb else None,
                 latest_status="booked" if assigned_awb else "AWB pending",
             )
+            LOGGER.info(
+                "shiprocket_booking_result order_number=%s provider=shiprocket result=assigned shipment_id=%s awb_present=%s",
+                channel_order_id,
+                shipment_id,
+                bool(assigned_awb),
+            )
             return {"shipment": snapshot(persisted), "existing": True, "assignment": assignment}
 
+        if not allow_adhoc_create:
+            LOGGER.warning(
+                "shiprocket_booking_blocked order_number=%s provider=shiprocket reason=existing_channel_order_unresolved adhoc_fallback_attempted=false",
+                channel_order_id,
+            )
+            raise ShiprocketAPIError(
+                "Shiprocket's existing Shopify/channel order could not be resolved. Booking is blocked to prevent creating a duplicate CUSTOM order.",
+                status_code=409,
+                safe_details={"operation": "reuse_order", "reason": "existing_channel_order_unresolved", "rebooking_safe": False},
+            )
+
+        LOGGER.warning(
+            "shiprocket_booking_adhoc_create order_number=%s provider=shiprocket adhoc_fallback_attempted=true",
+            channel_order_id,
+        )
         result = await self.create_shipment(db, order_id, order_payload, courier_id)
         persisted = upsert_shipment(
             db,
@@ -844,6 +883,12 @@ class ShiprocketService:
             selected_courier_name=courier_name or result.get("shipment", {}).get("courier_name"),
         )
         result["shipment"] = snapshot(persisted)
+        LOGGER.info(
+            "shiprocket_booking_result order_number=%s provider=shiprocket result=adhoc_created shipment_id=%s awb_present=%s",
+            channel_order_id,
+            result.get("shipment", {}).get("shipment_id"),
+            bool(result.get("shipment", {}).get("awb")),
+        )
         return result
 
     async def tracking(self, awb: str) -> dict[str, Any]:

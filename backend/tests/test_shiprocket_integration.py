@@ -393,6 +393,20 @@ async def test_canceled_upstream_order_is_not_recreated(monkeypatch: pytest.Monk
     assert get_shipment(sqlite_session, "6809471778894") is None
 
 
+@pytest.mark.anyio
+async def test_unresolved_shopify_channel_order_fails_closed_without_adhoc_create(monkeypatch: pytest.MonkeyPatch, sqlite_session) -> None:
+    fake = install_fake_client(monkeypatch, [FakeResponse(json_data={"data": []})])
+    ShiprocketService._token_cache = {"token": "jwt-1", "expires_at": time.time() + 3600}
+
+    with pytest.raises(ShiprocketAPIError, match="could not be resolved") as error:
+        await ShiprocketService().book_order_shipment(sqlite_session, "shopify-326841", {"order_id": "326841"}, courier_id="33")
+
+    assert error.value.safe_details["reason"] == "existing_channel_order_unresolved"
+    assert error.value.status_code == 409
+    assert [call[0] for call in fake.calls] == ["GET"]
+    assert get_shipment(sqlite_session, "shopify-326841") is None
+
+
 def test_shiprocket_api_error_preserves_safe_status_and_fields() -> None:
     error = ShiprocketService._api_error(FakeResponse(status_code=422, json_data={"message": "Invalid data", "errors": {"pickup_location": ["Pickup is required"]}}), "create_order")
     assert error.status_code == 422
