@@ -88,19 +88,23 @@ class ShopifyService:
         client_secret: str | None = None,
         api_version: str | None = None,
     ) -> None:
-        self.store = (store or settings.shopify_store or "").removeprefix("https://").removesuffix("/")
+        self.store = (store or settings.shopify_store or settings.shopify_store_url or "").removeprefix("https://").removesuffix("/")
         self.client_id = client_id or settings.shopify_client_id
         self.client_secret = client_secret or settings.shopify_client_secret
         self.api_version = api_version or settings.shopify_api_version
+        self.static_access_token = settings.shopify_token if store is None else None
 
     def _validate_configuration(self) -> None:
-        if not all((self.store, self.client_id, self.client_secret, self.api_version)):
+        oauth_configured = bool(self.client_id and self.client_secret)
+        if not (self.store and self.api_version and (self.static_access_token or oauth_configured)):
             raise ShopifyConfigurationError(
-                "SHOPIFY_STORE, SHOPIFY_CLIENT_ID, SHOPIFY_CLIENT_SECRET, and SHOPIFY_API_VERSION must be configured."
+                "SHOPIFY_STORE_URL and SHOPIFY_TOKEN, or SHOPIFY_STORE, SHOPIFY_CLIENT_ID, SHOPIFY_CLIENT_SECRET, and SHOPIFY_API_VERSION must be configured."
             )
 
     async def _get_access_token(self) -> str:
         self._validate_configuration()
+        if self.static_access_token:
+            return self.static_access_token
 
         cached = self._token_cache
         now = time.time()
