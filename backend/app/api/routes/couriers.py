@@ -647,6 +647,10 @@ async def _build_provider_booking_request(
     payment_mode = _order_payment_mode(order)
     product_value = sum(float(item.price) * item.quantity for item in order.products)
     payload = {
+        # This private marker is consumed by ShadowfaxHTTPTransport before any
+        # outbound request.  Shopify-origin orders must use the channel flow,
+        # never Unified API warehouse creation.
+        "_os_order_origin": "shopify",
         "order_type": "warehouse",
         "order_details": {
             "client_order_id": order.order_number,
@@ -1099,6 +1103,11 @@ async def temporary_shadowfax_direct_test_324663(
     user = current_user(request)
     if user.role not in {"owner", "admin"}:
         raise HTTPException(status_code=403, detail="Admin access required.")
+
+    raise HTTPException(
+        status_code=409,
+        detail="Standalone Shadowfax creation is forbidden for Shopify-origin orders.",
+    )
 
     order = next(
         (item for item in await ShopifyService().get_latest_orders(force_refresh=True) if item.order_number.lstrip("#") == "324663"),

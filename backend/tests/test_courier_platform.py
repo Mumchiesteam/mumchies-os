@@ -238,6 +238,24 @@ async def test_shadowfax_http_transport_rejects_application_level_booking_failur
 
 
 @pytest.mark.anyio
+async def test_shadowfax_shopify_origin_never_reaches_warehouse_create_endpoint():
+    calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(201, json={"message": "Success", "data": {}})
+
+    payload = official_booking_payload()
+    payload["_os_order_origin"] = "shopify"
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = ShadowfaxHTTPTransport(token="secret", base_url="https://shadowfax.example/api", client=client)
+        with pytest.raises(ProviderError, match="Standalone Shadowfax creation is forbidden for Shopify-origin orders"):
+            await transport.create_booking(payload)
+
+    assert calls == []
+
+
+@pytest.mark.anyio
 async def test_shadowfax_label_and_client_order_reconciliation_fail_closed_when_undocumented():
     transport = ShadowfaxHTTPTransport(token="secret", base_url="https://shadowfax.example/api", client=httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(500))))
     try:

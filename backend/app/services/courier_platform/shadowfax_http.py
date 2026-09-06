@@ -187,6 +187,12 @@ class ShadowfaxHTTPTransport:
             )
 
     async def create_booking(self, request: dict[str, Any]) -> dict[str, Any]:
+        if request.get("_os_order_origin") == "shopify":
+            raise ProviderError(
+                "Standalone Shadowfax creation is forbidden for Shopify-origin orders.",
+                provider="shadowfax",
+                operation="booking",
+            )
         self._validate_booking_payload(request)
         response = await self._request("POST", self.CREATE_ORDER_PATH, json=request)
         payload = self._json(response, "booking")

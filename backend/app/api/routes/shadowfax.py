@@ -80,6 +80,12 @@ async def shadowfax_create_only_diagnostic(
     """One explicit Shadowfax POST with no persistence or secondary provider actions."""
     _require_shadowfax_admin(request)
     order, operations, shipment = await _load_context(order_id, db)
+    # This endpoint loads Shopify orders exclusively.  Creating a Unified API
+    # warehouse order for one would duplicate its existing Shopify channel row.
+    raise HTTPException(
+        status_code=409,
+        detail="Standalone Shadowfax creation is forbidden for Shopify-origin orders.",
+    )
     if order.cancelled_at or str(order.shopify_status or "").casefold() in {"cancelled", "canceled"}:
         raise HTTPException(status_code=409, detail="Cancelled orders cannot be used for the Shadowfax create-only diagnostic.")
     if str(order.fulfillment_status or "unfulfilled").casefold() != "unfulfilled":
