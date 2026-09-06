@@ -142,6 +142,48 @@ async def test_failed_and_uncertain_outcomes_are_distinct_and_only_uncertain_blo
 
 
 @pytest.mark.anyio
+async def test_shadowfax_create_is_durable_and_never_retried_after_success_or_ambiguity(db):
+    class ShadowfaxAdapter(Adapter):
+        provider = "shadowfax"
+        async def create_booking(self, _request):
+            self.calls += 1
+            return BookingResult(provider="shadowfax", provider_order_id="P", shipment_id="S", awb="A",
+                                 service="Shadowfax", status=NormalizedShipmentStatus.BOOKED)
+
+    adapter = ShadowfaxAdapter()
+    first = await CourierPlatformService().book(db, order_id="shadowfax-success", merchant_order_id="326900", adapter=adapter, request={}, operator="Operator")
+    assert first["shipment"]["awb"] == "A" and adapter.calls == 1
+    second = await CourierPlatformService().book(db, order_id="shadowfax-success", merchant_order_id="326900", adapter=adapter, request={}, operator="Operator")
+    assert second["existing"] is True and adapter.calls == 1
+
+    class TimeoutShadowfax(ShadowfaxAdapter):
+        async def create_booking(self, _request):
+            self.calls += 1
+            raise TimeoutError("connection dropped")
+
+    timeout = TimeoutShadowfax()
+    with pytest.raises(TimeoutError):
+        await CourierPlatformService().book(db, order_id="shadowfax-timeout", merchant_order_id="326901", adapter=timeout, request={}, operator="Operator")
+    assert snapshot(get_shipment(db, "shadowfax-timeout"))["booking_status"] == "booking_uncertain"
+    with pytest.raises(ProviderError, match="uncertain outcome"):
+        await CourierPlatformService().book(db, order_id="shadowfax-timeout", merchant_order_id="326901", adapter=timeout, request={}, operator="Operator")
+    assert timeout.calls == 1
+
+
+@pytest.mark.anyio
+async def test_shadowfax_rejected_or_pending_create_requires_explicit_review(db):
+    class ShadowfaxAdapter(Adapter):
+        provider = "shadowfax"
+
+    for order_id, status in (("shadowfax-pending", "booking_initiated"), ("shadowfax-rejected", "booking_failed")):
+        upsert_shipment(db, order_id, provider="shadowfax", booking_status=status)
+        adapter = ShadowfaxAdapter()
+        with pytest.raises(ProviderError, match="explicit review"):
+            await CourierPlatformService().book(db, order_id=order_id, merchant_order_id="326902", adapter=adapter, request={}, operator="Operator")
+        assert adapter.calls == 0
+
+
+@pytest.mark.anyio
 async def test_readback_reconciles_incomplete_shiprocket_row_without_booking(monkeypatch, db):
     upsert_shipment(db, "323976", provider="shiprocket", provider_order_id="323976")
     order = ShopifyOrder(

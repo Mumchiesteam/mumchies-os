@@ -28,7 +28,7 @@ from app.services.courier_platform.shadowfax_http import (
 from app.services.courier_platform.webhooks import WebhookHandler, process_webhook, webhook_registry
 from app.services.courier_platform.models import TrackingResult
 from app.services.label_printing import LabelPrintError, LabelService, confirm_batch, create_batch, image_label_to_pdf, print_ready_pdf
-from app.api.routes.couriers import PackageDetailsPayload, _build_provider_booking_request, _validate_shadowfax_booking_request
+from app.api.routes.couriers import PackageDetailsPayload, _build_provider_booking_request, _sync_shopify_after_booking, _validate_shadowfax_booking_request
 from app.schemas.orders import OrderProduct, ShippingAddress, ShopifyOrder
 
 
@@ -177,7 +177,7 @@ async def test_official_shadowfax_http_transport_contract():
         serviceability = await transport.serviceability({"delivery_pincode": "560077"})
         assert serviceability["serviceable"] is True and serviceability["service_type"] == "Regular"
         booking = await transport.create_booking(official_booking_payload())
-        assert booking["awb"] == "SF-STAGE-1" and booking["shipment_id"] == "42"
+        assert booking["awb"] == "SF-STAGE-1" and booking["shipment_id"] is None
         assert booking["provider_order_id"] == "42"
         assert booking["provider_order_id"] != booking["provider_response"]["data"]["client_order_id"]
         tracking = await transport.track_shipment({"awb": "SF-STAGE-1"})
@@ -238,21 +238,30 @@ async def test_shadowfax_http_transport_rejects_application_level_booking_failur
 
 
 @pytest.mark.anyio
-async def test_shadowfax_shopify_origin_never_reaches_warehouse_create_endpoint():
+async def test_shadowfax_unified_response_requires_provider_id_and_awb_before_success():
     calls: list[str] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
         calls.append(str(request.url))
-        return httpx.Response(201, json={"message": "Success", "data": {}})
+        return httpx.Response(201, json={"message": "Success", "data": {"order_id": "SF-42", "awb": "SF-AWB-42"}})
 
-    payload = official_booking_payload()
-    payload["_os_order_origin"] = "shopify"
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         transport = ShadowfaxHTTPTransport(token="secret", base_url="https://shadowfax.example/api", client=client)
-        with pytest.raises(ProviderError, match="Standalone Shadowfax creation is forbidden for Shopify-origin orders"):
-            await transport.create_booking(payload)
+        booking = await transport.create_booking(official_booking_payload())
 
-    assert calls == []
+    assert booking["provider_order_id"] == "SF-42"
+    assert booking["awb"] == "SF-AWB-42"
+    assert len(calls) == 1 and calls[0].endswith("/v3/clients/orders/")
+
+
+@pytest.mark.anyio
+async def test_shadowfax_success_without_confirmed_identifiers_fails_closed():
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"message": "Success", "data": {}}))) as client:
+        transport = ShadowfaxHTTPTransport(token="secret", base_url="https://shadowfax.example/api", client=client)
+        with pytest.raises(ProviderError, match="omitted a confirmed provider order ID or AWB") as error:
+            await transport.create_booking(official_booking_payload())
+
+    assert error.value.uncertain is True
 
 
 @pytest.mark.anyio
@@ -301,7 +310,9 @@ def test_registry_exposes_provider_capabilities_without_secrets():
 
 
 @pytest.mark.anyio
-async def test_shadowfax_mock_auth_serviceability_booking_tracking_cancellation_and_label():
+async def test_shadowfax_mock_auth_serviceability_booking_tracking_cancellation_and_label(monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "shadowfax_unified_label_enabled", True)
     transport = MockTransport(); adapter = ShadowfaxAdapter(token="secret", base_url="https://official.invalid", transport=transport)
     assert await adapter.authenticate() is True
     serviceability = await adapter.serviceability({"delivery_pincode": "560001"})
@@ -473,3 +484,24 @@ def test_webhook_signature_idempotency_and_ndr_persistence(db):
     second = process_webhook(db, provider=provider, body=body, headers={"x-signature": "valid"}, payload={"event_id": "evt-1"})
     assert first["duplicate"] is False and second["duplicate"] is True
     assert get_shipment(db, "3").ndr_reason == "Customer unavailable"
+
+
+@pytest.mark.anyio
+async def test_shadowfax_golden_path_sync_runs_only_after_confirmed_awb_persistence(db, monkeypatch):
+    order = ShopifyOrder(order_id="shadowfax-golden", order_number="326999", shopify_graphql_id="gid://shopify/Order/326999", created_date="2026-09-06T00:00:00Z", products=[], total_amount=0, fulfillment_status="unfulfilled", tags=[])
+    upsert_shipment(
+        db, order.order_id, provider="shadowfax", provider_order_id="SFX-ORDER-1",
+        awb="SFX-AWB-1", booking_status="booked", booked_at=datetime.now(timezone.utc),
+    )
+    calls = []
+
+    async def sync(_self, session, order_id, order_gid):
+        stored = get_shipment(session, order_id)
+        assert stored and stored.provider_order_id == "SFX-ORDER-1" and stored.awb == "SFX-AWB-1"
+        calls.append((order_id, order_gid))
+        return {"awb": stored.awb, "shopify_fulfillment_status": "fulfilled"}
+
+    monkeypatch.setattr("app.api.routes.couriers.ShopifyFulfillmentSynchronizer.sync", sync)
+    result = await _sync_shopify_after_booking(db, order)
+    assert calls == [(order.order_id, order.shopify_graphql_id)]
+    assert result["awb"] == "SFX-AWB-1"

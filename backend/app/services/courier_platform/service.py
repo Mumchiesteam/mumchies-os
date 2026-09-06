@@ -34,6 +34,12 @@ class CourierPlatformService:
             return {"shipment": snapshot(existing), "existing": True}
         if existing and has_uncertain_provider_booking(snapshot(existing)):
             raise ProviderError("A submitted booking has an uncertain outcome. Reconcile it before retrying.", provider=adapter.provider, operation="booking", uncertain=True)
+        if existing and adapter.provider == "shadowfax" and existing.booking_status in {"booking_initiated", "booking_failed"}:
+            raise ProviderError(
+                "Shadowfax booking is already pending or requires explicit review before another create attempt.",
+                provider=adapter.provider,
+                operation="booking",
+            )
 
         try:
             upstream = await adapter.reconcile_booking(merchant_order_id)
@@ -66,7 +72,7 @@ class CourierPlatformService:
             uncertain = not isinstance(error, ProviderError) or error.uncertain
             upsert_shipment(
                 db, order_id, booking_status="booking_uncertain" if uncertain else "booking_failed",
-                booking_confidence=BookingConfidence.UNCERTAIN,
+                booking_confidence=BookingConfidence.UNCERTAIN if uncertain else None,
                 reconciliation_status=ReconciliationStatus.PENDING if uncertain else ReconciliationStatus.FAILED,
                 reconciliation_error=str(error), latest_status="Provider response uncertain" if uncertain else "Booking failed",
                 last_synced_at=datetime.now(timezone.utc),

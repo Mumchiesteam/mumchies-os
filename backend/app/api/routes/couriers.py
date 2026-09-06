@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal, get_db
+from app.core.config import settings
 from app.core.identity import current_actor, current_user
 from app.repositories.shiprocket import get_shipment, snapshot as shipment_snapshot, upsert_shipment
 from app.models.shiprocket import ShiprocketShipment
@@ -647,10 +648,6 @@ async def _build_provider_booking_request(
     payment_mode = _order_payment_mode(order)
     product_value = sum(float(item.price) * item.quantity for item in order.products)
     payload = {
-        # This private marker is consumed by ShadowfaxHTTPTransport before any
-        # outbound request.  Shopify-origin orders must use the channel flow,
-        # never Unified API warehouse creation.
-        "_os_order_origin": "shopify",
         "order_type": "warehouse",
         "order_details": {
             "client_order_id": order.order_number,
@@ -1105,8 +1102,8 @@ async def temporary_shadowfax_direct_test_324663(
         raise HTTPException(status_code=403, detail="Admin access required.")
 
     raise HTTPException(
-        status_code=409,
-        detail="Standalone Shadowfax creation is forbidden for Shopify-origin orders.",
+        status_code=410,
+        detail="The legacy Shadowfax direct test is retired. Direct booking remains feature-disabled pending end-to-end validation.",
     )
 
     order = next(
@@ -1533,7 +1530,22 @@ async def shiprocket_book_shipment(
         if payload.provider and payload.provider.lower() != provider:
             raise HTTPException(status_code=400, detail="Requested provider does not match the stored courier selection.")
         if provider == "shadowfax":
-            raise HTTPException(status_code=409, detail="Shadowfax is manual-booking only. Use Mark as shipped through Shadowfax.")
+            if not settings.shadowfax_direct_booking_enabled:
+                raise HTTPException(status_code=409, detail="Shadowfax direct booking is disabled pending end-to-end validation.")
+            provider_payload = await _build_provider_booking_request(context.order, _context_operations(context), context.package)
+            _validate_shadowfax_booking_request(provider_payload)
+            _assert_booking_payload(context, "shadowfax", provider_payload)
+            result = await CourierPlatformService().book(
+                db, order_id=order_id, merchant_order_id=order.order_number,
+                adapter=ShadowfaxAdapter(), request=provider_payload, operator=actor,
+            )
+            # CourierPlatformService persists the confirmed AWB/provider IDs before this
+            # asynchronous Shopify fulfillment work is scheduled.
+            upsert_shipment(db, order_id, shopify_fulfillment_sync_status="pending", shopify_fulfillment_sync_error=None)
+            canonical = shipment_snapshot(get_shipment(db, order_id))
+            if background_tasks is not None:
+                background_tasks.add_task(_run_post_booking_work, order_id, order.order_number, order.shopify_graphql_id, "shadowfax", actor)
+            return _finish_booking_response(order_id, "shadowfax", result, canonical, stages, request_started, response)
         if provider == "delhivery":
             service = DelhiveryService()
             if not service.configured:
@@ -1623,6 +1635,69 @@ async def provider_book_shipment(
     return await shiprocket_book_shipment(
         order_id, payload, db, current_actor(request), background_tasks=background_tasks, response=response,
     )
+
+
+def _controlled_shadowfax_order_matches(order_number: str) -> bool:
+    """A production-safe allow-list for one operator-designated test order."""
+    configured = str(settings.shadowfax_controlled_booking_order_number or "").strip().lstrip("#")
+    return bool(configured) and order_number.strip().lstrip("#") == configured
+
+
+@booking_router.post("/{order_id}/shadowfax/controlled-booking")
+async def controlled_shadowfax_booking(
+    order_id: str, payload: BookingPayload, request: Request, db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """One admin-only Unified-API booking for the explicitly configured test order.
+
+    This intentionally does not consult the global enable flag: that flag keeps
+    the normal Book Shipment route off.  This endpoint stays inert until the
+    deployment configuration names one exact Shopify order number.
+    """
+    _require_courier_diagnostic_admin(request)
+    order, operations, shipment = await _load_context(order_id, db)
+    if not _controlled_shadowfax_order_matches(order.order_number):
+        raise HTTPException(status_code=403, detail="This order is not the explicitly configured controlled Shadowfax test order.")
+    if order.cancelled_at or str(order.shopify_status or "").strip().casefold() in {"cancelled", "canceled"}:
+        raise HTTPException(status_code=409, detail="Cancelled orders cannot be booked with Shadowfax.")
+    if str(order.fulfillment_status or "unfulfilled").strip().casefold() != "unfulfilled":
+        raise HTTPException(status_code=409, detail="Only unfulfilled Shopify orders can be booked with Shadowfax.")
+    if shipment:
+        evidence_fields = ("provider_order_id", "shipment_id", "awb")
+        present = [field for field in evidence_fields if shipment.get(field)]
+        if present:
+            raise HTTPException(status_code=409, detail=f"Shadowfax booking is blocked by existing shipment evidence: {', '.join(present)}.")
+        if str(shipment.get("booking_status") or "").casefold() in {"booking_initiated", "booking_uncertain", "booked", "confirmed", "manual_confirmed"}:
+            raise HTTPException(status_code=409, detail="Shadowfax booking is blocked by the durable booking state. Reconcile or review it before any retry.")
+    if has_existing_shipment_evidence(order, operations, shipment):
+        raise HTTPException(status_code=409, detail="Shopify tracking or shipment evidence already exists; Shadowfax create is blocked.")
+    eligibility = ShiprocketService().evaluate_booking_eligibility(order, operations, shipment)
+    if not eligibility.eligible:
+        raise HTTPException(status_code=400, detail={"message": "Order is not eligible for booking.", "missing_requirements": eligibility.missing_requirements})
+    selected = operations.get("selected_courier")
+    if not isinstance(selected, dict) or str(selected.get("provider") or "").casefold() != "shadowfax":
+        raise HTTPException(status_code=409, detail="Select a Shadowfax courier for this order before the controlled booking.")
+    if not _booking_selection_matches(selected, payload) or str(payload.provider or "").casefold() != "shadowfax":
+        raise HTTPException(status_code=409, detail="Controlled Shadowfax booking requires the current selected courier context.")
+    if payload.draft_order_id != order_id:
+        raise HTTPException(status_code=409, detail="Booking blocked: package or drawer state belongs to a different order.")
+    context = _booking_context(order, operations, PackageDetailsPayload.model_validate(payload.model_dump()), selected)
+    if payload.address_revision != context.address_revision or payload.booking_context_hash != context.context_hash:
+        raise HTTPException(status_code=409, detail="Booking blocked: order data changed or could not be verified. Reload the order before booking.")
+    provider_payload = await _build_provider_booking_request(context.order, _context_operations(context), context.package)
+    _validate_shadowfax_booking_request(provider_payload)
+    _assert_booking_payload(context, "shadowfax", provider_payload)
+    try:
+        result = await CourierPlatformService().book(
+            db, order_id=order_id, merchant_order_id=order.order_number,
+            adapter=ShadowfaxAdapter(), request=provider_payload, operator=current_actor(request),
+        )
+    except ProviderError as error:
+        raise HTTPException(status_code=502, detail={"message": str(error), "outcome": "uncertain" if error.uncertain else "rejected"}) from error
+    # CourierPlatformService atomically persisted the immutable provider ID and
+    # AWB before this Shopify fulfillment sync is allowed to run.
+    upsert_shipment(db, order_id, shopify_fulfillment_sync_status="pending", shopify_fulfillment_sync_error=None)
+    canonical = await _sync_shopify_after_booking(db, order)
+    return {"provider": "shadowfax", "controlled": True, **result, "shipment": canonical or shipment_snapshot(get_shipment(db, order_id))}
 
 
 @booking_router.post("/{order_id}/booking-context")

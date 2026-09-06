@@ -187,12 +187,6 @@ class ShadowfaxHTTPTransport:
             )
 
     async def create_booking(self, request: dict[str, Any]) -> dict[str, Any]:
-        if request.get("_os_order_origin") == "shopify":
-            raise ProviderError(
-                "Standalone Shadowfax creation is forbidden for Shopify-origin orders.",
-                provider="shadowfax",
-                operation="booking",
-            )
         self._validate_booking_payload(request)
         response = await self._request("POST", self.CREATE_ORDER_PATH, json=request)
         payload = self._json(response, "booking")
@@ -214,11 +208,23 @@ class ShadowfaxHTTPTransport:
                 str(payload.get("errors") or payload.get("message") or "Shadowfax rejected the booking."),
                 provider="shadowfax", operation="booking", http_status=response.status_code,
             )
-        awb = str(data.get("awb_number") or "") or None
-        provider_order_id = str(data.get("id") or "") or None
+        def first_text(*values: object) -> str | None:
+            return next((str(value).strip() for value in values if str(value or "").strip()), None)
+
+        # Unified API responses have appeared with both nested and top-level
+        # wrappers.  Require both immutable provider order identity and AWB;
+        # anything less is an ambiguous create and must never be persisted as success.
+        awb = first_text(data.get("awb_number"), data.get("awb"), payload.get("awb_number"), payload.get("awb"), payload.get("AWB"))
+        provider_order_id = first_text(data.get("id"), data.get("order_id"), data.get("order_uuid"), payload.get("id"), payload.get("order_id"), payload.get("order_uuid"))
+        shipment_id = first_text(data.get("shipment_id"), data.get("shipment_uuid"), payload.get("shipment_id"), payload.get("shipment_uuid"))
+        if not provider_order_id or not awb:
+            raise ProviderError(
+                "Shadowfax create response omitted a confirmed provider order ID or AWB; reconcile before retrying.",
+                provider="shadowfax", operation="booking", http_status=response.status_code, uncertain=True,
+            )
         return {
             "provider_order_id": provider_order_id,
-            "shipment_id": provider_order_id,
+            "shipment_id": shipment_id,
             "awb": awb,
             "status": str(data.get("status") or "new"),
             "tracking_url": str(data.get("customer_track_url") or "") or None,

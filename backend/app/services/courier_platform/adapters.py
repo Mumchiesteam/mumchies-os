@@ -262,7 +262,12 @@ class ShadowfaxAdapter(CourierAdapter):
         return CancellationResult(provider=self.provider, status="cancelled" if cancelled else "rejected", cancelled=cancelled, provider_status=str(raw.get("status") or "") or None, message=str(raw.get("message") or ("Shipment cancelled." if cancelled else "Provider rejected cancellation.")), raw_response=self.sanitize(raw))
 
     async def download_label(self, shipment: dict[str, Any]) -> LabelResult:
-        # TODO(official-shadowfax-spec): wire the documented label operation.
+        if not settings.shadowfax_unified_label_enabled:
+            raise ProviderConfigurationError(
+                "Shadowfax Unified API label generation is disabled pending AWB compatibility validation.",
+                provider=self.provider,
+                operation="label",
+            )
         content, content_type, source_url = await self._require_transport("label").download_label(shipment)
         mapping = {"application/pdf": LabelFormat.PDF, "image/png": LabelFormat.PNG, "image/jpeg": LabelFormat.JPEG}
         if content_type not in mapping:
