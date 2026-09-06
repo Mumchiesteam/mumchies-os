@@ -202,10 +202,21 @@ async def shadowfax_shopify_order_diagnostic(
     http_client = client or httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0))
     try:
         token = await _shadowfax_360_token(http_client)
+        # Shadowfax 360 calls this field `shopify_order_id`, but populates it
+        # from its Shopify Orders page's displayed order-ID search input, not
+        # Shopify's global GraphQL/internal ID.
         response = await http_client.post(
             SHADOWFAX_SHOPIFY_ORDERS_URL,
             headers={"Authorization": f"Token {token}", "Content-Type": "application/json"},
-            json={"page": 1, "limit": 250, "status": "all", "shopify_order_id": shopify_order_id, "payment_type": None},
+            json={
+                "page": 1,
+                "limit": 250,
+                "status": "all",
+                "order_start_date": None,
+                "order_end_date": None,
+                "shopify_order_id": order_number.lstrip("#").strip(),
+                "payment_type": None,
+            },
         )
         try:
             payload = response.json()
@@ -213,6 +224,13 @@ async def shadowfax_shopify_order_diagnostic(
             payload = None
         raw_rows = payload.get("data") if isinstance(payload, dict) else None
         rows = raw_rows if isinstance(raw_rows, list) else []
+        provider_error = None
+        if response.status_code >= 400 and isinstance(payload, dict):
+            provider_error = {
+                "error": payload.get("error"),
+                "message": payload.get("message"),
+                "validation": payload.get("validation") or payload.get("errors") or payload.get("detail"),
+            }
         evaluations: list[dict[str, object]] = []
         accepted_rows: list[dict[str, object]] = []
         for item in rows:
@@ -246,7 +264,9 @@ async def shadowfax_shopify_order_diagnostic(
             "shopify_display_order_number": order_number,
             "shopify_display_order_name": shopify_name,
             "http_status": response.status_code,
+            "search_order_number": order_number.lstrip("#").strip(),
             "top_level_json_keys": sorted(str(key) for key in payload.keys()) if isinstance(payload, dict) else [],
+            "provider_error": provider_error,
             "returned_row_count": len(rows),
             "rows": evaluations,
             "resolver_result": {

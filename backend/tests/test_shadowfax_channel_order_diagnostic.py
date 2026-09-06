@@ -19,7 +19,8 @@ async def test_shadowfax_channel_diagnostic_resolves_one_matching_shopify_row_wi
             return httpx.Response(200, json={"token": "channel-token"})
         if request.url.path == "/api/v2/shopify/orders/":
             assert json.loads(request.content) == {
-                "page": 1, "limit": 250, "status": "all", "shopify_order_id": "6902274883662", "payment_type": None,
+                "page": 1, "limit": 250, "status": "all", "order_start_date": None, "order_end_date": None,
+                "shopify_order_id": "326841", "payment_type": None,
             }
             return httpx.Response(200, json={"data": [{
                 "id": "6902274883662", "name": "#326841", "status": "NEW", "payment_mode": "Prepaid", "awb_number": None, "platform": "shopify",
@@ -47,6 +48,31 @@ async def test_shadowfax_channel_diagnostic_resolves_one_matching_shopify_row_wi
     }
     assert calls == ["/api/v1/login/", "/api/v2/shopify/orders/"]
     assert "/api/v3/clients/orders/" not in calls
+
+
+@pytest.mark.anyio
+async def test_shadowfax_channel_diagnostic_surfaces_sanitized_upstream_400(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "shadowfax_email", None)
+    monkeypatch.setattr(settings, "shadowfax_password_secret", None)
+    monkeypatch.setattr(settings, "shadowfax_api_token", "read-only-test-token")
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(400, json={"error": "validation_error", "message": "Invalid Shopify order ID", "validation": {"shopify_order_id": ["invalid"]}})
+        )
+    )
+    try:
+        result = await shadowfax_shopify_order_diagnostic(
+            shopify_order_id="6917185798222", order_number="326878", shopify_name="#326878", client=client,
+        )
+    finally:
+        await client.aclose()
+
+    assert result["http_status"] == 400
+    assert result["search_order_number"] == "326878"
+    assert result["provider_error"] == {
+        "error": "validation_error", "message": "Invalid Shopify order ID", "validation": {"shopify_order_id": ["invalid"]},
+    }
+    assert result["resolver_result"]["found"] is False
 
 
 @pytest.mark.anyio
