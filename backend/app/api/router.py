@@ -9,6 +9,9 @@ from app.api.routes.courier_webhooks import router as courier_webhooks_router
 from app.api.routes.courier_platform import router as courier_platform_router
 from app.api.routes.users import router as users_router
 from app.api.routes.ndr import router as ndr_router
+from app.api.routes.gst_reconciliation import router as gst_reconciliation_router
+from app.api.routes.reports import router as reports_router
+from app.api.routes.courier_financial import router as courier_financial_router
 
 api_router = APIRouter()
 api_router.include_router(auth_router)
@@ -21,3 +24,6 @@ api_router.include_router(courier_webhooks_router)
 api_router.include_router(courier_platform_router)
 api_router.include_router(users_router)
 api_router.include_router(ndr_router)
+api_router.include_router(gst_reconciliation_router)
+api_router.include_router(reports_router)
+api_router.include_router(courier_financial_router)

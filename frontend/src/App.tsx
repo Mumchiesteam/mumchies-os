@@ -53,7 +53,7 @@ import { logout } from './services/auth'
 import { useAuth } from './auth-context'
 import { UsersPage } from './components/UsersPage'
 import { NDRPage } from './components/NDRPage'
-import { ReconciliationUnavailable } from './components/ReconciliationUnavailable'
+import { CourierReconciliationPage } from './components/CourierReconciliationPage'
 import { ReportsPage } from './components/ReportsPage'
 import { formatDateTime, parseOperationalDate } from './utils/time'
 import { orderContactSectionTitle } from './utils/operations'
@@ -63,7 +63,7 @@ import { engageCategory } from './utils/engage'
 import { hasShipmentEvidence, isCancelled, listStatus, type OperationalStatus } from './utils/orderStatus'
 import { OrderSessionGuard } from './utils/orderSession'
 import { AbortableRequestGate } from './utils/requestGate'
-import { canTestShadowfaxCreate, getShadowfaxHealth, testShadowfaxCreateOrder, type ShadowfaxCreateTestResult, type ShadowfaxHealth } from './services/shadowfax-diagnostic'
+import { canTestShadowfaxCreate, getShadowfaxCreateTestAvailability, getShadowfaxHealth, testShadowfaxCreateOrder, type ShadowfaxCreateTestResult, type ShadowfaxHealth } from './services/shadowfax-diagnostic'
 
 type IconName = 'grid' | 'bag' | 'alert' | 'users' | 'chart' | 'settings' | 'search' | 'bell' | 'filter' | 'chevron' | 'more' | 'eye' | 'truck' | 'calendar' | 'close' | 'copy' | 'phone' | 'external' | 'repeat' | 'tag' | 'edit' | 'call'
 type TabKey = 'fresh' | 'previous' | 'all' | 'labels_to_print' | 'awaiting_confirmation' | 'printed_today' | 'shiprocket_cleanup'
@@ -693,19 +693,7 @@ function App() {
         {activePage === 'Settings' && authUser?.role === 'owner' && <UsersPage />}
         {activePage === 'NDR' && <NDRPage />}
         {activePage === 'Reports' && <ReportsPage path={reportPath} navigate={navigateReports} />}
-        {activePage === 'Reconciliation' && <div>
-          <div className="mb-5"><p className="text-sm font-medium text-[#ff6b35]">Reconciliation</p><h2 className="mt-1 text-2xl font-bold tracking-tight">Order reconciliation</h2></div>
-          <div className="mb-5 border-b border-slate-200"><button className="border-b-2 border-slate-900 px-1 pb-3 text-sm font-semibold text-slate-900">OS / Shiprocket Reconciliation</button></div>
-          <section className="mb-5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-bold uppercase tracking-[.12em] text-slate-400">OS / Shiprocket reconciliation</p><p className="mt-1 text-xs text-slate-500">Operational and Shiprocket totals may differ while orders sync or use another courier.</p></div><button disabled={!reconciliation} onClick={refreshReconciliation} className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400">Refresh reconciliation</button></div>{reconciliation ? <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{([
-            ['operations', 'Operations Queue', reconciliation.operations_queue],
-            ['shiprocket_new', 'Shiprocket New', reconciliation.shiprocket_new],
-            ['both', 'Present in Both', reconciliation.present_in_both],
-            ['cleanup_pending', 'Cleanup Pending', reconciliation.cleanup_pending],
-            ['missing_in_shiprocket', 'Missing in Shiprocket', reconciliation.missing_in_shiprocket],
-          ] as [ReconciliationFilter, string, number][]).map(([key, label, value]) => { const active = reconciliationFilter === key; return <button type="button" aria-pressed={active} key={key} onClick={() => setReconciliationFilter(current => selectReconciliationFilter(current, key))} className={`cursor-pointer rounded-lg border px-3 py-2 text-left transition focus:outline-none focus:ring-2 focus:ring-orange-300 ${active ? 'border-orange-300 bg-orange-50 ring-2 ring-orange-100' : 'border-transparent bg-slate-50 hover:border-slate-300 hover:bg-slate-100'}`}><p className="text-[11px] font-semibold text-slate-500">{label}</p><p className="mt-1 text-lg font-bold text-slate-900">{value}</p></button> })}</div> : <ReconciliationUnavailable />}</section>
-          {reconciliationFilter && <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-4"><div><h3 className="text-lg font-bold text-slate-900">{reconciliationFilterLabel(reconciliationFilter)}</h3><p className="text-sm text-slate-500">{reconciliationRows.length} orders</p></div><button onClick={() => setReconciliationFilter(clearReconciliationFilter())} className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">Clear Filter</button></div><OrdersTable orders={reconciliationOrders} repeatIds={repeatIds} onOpen={openOrder} reconciliationRows={reconciliationRows} reconciliationFilter={reconciliationFilter} cleanupRecords={cleanupRecords} cleanupResults={cleanupResults} onCleanup={sendShiprocketCleanup} onVerify={verifyShiprocketCleanup} emptyMessage="No orders match this reconciliation view." /></section>}
-        </div>}
-
+        {activePage === 'Reconciliation' && <CourierReconciliationPage />}
         <div className={activePage === 'Orders' ? '' : 'hidden'}>
         <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
           <div>
@@ -841,6 +829,8 @@ function App() {
           onDownloadLabel={() => retrieveLabel('download')}
           onPrintLabel={() => retrieveLabel('print')}
           canTestShadowfaxCreate={canTestShadowfaxCreate(selectedOrder, shadowfaxHealth, authUser?.role)}
+          shadowfaxTestBlocker={getShadowfaxCreateTestAvailability(selectedOrder, shadowfaxHealth, authUser?.role).blocker}
+          showShadowfaxTestCreate={authUser?.role === 'owner' || authUser?.role === 'admin'}
           shadowfaxTestLoading={shadowfaxTestLoading}
           shadowfaxTestResult={shadowfaxTestResult}
           onTestShadowfaxCreate={() => void testShadowfaxCreate()}
@@ -962,6 +952,8 @@ const OrderDrawer = memo(function OrderDrawer({
   onDownloadLabel,
   onPrintLabel,
   canTestShadowfaxCreate,
+  shadowfaxTestBlocker,
+  showShadowfaxTestCreate,
   shadowfaxTestLoading,
   shadowfaxTestResult,
   onTestShadowfaxCreate,
@@ -1041,6 +1033,8 @@ const OrderDrawer = memo(function OrderDrawer({
   onDownloadLabel: () => void
   onPrintLabel: () => void
   canTestShadowfaxCreate: boolean
+  shadowfaxTestBlocker: string | null
+  showShadowfaxTestCreate: boolean
   shadowfaxTestLoading: boolean
   shadowfaxTestResult: ShadowfaxCreateTestResult | null
   onTestShadowfaxCreate: () => void
@@ -1230,10 +1224,10 @@ const OrderDrawer = memo(function OrderDrawer({
 
           <Section title="Courier Booking">
             <div className="space-y-4 text-sm text-slate-600">
-              {canTestShadowfaxCreate && <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+              {showShadowfaxTestCreate && <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div><p className="font-semibold text-amber-900">Admin diagnostic</p><p className="text-xs text-amber-800">Creates one Shadowfax test order only. It does not book in OS, clean up Shiprocket, sync Shopify, or create a label.</p></div>
-                  <button disabled={shadowfaxTestLoading || shadowfaxTestResult?.outcome === 'success'} onClick={onTestShadowfaxCreate} className="rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm font-semibold text-amber-900 disabled:cursor-not-allowed disabled:opacity-60">{shadowfaxTestLoading ? 'Testing Shadowfax...' : 'Test Shadowfax Create'}</button>
+                  <div className="flex items-center gap-2"><button disabled={!canTestShadowfaxCreate || shadowfaxTestLoading || shadowfaxTestResult?.outcome === 'success'} onClick={onTestShadowfaxCreate} className="rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm font-semibold text-amber-900 disabled:cursor-not-allowed disabled:opacity-60">{shadowfaxTestLoading ? 'Testing Shadowfax...' : 'Test Shadowfax Create'}</button>{shadowfaxTestBlocker && <span className="text-xs font-medium text-amber-900">{shadowfaxTestBlocker}</span>}</div>
                 </div>
                 {shadowfaxTestResult && <div className="mt-3 space-y-1 rounded-md bg-white p-2 text-xs text-slate-700"><p><span className="font-semibold">Outcome:</span> {shadowfaxTestResult.outcome}</p><p><span className="font-semibold">HTTP:</span> {shadowfaxTestResult.http_status ?? '—'}</p><p><span className="font-semibold">Message:</span> {shadowfaxTestResult.message || '—'}</p><p><span className="font-semibold">Validation:</span> {shadowfaxTestResult.validation_errors ? JSON.stringify(shadowfaxTestResult.validation_errors) : '—'}</p><p><span className="font-semibold">Shadowfax order:</span> {shadowfaxTestResult.data.id || '—'}</p><p><span className="font-semibold">AWB:</span> {shadowfaxTestResult.data.awb_number || '—'}</p><p><span className="font-semibold">Sanitized payload:</span> {JSON.stringify(shadowfaxTestResult.payload)}</p>{shadowfaxTestResult.outcome === 'success' && <p className="pt-1 font-semibold text-emerald-700">Shadowfax order created. Do not test again.</p>}</div>}
               </div>}
