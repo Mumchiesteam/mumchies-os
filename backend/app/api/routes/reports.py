@@ -25,9 +25,9 @@ def _month(value: str) -> date:
     return parsed
 
 
-async def _report(month: str, *, use_cache: bool = True):
+async def _report(month: str, *, use_cache: bool = True, db: Session | None = None):
     try:
-        return await MonthlyGstReportService().generate(_month(month), use_cache=use_cache)
+        return await MonthlyGstReportService(db=db).generate(_month(month), use_cache=use_cache)
     except ShopifyConfigurationError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     except (ShopifySyncError, httpx.HTTPError) as error:
@@ -47,7 +47,7 @@ async def monthly_gst_report(
         if refresh:
             raise HTTPException(status_code=409, detail="This month is finalised. Use Regenerate Draft to compare current Shopify data without replacing the final report.")
         return final_payload(saved)
-    report = await _report(month, use_cache=not refresh and not regenerate)
+    report = await _report(month, use_cache=not refresh and not regenerate, db=db)
     return draft_payload(report, saved)
 
 
@@ -85,7 +85,7 @@ async def export_monthly_gst_report(month: str = Query(..., pattern=r"^\d{4}-\d{
     if saved:
         filename = f"shopify-{month}-final-gst-b2cs.csv"
         return Response(saved.csv_content.encode("utf-8-sig"), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
-    report = await _report(month)
+    report = await _report(month, db=db)
     if report.exceptions:
         raise HTTPException(status_code=409, detail="Resolve GST report exceptions before downloading the filing CSV.")
     filename = f"shopify-{month}-final-gst-b2cs.csv"

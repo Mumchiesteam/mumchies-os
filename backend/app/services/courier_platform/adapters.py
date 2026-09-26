@@ -136,7 +136,7 @@ class DelhiveryAdapter(CourierAdapter):
         if not shipment.get("awb"): raise ProviderError("Shipment has no AWB.", provider=self.provider, operation="tracking")
         raw = await DelhiveryService().tracking(str(shipment["awb"]))
         status = normalize_status(raw.get("status"))
-        return TrackingResult(provider=self.provider, status=status, provider_status=str(raw.get("status") or "") or None, latest_scan=str(raw.get("location") or "") or None, latest_tracking_at=None, tracking_url=raw.get("tracking_url"), terminal=is_terminal(status), raw_response=self.sanitize(raw))
+        return TrackingResult(provider=self.provider, status=status, provider_status=str(raw.get("status") or "") or None, latest_scan=str(raw.get("location") or "") or None, latest_tracking_at=None, delivered_at=raw.get("delivered_at") if status == NormalizedShipmentStatus.DELIVERED else None, tracking_url=raw.get("tracking_url"), terminal=is_terminal(status), raw_response=self.sanitize(raw))
 
     async def cancel_booking(self, shipment: dict[str, Any]) -> CancellationResult:
         from app.services.delhivery import DelhiveryService

@@ -97,6 +97,7 @@ class TrackingResult(BaseModel):
     provider_status: str | None = None
     latest_scan: str | None = None
     latest_tracking_at: datetime | None = None
+    delivered_at: datetime | None = None
     tracking_url: str | None = None
     terminal: bool = False
     ndr_reason: str | None = None

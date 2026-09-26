@@ -3,13 +3,20 @@ from __future__ import annotations
 import csv
 import time
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from io import StringIO
+from typing import Any
 from zoneinfo import ZoneInfo
 
+import httpx
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
 from app.core.config import settings
+from app.models.shiprocket import ShiprocketShipment
+from app.services.delhivery import DelhiveryError, DelhiveryService
 from app.services.shopify import ShopifyService
 
 
@@ -28,6 +35,9 @@ MANUAL_PLACE_OF_SUPPLY = {"322131": "Bihar", "319899": "Punjab"}
 JULY_FORCE_FIVE_PERCENT = {"320055", "320839", "321243", "320959", "319899"}
 SHOPIFY_SHIPPING_TAX = "SHOPIFY_SHIPPING_TAX"
 HISTORICAL_SHIPPING_ADJUSTMENT = "HISTORICAL_SHIPPING_ADJUSTMENT"
+# Temporary, reviewed correction: these May deliveries were marked delivered in Shopify in
+# August. Keep this month-specific until the historical records are corrected at source.
+AUGUST_2026_MANUAL_DELIVERY_EXCLUSIONS = {"316161", "316684"}
 
 
 def _decimal(value: object) -> Decimal:
@@ -64,6 +74,10 @@ def _delivery_timestamp(order: dict) -> str | None:
             if event.get("status") == "DELIVERED" and event.get("happenedAt")
         )
     return max(values, key=lambda value: datetime.fromisoformat(value.replace("Z", "+00:00"))) if values else None
+
+
+def _shopify_order_id(order: dict) -> str:
+    return str(order.get("id") or "").rsplit("/", 1)[-1]
 
 
 def _line_rate(line: dict) -> Decimal | None:
@@ -106,6 +120,7 @@ class GstReport:
     adjustments: dict[str, object]
     baseline_comparison: dict[str, object] | None
     population: dict[str, object]
+    delivery_audit: list[dict[str, object]] = field(default_factory=list)
 
     def payload(self) -> dict[str, object]:
         return {
@@ -113,6 +128,7 @@ class GstReport:
             "exceptions": self.exceptions, "reconciliation": self.reconciliation,
             "adjustments": self.adjustments, "baseline_comparison": self.baseline_comparison,
             "population": self.population,
+            "delivery_audit": self.delivery_audit,
         }
 
     def csv_bytes(self) -> bytes:
@@ -133,7 +149,7 @@ class MonthlyGstReportService:
     _cache_ttl_seconds = 3600
     _query = """query MonthlyGstOrders($first:Int!,$after:String,$query:String!){
       orders(first:$first,after:$after,query:$query,sortKey:UPDATED_AT){
-        nodes{name createdAt cancelledAt displayFinancialStatus shippingAddress{province}
+        nodes{id name createdAt cancelledAt displayFinancialStatus shippingAddress{province}
           currentSubtotalPriceSet{shopMoney{amount}} currentShippingPriceSet{shopMoney{amount}}
           currentTotalTaxSet{shopMoney{amount}} currentTotalPriceSet{shopMoney{amount}}
           shippingLine{discountedPriceSet{shopMoney{amount}} taxLines{title ratePercentage priceSet{shopMoney{amount}}}}
@@ -142,8 +158,9 @@ class MonthlyGstReportService:
         pageInfo{hasNextPage endCursor}}
     }"""
 
-    def __init__(self, shopify: ShopifyService | None = None) -> None:
+    def __init__(self, shopify: ShopifyService | None = None, db: Session | None = None) -> None:
         self.shopify = shopify or ShopifyService()
+        self.db = db
 
     async def generate(self, month: date, *, use_cache: bool = True) -> GstReport:
         month = month.replace(day=1)
@@ -152,9 +169,32 @@ class MonthlyGstReportService:
         if use_cache and cached and cached[0] > time.time():
             return cached[1]
         orders = await self._fetch_orders(month)
-        report = calculate_monthly_gst_report(orders, month)
+        report = calculate_monthly_gst_report(orders, month, await self._delhivery_evidence(orders))
         self._cache[cache_key] = (time.time() + self._cache_ttl_seconds, report)
         return report
+
+    async def _delhivery_evidence(self, orders: list[dict]) -> dict[str, dict[str, object]]:
+        """Read actual delivery evidence only for OS-known Delhivery Shopify shipments."""
+        if self.db is None:
+            return {}
+        order_ids = {_shopify_order_id(order) for order in orders}
+        rows = self.db.execute(select(ShiprocketShipment.order_id, ShiprocketShipment.awb).where(
+            ShiprocketShipment.provider == "delhivery",
+            ShiprocketShipment.awb.is_not(None),
+        )).all()
+        evidence: dict[str, dict[str, object]] = {}
+        service = DelhiveryService()
+        for order_id, awb in rows:
+            if order_id not in order_ids or not awb:
+                continue
+            try:
+                tracked = await service.tracking(awb)
+            except (DelhiveryError, httpx.HTTPError):
+                continue
+            timestamp = tracked.get("delivered_at")
+            if str(tracked.get("status") or "").casefold() == "delivered" and isinstance(timestamp, datetime):
+                evidence[order_id] = {"timestamp": timestamp, "awb": awb}
+        return evidence
 
     @classmethod
     def cached(cls, month: date) -> GstReport | None:
@@ -178,38 +218,53 @@ class MonthlyGstReportService:
         return list({str(value["name"]).lstrip("#"): value for value in values}.values())
 
 
-def calculate_monthly_gst_report(orders: list[dict], month: date) -> GstReport:
+def calculate_monthly_gst_report(
+    orders: list[dict], month: date, delhivery_evidence: dict[str, dict[str, object]] | None = None,
+) -> GstReport:
     month = month.replace(day=1)
     next_month = _month_after(month)
     previous_month = _month_before(month)
-    delivered: list[tuple[dict, date]] = []
+    delhivery_evidence = delhivery_evidence or {}
+    delivered: list[tuple[dict, date, str, str | None]] = []
     following_deliveries: list[dict] = []
     for order in orders:
         timestamp = _delivery_timestamp(order)
-        if not timestamp:
-            continue
-        delivered_date = _local_date(timestamp)
+        source = "SHOPIFY"
+        awb: str | None = None
+        if timestamp:
+            delivered_date = _local_date(timestamp)
+            awb = str((delhivery_evidence.get(_shopify_order_id(order)) or {}).get("awb") or "") or None
+        else:
+            delhivery = delhivery_evidence.get(_shopify_order_id(order))
+            if not delhivery or not isinstance(delhivery.get("timestamp"), datetime):
+                continue
+            delivered_date = delhivery["timestamp"].astimezone(INDIA).date()
+            source = "DELHIVERY"
+            awb = str(delhivery.get("awb") or "") or None
         created_date = _local_date(order["createdAt"])
         if month <= delivered_date < next_month:
-            delivered.append((order, delivered_date))
+            delivered.append((order, delivered_date, source, awb))
         if month <= created_date < next_month and next_month <= delivered_date < _month_after(next_month):
             following_deliveries.append(order)
     raw_count = len(delivered)
+    manual_exclusions = [item for item in delivered if month == date(2026, 8, 1) and str(item[0]["name"]).lstrip("#") in AUGUST_2026_MANUAL_DELIVERY_EXCLUSIONS]
     excluded = [item for item in delivered if item[0].get("cancelledAt") or item[0].get("displayFinancialStatus") in FILING_EXCLUSIONS]
-    eligible = [item for item in delivered if item not in excluded]
+    eligible = [item for item in delivered if item not in excluded and item not in manual_exclusions]
     groups: dict[tuple[str, Decimal], dict[str, object]] = defaultdict(lambda: {
         "orders": 0, "taxable": Decimal("0"), "tax": Decimal("0"), "invoice": Decimal("0"),
     })
     exceptions: list[dict[str, object]] = []
     original_gst = shipping_gst = shopify_shipping_gst = historical_shipping_gst = product_corrections = Decimal("0")
     shipping_treatments: dict[str, dict[str, object]] = {}
-    for order, delivered_date in eligible:
+    delivery_audit: list[dict[str, object]] = []
+    for order, delivered_date, source, awb in eligible:
         number = str(order["name"]).lstrip("#")
         state = MANUAL_PLACE_OF_SUPPLY.get(number, str((order.get("shippingAddress") or {}).get("province") or "").strip())
         subtotal = _money(order, "currentSubtotalPriceSet")
         shipping = _money(order, "currentShippingPriceSet")
         original_tax = _money(order, "currentTotalTaxSet")
         invoice = _money(order, "currentTotalPriceSet")
+        delivery_audit.append({"shopify_order_number": number, "invoice_value": _round(invoice), "delivery_date": delivered_date.isoformat(), "delivery_evidence_source": source, "awb": awb})
         original_gst += original_tax
         shipping_treatment = shipping_tax_treatment(order)
         shipping_treatments[number] = shipping_treatment
@@ -275,16 +330,25 @@ def calculate_monthly_gst_report(orders: list[dict], month: date) -> GstReport:
         sgst += row_sgst
         igst += row_igst
         gross += row["Total Invoice Value"]
-    previous_created = [order for order, _ in eligible if previous_month <= _local_date(order["createdAt"]) < month]
+    previous_created = [order for order, _, _, _ in eligible if previous_month <= _local_date(order["createdAt"]) < month]
+    shopify_confirmed = sum(1 for _, _, source, _ in delivered if source == "SHOPIFY")
+    delhivery_confirmed = sum(1 for _, _, source, _ in delivered if source == "DELHIVERY")
+    overlap_confirmed = sum(1 for order, _, source, _ in delivered if source == "SHOPIFY" and (evidence := delhivery_evidence.get(_shopify_order_id(order))) and isinstance(evidence.get("timestamp"), datetime) and month <= evidence["timestamp"].astimezone(INDIA).date() < next_month)
     summary = {
-        "delivered_orders": len(eligible), "raw_delivered_orders": raw_count, "excluded_orders": len(excluded),
-        "gross_sales": _round(sum((_money(order, "currentTotalPriceSet") for order, _ in eligible), Decimal("0"))),
+        "delivered_orders": len(eligible), "raw_delivered_orders": raw_count, "excluded_orders": len(excluded), "manual_exclusions": len(manual_exclusions),
+        "gross_sales": _round(sum((_money(order, "currentTotalPriceSet") for order, _, _, _ in eligible), Decimal("0"))),
         "taxable_value": _round(taxable), "cgst": _round(cgst), "sgst": _round(sgst), "igst": _round(igst),
         "total_gst": _round(cgst + sgst + igst), "exceptions": len(exceptions),
     }
     reconciliation = {
         "previous_month_created_delivered": {"orders": len(previous_created), "value": _round(sum((_money(order, "currentTotalPriceSet") for order in previous_created), Decimal("0")))},
         "selected_month_created_delivered_following": {"orders": len(following_deliveries), "value": _round(sum((_money(order, "currentTotalPriceSet") for order in following_deliveries), Decimal("0")))},
+        "shopify_confirmed_deliveries": shopify_confirmed,
+        "additional_delhivery_confirmed_deliveries": delhivery_confirmed,
+        "overlap_confirmed_by_both": overlap_confirmed,
+        "excluded_cancelled_refunded": len(excluded),
+        "manual_exclusions": len(manual_exclusions),
+        "final_unique_gst_order_count": len(eligible),
     }
     adjustments = {
         "original_shopify_gst": _round(original_gst), "shipping_gst": _round(shipping_gst),
@@ -293,12 +357,12 @@ def calculate_monthly_gst_report(orders: list[dict], month: date) -> GstReport:
     }
     baseline = compare_with_july_baseline(summary) if month == date(2026, 7, 1) else None
     population = {
-        "raw_delivered_order_numbers": [str(order["name"]).lstrip("#") for order, _ in delivered],
-        "filing_eligible_order_numbers": [str(order["name"]).lstrip("#") for order, _ in eligible],
-        "excluded_order_numbers": [str(order["name"]).lstrip("#") for order, _ in excluded],
+        "raw_delivered_order_numbers": [str(order["name"]).lstrip("#") for order, _, _, _ in delivered],
+        "filing_eligible_order_numbers": [str(order["name"]).lstrip("#") for order, _, _, _ in eligible],
+        "excluded_order_numbers": [str(order["name"]).lstrip("#") for order, _, _, _ in excluded],
         "shipping_tax_treatments": shipping_treatments,
     }
-    return GstReport(month.strftime("%Y-%m"), summary, rows, exceptions, reconciliation, adjustments, baseline, population)
+    return GstReport(month.strftime("%Y-%m"), summary, rows, exceptions, reconciliation, adjustments, baseline, population, delivery_audit)
 
 
 def compare_with_july_baseline(summary: dict[str, object]) -> dict[str, object]:
