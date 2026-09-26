@@ -70,11 +70,12 @@ class CourierPlatformService:
 
     def persist_booking(self, db: Session, order_id: str, result: BookingResult):
         booked = result.status not in {NormalizedShipmentStatus.UNKNOWN, NormalizedShipmentStatus.CREATED} or bool(result.awb)
+        persisted_booked_at = result.booked_at or (datetime.now(timezone.utc) if booked else None)
         return upsert_shipment(
             db, order_id, provider=result.provider, provider_order_id=result.provider_order_id,
             shipment_id=result.shipment_id, awb=result.awb, tracking_url=result.tracking_url,
             courier_name=result.service or result.provider.title(), courier_service=result.service,
-            booking_status="booked" if booked else "pending_awb", booked_at=result.booked_at,
+            booking_status="booked" if booked else "pending_awb", booked_at=persisted_booked_at,
             latest_status=result.status.value, normalized_status=result.status.value,
             label_url=result.label_url, label_format=result.label_format.value if result.label_format else None,
             raw_provider_response=_json(result.raw_response), booking_confidence=result.confidence.value,
