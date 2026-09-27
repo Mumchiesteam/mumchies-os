@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from datetime import date, datetime, timezone
 
 from app.services.monthly_gst_report import (
+    AUGUST_2026_RECONCILIATION_DELIVERIES,
     HISTORICAL_SHIPPING_ADJUSTMENT,
     JULY_VALIDATED_BASELINE,
     SHOPIFY_SHIPPING_TAX,
@@ -115,6 +116,29 @@ def test_august_uses_delhivery_only_without_shopify_evidence_and_excludes_manual
     assert audit["325950"]["delivery_evidence_source"] == "DELHIVERY"
     assert audit["325886"]["awb"] == "D-SECOND"
     assert "316161" not in audit and "316684" not in audit
+
+
+def test_august_reconciliation_adds_exactly_42_approved_orders_without_rto_or_duplicates():
+    existing = [_audit_order(str(900000 + index), str(index), "2026-08-10T09:00:00Z") for index in range(2266)]
+    approved = [_audit_order(number, f"approved-{number}") for number in AUGUST_2026_RECONCILIATION_DELIVERIES]
+    rto_orders = [_audit_order(number, f"rto-{number}") for number in {
+        "324032", "324074", "324451", "324452", "324457", "324466", "324469", "324476",
+        "324484", "324493", "324495", "324503", "324508", "324523", "324551",
+    }]
+
+    report = calculate_monthly_gst_report(existing + approved + rto_orders, date(2026, 8, 1))
+    numbers = report.population["filing_eligible_order_numbers"]
+    audit = {row["shopify_order_number"]: row for row in report.delivery_audit}
+
+    assert len(AUGUST_2026_RECONCILIATION_DELIVERIES) == 42
+    assert report.summary["delivered_orders"] == 2308
+    assert len(numbers) == len(set(numbers)) == 2308
+    assert set(AUGUST_2026_RECONCILIATION_DELIVERIES).issubset(numbers)
+    assert not (set(number for number in {"324032", "324074", "324451", "324452", "324457", "324466", "324469", "324476", "324484", "324493", "324495", "324503", "324508", "324523", "324551"}) & set(numbers))
+    assert report.reconciliation["reconciliation_confirmed_deliveries"] == 4
+    assert report.reconciliation["owner_verified_deliveries"] == 38
+    assert audit["324087"]["delivery_evidence_source"] == "RECONCILIATION_CONFIRMED"
+    assert audit["324430"]["delivery_evidence_source"] == "OWNER_VERIFIED_DELIVERY"
 
 
 def test_generic_delhivery_tracking_persists_delivered_timestamp(monkeypatch):

@@ -38,6 +38,53 @@ HISTORICAL_SHIPPING_ADJUSTMENT = "HISTORICAL_SHIPPING_ADJUSTMENT"
 # Temporary, reviewed correction: these May deliveries were marked delivered in Shopify in
 # August. Keep this month-specific until the historical records are corrected at source.
 AUGUST_2026_MANUAL_DELIVERY_EXCLUSIONS = {"316161", "316684"}
+# Reviewed August 2026 reconciliation.  These are Shopify order numbers, not courier
+# shipments, so they can only enrich the existing Shopify order population and cannot
+# create separate taxable orders.  The dates are the reviewed August delivery dates.
+AUGUST_2026_RECONCILIATION_DELIVERIES: dict[str, tuple[date, str]] = {
+    "323991": (date(2026, 8, 10), "RECONCILIATION_CONFIRMED"),
+    "324087": (date(2026, 8, 13), "RECONCILIATION_CONFIRMED"),
+    "324339": (date(2026, 8, 12), "RECONCILIATION_CONFIRMED"),
+    "326067": (date(2026, 8, 31), "RECONCILIATION_CONFIRMED"),
+    "324430": (date(2026, 8, 14), "OWNER_VERIFIED_DELIVERY"),
+    "324438": (date(2026, 8, 15), "OWNER_VERIFIED_DELIVERY"),
+    "324458": (date(2026, 8, 15), "OWNER_VERIFIED_DELIVERY"),
+    "324463": (date(2026, 8, 14), "OWNER_VERIFIED_DELIVERY"),
+    "324487": (date(2026, 8, 15), "OWNER_VERIFIED_DELIVERY"),
+    "324490": (date(2026, 8, 14), "OWNER_VERIFIED_DELIVERY"),
+    "324500": (date(2026, 8, 15), "OWNER_VERIFIED_DELIVERY"),
+    "324501": (date(2026, 8, 14), "OWNER_VERIFIED_DELIVERY"),
+    "324502": (date(2026, 8, 13), "OWNER_VERIFIED_DELIVERY"),
+    "324509": (date(2026, 8, 14), "OWNER_VERIFIED_DELIVERY"),
+    "324510": (date(2026, 8, 15), "OWNER_VERIFIED_DELIVERY"),
+    "324521": (date(2026, 8, 12), "OWNER_VERIFIED_DELIVERY"),
+    "324532": (date(2026, 8, 13), "OWNER_VERIFIED_DELIVERY"),
+    "324542": (date(2026, 8, 15), "OWNER_VERIFIED_DELIVERY"),
+    "324560": (date(2026, 8, 15), "OWNER_VERIFIED_DELIVERY"),
+    "324569": (date(2026, 8, 15), "OWNER_VERIFIED_DELIVERY"),
+    "324572": (date(2026, 8, 15), "OWNER_VERIFIED_DELIVERY"),
+    "324574": (date(2026, 8, 14), "OWNER_VERIFIED_DELIVERY"),
+    "324575": (date(2026, 8, 15), "OWNER_VERIFIED_DELIVERY"),
+    "324576": (date(2026, 8, 13), "OWNER_VERIFIED_DELIVERY"),
+    "324577": (date(2026, 8, 15), "OWNER_VERIFIED_DELIVERY"),
+    "324578": (date(2026, 8, 12), "OWNER_VERIFIED_DELIVERY"),
+    "324579": (date(2026, 8, 13), "OWNER_VERIFIED_DELIVERY"),
+    "324581": (date(2026, 8, 14), "OWNER_VERIFIED_DELIVERY"),
+    "324582": (date(2026, 8, 14), "OWNER_VERIFIED_DELIVERY"),
+    "324583": (date(2026, 8, 12), "OWNER_VERIFIED_DELIVERY"),
+    "324584": (date(2026, 8, 12), "OWNER_VERIFIED_DELIVERY"),
+    "324616": (date(2026, 8, 13), "OWNER_VERIFIED_DELIVERY"),
+    "324619": (date(2026, 8, 15), "OWNER_VERIFIED_DELIVERY"),
+    "324622": (date(2026, 8, 14), "OWNER_VERIFIED_DELIVERY"),
+    "324626": (date(2026, 8, 13), "OWNER_VERIFIED_DELIVERY"),
+    "324629": (date(2026, 8, 14), "OWNER_VERIFIED_DELIVERY"),
+    "324687": (date(2026, 8, 14), "OWNER_VERIFIED_DELIVERY"),
+    "324695": (date(2026, 8, 15), "OWNER_VERIFIED_DELIVERY"),
+    "324705": (date(2026, 8, 13), "OWNER_VERIFIED_DELIVERY"),
+    "324746": (date(2026, 8, 14), "OWNER_VERIFIED_DELIVERY"),
+    "324771": (date(2026, 8, 15), "OWNER_VERIFIED_DELIVERY"),
+    "324871": (date(2026, 8, 15), "OWNER_VERIFIED_DELIVERY"),
+}
 
 
 def _decimal(value: object) -> Decimal:
@@ -228,10 +275,17 @@ def calculate_monthly_gst_report(
     delivered: list[tuple[dict, date, str, str | None]] = []
     following_deliveries: list[dict] = []
     for order in orders:
+        number = str(order["name"]).lstrip("#")
+        reviewed_delivery = (
+            AUGUST_2026_RECONCILIATION_DELIVERIES.get(number)
+            if month == date(2026, 8, 1) else None
+        )
         timestamp = _delivery_timestamp(order)
         source = "SHOPIFY"
         awb: str | None = None
-        if timestamp:
+        if reviewed_delivery:
+            delivered_date, source = reviewed_delivery
+        elif timestamp:
             delivered_date = _local_date(timestamp)
             awb = str((delhivery_evidence.get(_shopify_order_id(order)) or {}).get("awb") or "") or None
         else:
@@ -334,11 +388,13 @@ def calculate_monthly_gst_report(
     shopify_confirmed = sum(1 for _, _, source, _ in delivered if source == "SHOPIFY")
     delhivery_confirmed = sum(1 for _, _, source, _ in delivered if source == "DELHIVERY")
     overlap_confirmed = sum(1 for order, _, source, _ in delivered if source == "SHOPIFY" and (evidence := delhivery_evidence.get(_shopify_order_id(order))) and isinstance(evidence.get("timestamp"), datetime) and month <= evidence["timestamp"].astimezone(INDIA).date() < next_month)
+    delivery_evidence_sources = dict(Counter(source for _, _, source, _ in eligible))
     summary = {
         "delivered_orders": len(eligible), "raw_delivered_orders": raw_count, "excluded_orders": len(excluded), "manual_exclusions": len(manual_exclusions),
         "gross_sales": _round(sum((_money(order, "currentTotalPriceSet") for order, _, _, _ in eligible), Decimal("0"))),
         "taxable_value": _round(taxable), "cgst": _round(cgst), "sgst": _round(sgst), "igst": _round(igst),
         "total_gst": _round(cgst + sgst + igst), "exceptions": len(exceptions),
+        "delivery_evidence_sources": delivery_evidence_sources,
     }
     reconciliation = {
         "previous_month_created_delivered": {"orders": len(previous_created), "value": _round(sum((_money(order, "currentTotalPriceSet") for order in previous_created), Decimal("0")))},
@@ -346,6 +402,8 @@ def calculate_monthly_gst_report(
         "shopify_confirmed_deliveries": shopify_confirmed,
         "additional_delhivery_confirmed_deliveries": delhivery_confirmed,
         "overlap_confirmed_by_both": overlap_confirmed,
+        "reconciliation_confirmed_deliveries": delivery_evidence_sources.get("RECONCILIATION_CONFIRMED", 0),
+        "owner_verified_deliveries": delivery_evidence_sources.get("OWNER_VERIFIED_DELIVERY", 0),
         "excluded_cancelled_refunded": len(excluded),
         "manual_exclusions": len(manual_exclusions),
         "final_unique_gst_order_count": len(eligible),
