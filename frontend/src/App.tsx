@@ -262,6 +262,7 @@ function App() {
   const [shadowfaxPincodeRecommendation, setShadowfaxPincodeRecommendation] = useState<OrderOperations['shadowfax_pincode_recommendation']>(null)
   const [loading, setLoading] = useState(true)
   const [ordersSlow, setOrdersSlow] = useState(false)
+  const [ordersReloadGeneration, setOrdersReloadGeneration] = useState(0)
   const [error, setError] = useState('')
   const [queue, setQueue] = useState<TabKey>('fresh')
   const [searchDraft, setSearchDraft] = useState('')
@@ -328,8 +329,8 @@ function App() {
   const [selectedLabels, setSelectedLabels] = useState<Set<string>>(new Set())
   const [activeBatch, setActiveBatch] = useState<{ id: string; order_ids: string[] } | null>(null)
   const [printedLabels, setPrintedLabels] = useState<Set<string>>(new Set())
-  const refreshLabels = useCallback(() => void getLabelQueue().then(value=>setLabelQueue({...value,printed_today:[]})).catch(() => undefined), [])
-  const refreshCleanup = useCallback(() => void getShiprocketCleanupPending().then(result => setCleanupRecords(result.items)).catch(() => undefined), [])
+  const refreshLabels = useCallback(() => void getLabelQueue().then(value=>setLabelQueue({...value,printed_today:[]})).catch((error: Error) => setNotice(`Could not refresh the label queue: ${error.message}`)), [])
+  const refreshCleanup = useCallback(() => void getShiprocketCleanupPending().then(result => setCleanupRecords(result.items)).catch((error: Error) => setNotice(`Could not refresh Shiprocket cleanup items: ${error.message}`)), [])
   const loadOrders = useCallback(async (signal?: AbortSignal) => {
     try {
       setLoading(true)
@@ -396,7 +397,7 @@ function App() {
       window.clearTimeout(timeout)
       window.clearTimeout(slowTimeout)
     }
-  }, [activePage, loadOrders])
+  }, [activePage, loadOrders, ordersReloadGeneration])
 
   useEffect(() => {
     const loads = workspaceLoadsForPage(activePage)
@@ -415,7 +416,9 @@ function App() {
 
   useEffect(() => {
     if (!workspaceLoadsForPage(activePage).orders || selectedOrderId) return
-    const interval = window.setInterval(() => void loadOrders(), 60_000)
+    const interval = window.setInterval(() => {
+      if (typeof document === 'undefined' || document.visibilityState === 'visible') void loadOrders()
+    }, 60_000)
     return () => window.clearInterval(interval)
   }, [activePage, loadOrders, selectedOrderId])
 
@@ -447,8 +450,8 @@ function App() {
   }, [selectedOrderId])
   useEffect(() => {
     if (!selectedOrderId || !['owner', 'admin'].includes(authUser?.role || '')) {
-      setShadowfaxHealthCheck(null)
-      return
+      const timeout = window.setTimeout(() => setShadowfaxHealthCheck(null), 0)
+      return () => window.clearTimeout(timeout)
     }
     let cancelled = false
     void getShadowfaxHealthCheck().then(result => {
@@ -1135,7 +1138,7 @@ function App() {
               <div className="text-center">
                 <span className="mx-auto block h-8 w-8 animate-spin rounded-full border-2 border-orange-200 border-t-[#ff6b35]" />
                 <p className="mt-3 text-sm font-medium text-slate-500">{ordersSlow ? 'Orders are taking longer than usual to load.' : 'Loading Shopify orders…'}</p>
-                {ordersSlow && <button type="button" onClick={() => window.location.reload()} className="mt-3 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600">Retry</button>}
+                {ordersSlow && <button type="button" onClick={() => setOrdersReloadGeneration(value => value + 1)} className="mt-3 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600">Retry</button>}
               </div>
             </div>
           ) : error ? (

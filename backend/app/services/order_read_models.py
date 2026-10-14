@@ -8,12 +8,24 @@ def cache_orders(db: Session, orders: list) -> None:
     ids=[order.order_id for order in orders]
     existing={row.order_id:row for row in db.scalars(select(OrderReadModel).where(OrderReadModel.order_id.in_(ids))).all()} if ids else {}
     now=datetime.now(timezone.utc)
+    changed=False
     for order in orders:
+        values={
+            "order_number":str(order.order_number).lstrip("#"),
+            "customer_name":order.customer_name,
+            "payment_type":order.payment_type,
+            "order_value":float(order.order_total or order.total_amount),
+            "products":[{"product_name":item.product_name,"quantity":item.quantity,"price":float(item.price)} for item in order.products],
+        }
         row=existing.get(order.order_id)
         if row is None:
-            row=OrderReadModel(order_id=order.order_id,order_number=str(order.order_number).lstrip("#"),updated_at=now);db.add(row)
-        row.order_number=str(order.order_number).lstrip("#");row.customer_name=order.customer_name;row.payment_type=order.payment_type;row.order_value=float(order.order_total or order.total_amount);row.products=[{"product_name":item.product_name,"quantity":item.quantity,"price":float(item.price)} for item in order.products];row.updated_at=now
-    if orders: db.commit()
+            db.add(OrderReadModel(order_id=order.order_id,updated_at=now,**values));changed=True
+            continue
+        if any(getattr(row,key)!=value for key,value in values.items()):
+            for key,value in values.items(): setattr(row,key,value)
+            row.updated_at=now
+            changed=True
+    if changed: db.commit()
 
 def by_order_number(db:Session,numbers:set[str])->dict[str,OrderReadModel]:
     if not numbers:return {}

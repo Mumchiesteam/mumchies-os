@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 from io import BytesIO
+import json
 
 import pytest
 import httpx
@@ -265,11 +266,18 @@ async def test_shadowfax_success_without_confirmed_identifiers_fails_closed():
 
 
 @pytest.mark.anyio
-async def test_shadowfax_label_and_client_order_reconciliation_fail_closed_when_undocumented():
-    transport = ShadowfaxHTTPTransport(token="secret", base_url="https://shadowfax.example/api", client=httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(500))))
+async def test_shadowfax_label_uses_documented_awb_endpoint_and_client_order_reconciliation_fails_closed():
+    requests = []
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, content=b"%PDF-1.4", headers={"content-type": "application/pdf"})
+
+    transport = ShadowfaxHTTPTransport(token="secret", base_url="https://shadowfax.example/api", client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
     try:
-        with pytest.raises(ProviderConfigurationError, match="does not document a shipping-label endpoint"):
-            await transport.download_label({"awb": "SF-STAGE-1"})
+        content, content_type, source_url = await transport.download_label({"awb": "SF-STAGE-1"})
+        assert content == b"%PDF-1.4" and content_type == "application/pdf" and source_url is None
+        assert requests[0].method == "POST" and requests[0].url.path == "/api/client/generate_label/"
+        assert json.loads(requests[0].content) == {"awb_number": "SF-STAGE-1", "file_type": "pdf", "include_sku_details": False}
         with pytest.raises(ProviderConfigurationError, match="does not document lookup by client_order_id"):
             await transport.find_booking("STAGE-1")
     finally:

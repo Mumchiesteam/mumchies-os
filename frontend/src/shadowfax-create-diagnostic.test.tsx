@@ -72,16 +72,13 @@ describe('Shadowfax create-only diagnostic', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('wires pending, success, and failure feedback without invoking normal booking', () => {
-    expect(appSource).toContain("shadowfaxCreateTesting ? 'Testing Shadowfax...' : 'Test Shadowfax Create'")
-    expect(appSource).toContain('disabled={!shadowfaxCreateTestAvailability.canCreate || shadowfaxCreateTesting || Boolean(shadowfaxCreateResult)}')
-    expect(appSource).toContain('shadowfaxCreateTestAvailability.blocker')
-    for (const label of ['Outcome:', 'HTTP status:', 'Validation errors:', 'Shadowfax order ID:', 'AWB number:', 'Payload:', 'Shadowfax order created. Do not test again.']) {
-      expect(appSource).toContain(label)
-    }
-    const handlerStart = appSource.indexOf('const testShadowfaxCreate = async')
+  it('keeps the manual Shadowfax reconciliation workflow separate from normal booking', () => {
+    expect(appSource).toContain('Ship this order in Shadowfax 360, then reconcile it here.')
+    expect(appSource).toContain('Paste the AWB from Shadowfax. It will be validated against this exact order before anything is recorded.')
+    expect(appSource).toContain('Validate and record shipment')
+    const handlerStart = appSource.indexOf('const saveManualShadowfax = async')
     const handler = appSource.slice(handlerStart, appSource.indexOf('\n  const ', handlerStart + 20))
-    expect(handler).toContain('testShadowfaxCreateOnly(selectedOrder.internalId)')
+    expect(handler).toContain('saveManualShadowfaxShipment(selectedOrder.internalId, payload)')
     expect(handler).not.toContain('bookShiprocketShipment')
   })
 

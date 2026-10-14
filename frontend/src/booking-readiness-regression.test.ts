@@ -10,13 +10,15 @@ describe('first-attempt booking readiness', () => {
   })
 
   it('does not weaken the booking integrity checks', () => {
-    expect(appSource).toContain('!bookingEligibility?.eligible')
+    expect(appSource).toContain('const nonPackageMissing = missing.filter')
+    expect(appSource).toContain('quoteReadiness !== null')
+    expect(appSource).toContain('nonPackageMissing.length === 0')
     expect(appSource).toContain('getBookingContextPreview')
     expect(appSource).toContain('booking_context_hash: preview.booking_context_hash')
   })
 
   it('shows an explicit preparation state while authoritative readiness is loading', () => {
-    expect(appSource).toContain("const preparingBooking = addressInitializing || bookingEligibility === null || courierLoading")
+    expect(appSource).toContain("const preparingBooking = addressInitializing || bookingEligibility === null || courierSession?.phase === 'loading'")
     expect(appSource).toContain("? 'Preparing booking…'")
   })
 })

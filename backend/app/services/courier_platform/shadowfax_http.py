@@ -332,7 +332,6 @@ class ShadowfaxHTTPTransport:
         }
 
     async def download_label(self, shipment: dict[str, Any]) -> tuple[bytes, str, str | None]:
-        raise ProviderConfigurationError(
-            "The official Shadowfax Unified API specification does not document a shipping-label endpoint.",
-            provider="shadowfax", operation="label",
-        )
+        awb = str(shipment.get("awb") or "").strip()
+        content, content_type = await self.generate_label(awb)
+        return content, content_type, None

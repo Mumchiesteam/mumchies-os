@@ -41,6 +41,8 @@ def eligible_order(payment_status: str):
 
 def eligible_ops():
     return {"address_verified": True, "call_logs": [{"result": "Confirmed"}],
+            "operational_status": "Ready for Booking",
+            "verified_address_snapshot": {"phone": "9999999999", "pincode": "110001"},
             "package_details": {"weight_kg": .5, "length_cm": 10, "breadth_cm": 10, "height_cm": 10}}
 
 
