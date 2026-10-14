@@ -185,8 +185,13 @@ def _merged_operational_state(order: ShopifyOrder, operations: dict[str, object]
 
 async def _load_orders(db: Session, *, force_refresh: bool = False) -> list[ShopifyOrder]:
     try:
+        started = time.perf_counter()
         orders = await ShopifyService().get_latest_orders(force_refresh=force_refresh)
+        shopify_ms = (time.perf_counter() - started) * 1000
+        cache_started = time.perf_counter()
         cache_orders(db, orders)
+        cache_ms = (time.perf_counter() - cache_started) * 1000
+        merge_started = time.perf_counter()
         operations_map = OrderOperationsStore.all()
         shipments = get_shipments_by_order_id(db, [order.order_id for order in orders])
         merged_orders: list[ShopifyOrder] = []
@@ -195,6 +200,11 @@ async def _load_orders(db: Session, *, force_refresh: bool = False) -> list[Shop
             local_snapshot = shipment_snapshot(shipment) if shipment else None
             operations = {**operations_map.get(order.order_id, {}), "shipment": merge_shopify_fulfillment_evidence(local_snapshot, order.external_tracking)}
             merged_orders.append(_merged_operational_state(order, operations))
+        logging.getLogger(__name__).info(
+            "orders_load total_ms=%.2f shopify_ms=%.2f cache_orders_ms=%.2f merge_ms=%.2f orders=%d",
+            (time.perf_counter() - started) * 1000, shopify_ms, cache_ms,
+            (time.perf_counter() - merge_started) * 1000, len(orders),
+        )
         return merged_orders
     except ShopifyConfigurationError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
@@ -527,6 +537,7 @@ async def get_order_operations(order_id: str, db: Session = Depends(get_db)) -> 
         shipment = shipment_snapshot(local) if local else None
     if shipment is not None:
         operations = {**operations, "shipment": shipment}
+    eligibility = ShiprocketService().evaluate_booking_eligibility(order, operations, shipment) if order is not None else None
     revision = int(operations.get("address_revision") or 0)
     source_address = operations.get("corrected_address") if isinstance(operations.get("corrected_address"), dict) else None
     if source_address is None and order is not None and order.shipping_address is not None:
@@ -543,6 +554,15 @@ async def get_order_operations(order_id: str, db: Session = Depends(get_db)) -> 
         "address_revision": revision,
         "address_draft_token": _address_draft_token(order_id, revision),
         "shadowfax_pincode_recommendation": recommendation,
+        "booking_eligibility": None if eligibility is None else {
+            "provider": "shiprocket", "eligible": eligibility.eligible,
+            "missing_requirements": eligibility.missing_requirements,
+            "operational_status": eligibility.operational_status,
+            "payment_mode": eligibility.payment_mode,
+            "shipment_exists": eligibility.shipment_exists,
+            "shipment_status": eligibility.shipment_status,
+            "shipment": eligibility.shipment_snapshot,
+        },
     }
 
 

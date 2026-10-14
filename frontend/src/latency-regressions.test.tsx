@@ -7,13 +7,13 @@ describe('Orders latency regressions', () => {
     expect(dependencyLine).not.toContain('selectedOrderId')
   })
 
-  it('loads drawer reads in parallel and aborts the prior order on switch', () => {
-    const parallelRead = source.indexOf('const [ops, eligibility]')
-    const flow = source.slice(source.lastIndexOf('useEffect', parallelRead), source.indexOf('const openOrder', parallelRead))
+  it('loads drawer operations once and aborts the prior order on switch', () => {
+    const drawerRead = source.indexOf('const ops = await getOrderOperations')
+    const flow = source.slice(source.lastIndexOf('useEffect', drawerRead), source.indexOf('const openOrder', drawerRead))
     expect(flow).toContain('const controller = new AbortController()')
-    expect(flow).toContain('await Promise.all([')
     expect(flow).toContain('getOrderOperations(orderId, controller.signal)')
-    expect(flow).toContain('getBookingEligibility(orderId, controller.signal)')
+    expect(flow).toContain('setBookingEligibility(ops.booking_eligibility ?? null)')
+    expect(flow).not.toContain('getBookingEligibility(orderId, controller.signal)')
     expect(flow).toContain('return () => controller.abort()')
   })
 
@@ -27,6 +27,19 @@ describe('Orders latency regressions', () => {
   it('loads Shiprocket cleanup only from its explicit control', () => {
     expect(source).not.toContain('if (loads.orders) { refreshLabels(); refreshCleanup() }')
     expect(source).toContain("if (tab.key === 'shiprocket_cleanup') { refreshCleanup();")
+  })
+
+  it('refreshes labels only on the dispatch queue; booking updates stay local and immediate', () => {
+    expect(source).toContain("if (loads.orders && queue === 'ready_to_ship') refreshLabels()")
+    const booking = source.slice(source.indexOf('const bookShipment'), source.indexOf('const saveManualShadowfax'))
+    expect(booking).toContain('applyConfirmedBooking(orderId, result.shipment ?? null)')
+  })
+
+  it('does not repeat the global Shadowfax health read for every drawer selection', () => {
+    const healthRead = source.indexOf('void getShadowfaxHealthCheck()')
+    const healthStart = source.lastIndexOf('useEffect(() => {', healthRead)
+    const health = source.slice(healthStart, source.indexOf('useEffect(() => {', healthRead + 1))
+    expect(health).not.toContain('selectedOrderId')
   })
 
   it('does not refresh eligibility after courier quotes', () => {

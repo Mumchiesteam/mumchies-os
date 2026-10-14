@@ -401,7 +401,7 @@ function App() {
 
   useEffect(() => {
     const loads = workspaceLoadsForPage(activePage)
-    if (loads.orders && queue !== 'ready_to_ship' && queue !== 'manifested') refreshLabels()
+    if (loads.orders && queue === 'ready_to_ship') refreshLabels()
     if (loads.reconciliation && reconciliationSection === 'reconciliation') {
       const timeout = window.setTimeout(() => refreshReconciliation(false), 0)
       return () => window.clearTimeout(timeout)
@@ -449,7 +449,7 @@ function App() {
   useEffect(() => {
   }, [selectedOrderId])
   useEffect(() => {
-    if (!selectedOrderId || !['owner', 'admin'].includes(authUser?.role || '')) {
+    if (!['owner', 'admin'].includes(authUser?.role || '')) {
       const timeout = window.setTimeout(() => setShadowfaxHealthCheck(null), 0)
       return () => window.clearTimeout(timeout)
     }
@@ -460,7 +460,7 @@ function App() {
       if (!cancelled) setShadowfaxHealthCheck(null)
     })
     return () => { cancelled = true }
-  }, [authUser?.role, selectedOrderId])
+  }, [authUser?.role])
   useEffect(() => {
     if (selectedOrder?.orderNumber === '324663' && ['owner', 'admin'].includes(authUser?.role || '')) {
       void getShadowfaxDirect324663Status().then(setShadowfaxTestState).catch(() => setShadowfaxTestState(null))
@@ -496,10 +496,7 @@ function App() {
       setOperations(null)
       setCancellationPreflight(null)
       setShadowfaxPincodeRecommendation(null)
-      const [ops, eligibility] = await Promise.all([
-        getOrderOperations(orderId, controller.signal),
-        getBookingEligibility(orderId, controller.signal),
-      ])
+      const ops = await getOrderOperations(orderId, controller.signal)
       if (controller.signal.aborted || !isCurrentDrawerRequest({ orderId, generation }, selectedOrderId, drawerGenerationRef.current)) return
       setOperations(ops)
       setShadowfaxPincodeRecommendation(ops.shadowfax_pincode_recommendation)
@@ -523,7 +520,7 @@ function App() {
       if (currentSession && isCurrentDrawerRequest(currentSession, selectedOrderId, drawerGenerationRef.current)) {
         setCourierSession({ ...currentSession, selectedKey: courierSelectionKey(ops.selected_courier) })
       }
-      setBookingEligibility(eligibility)
+      setBookingEligibility(ops.booking_eligibility ?? null)
     })().catch((err) => {
       if (controller.signal.aborted || !isCurrentDrawerRequest({ orderId, generation }, selectedOrderId, drawerGenerationRef.current)) return
       setOperations(null)

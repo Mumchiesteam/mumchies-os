@@ -338,6 +338,16 @@ export interface OrderOperations {
   address_provenance: { order_id: string; order_number: string; source: string; saved_at: string; verified_at: string | null; operator: string; revision: number } | null
   package_revision: number
   package_provenance: { order_id: string; saved_at: string; operator: string; revision: number } | null
+  booking_eligibility?: {
+    provider: string
+    eligible: boolean
+    missing_requirements: string[]
+    operational_status: string | null
+    payment_mode: string | null
+    shipment_exists: boolean
+    shipment_status: string | null
+    shipment: Order['shipment']
+  } | null
   shipment: Order['shipment']
   shadowfax_pincode_recommendation: {
     pincode: string
