@@ -837,6 +837,7 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
     provider_timings: dict[str, float] = {}
     shiprocket_result: object = None
     delhivery_result: object = None
+    shadowfax_result: object = None
     try:
         order, operations, shipment = await _load_context(order_id, db)
         context_ms = (time.perf_counter() - context_started) * 1000
@@ -899,8 +900,18 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
             finally:
                 provider_timings["delhivery"] = (time.perf_counter() - started) * 1000
 
-        shiprocket_result, delhivery_result = await asyncio.gather(
-            shiprocket_quotes(), delhivery_quotes(), return_exceptions=True,
+        shadowfax = ShadowfaxAdapter()
+        async def shadowfax_quotes():
+            if not settings.shadowfax_direct_booking_enabled or not shadowfax.configured or not delivery_postcode:
+                return None
+            started = time.perf_counter()
+            try:
+                return await asyncio.wait_for(shadowfax.serviceability({"delivery_pincode": delivery_postcode}), timeout=15.0)
+            finally:
+                provider_timings["shadowfax"] = (time.perf_counter() - started) * 1000
+
+        shiprocket_result, delhivery_result, shadowfax_result = await asyncio.gather(
+            shiprocket_quotes(), delhivery_quotes(), shadowfax_quotes(), return_exceptions=True,
         )
         normalized_quotes = []
         if isinstance(shiprocket_result, Exception):
@@ -914,6 +925,20 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
             provider_failures["delhivery"] = "timeout" if isinstance(delhivery_result, asyncio.TimeoutError) else "unavailable"
         else:
             normalized_quotes.extend(asdict(quote) for quote in delhivery_result)
+        if isinstance(shadowfax_result, Exception):
+            provider_failures["shadowfax"] = "timeout" if isinstance(shadowfax_result, asyncio.TimeoutError) else "unavailable"
+        elif shadowfax_result is not None and shadowfax_result.serviceable and shadowfax_result.quotes:
+            quote = shadowfax_result.quotes[0]
+            normalized_quotes.append({
+                "courier_id": f"shadowfax:{quote.service_id}", "courier_name": quote.courier_name,
+                "rate": quote.charges or 0, "cod_charge": None,
+                "total_estimated_shipping_cost": quote.charges or 0,
+                "estimated_delivery_days": quote.estimated_delivery_days,
+                "expected_delivery_date": quote.expected_delivery_date,
+                "rating": None, "cod_supported": True, "prepaid_supported": True,
+                "mode": "Direct", "provider": "shadowfax", "booking_supported": True,
+                "rate_note": "Shadowfax Direct serviceability confirmed",
+            })
         rate_provider_quotes = len(normalized_quotes)
         if "shiprocket" in provider_failures:
             provider_warnings.append("Shiprocket lookup failed. Available courier results are shown." if rate_provider_quotes else "Shiprocket lookup failed. Retry lookup.")
@@ -1532,6 +1557,10 @@ async def shiprocket_book_shipment(
         if provider == "shadowfax":
             if not settings.shadowfax_direct_booking_enabled:
                 raise HTTPException(status_code=409, detail="Shadowfax direct booking is disabled pending end-to-end validation.")
+            if str(selected.get("courier_id") or "").casefold().startswith("shadowfax:manual"):
+                raise HTTPException(status_code=409, detail="Select a serviceable Shadowfax Direct quote before booking.")
+            if not _controlled_shadowfax_order_matches(order.order_number):
+                raise HTTPException(status_code=403, detail="Shadowfax direct booking is restricted to the configured controlled test order.")
             provider_payload = await _build_provider_booking_request(context.order, _context_operations(context), context.package)
             _validate_shadowfax_booking_request(provider_payload)
             _assert_booking_payload(context, "shadowfax", provider_payload)

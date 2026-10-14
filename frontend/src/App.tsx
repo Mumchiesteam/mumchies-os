@@ -1932,11 +1932,11 @@ const OrderDrawer = memo(function OrderDrawer({
           ) : (
             <div className="flex flex-1 flex-col gap-1"><button
               disabled={!canBookShipment}
-              onClick={() => { if (selectedCourier?.provider !== 'shadowfax') { void onBookShipment(packageNumbers); return } setShadowfaxWorkflowStatus('Checking Shadowfax...'); void onSaveManualShadowfax({}).then(() => { setShadowfaxWorkflowStatus('Shipment found · Shipment recorded'); setShowShadowfaxForm(false) }).catch(() => { setShadowfaxWorkflowStatus('Could not find Shadowfax shipment · Failed - retry'); setShowShadowfaxForm(true) }) }}
+              onClick={() => { if (selectedCourier?.provider !== 'shadowfax' || selectedCourier?.mode === 'Direct') { void onBookShipment(packageNumbers); return } setShadowfaxWorkflowStatus('Checking Shadowfax...'); void onSaveManualShadowfax({}).then(() => { setShadowfaxWorkflowStatus('Shipment found · Shipment recorded'); setShowShadowfaxForm(false) }).catch(() => { setShadowfaxWorkflowStatus('Could not find Shadowfax shipment · Failed - retry'); setShowShadowfaxForm(true) }) }}
               className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
             >
               <Icon name="truck" size={16} />
-              {selectingCourierKey ? <><span className="h-3 w-3 animate-spin rounded-full border border-slate-300 border-t-white" />Selecting courier</> : bookingLoading ? (selectedCourier?.provider === 'shadowfax' ? 'Checking Shadowfax...' : `Saving ${selectedCourier?.courier_name || 'courier'}…`) : selectedCourier?.provider === 'shadowfax' ? 'Reconcile Shadowfax Shipment' : selectedCourierKey ? 'Book Shipment' : 'Select a courier above'}
+              {selectingCourierKey ? <><span className="h-3 w-3 animate-spin rounded-full border border-slate-300 border-t-white" />Selecting courier</> : bookingLoading ? (selectedCourier?.provider === 'shadowfax' && selectedCourier?.mode !== 'Direct' ? 'Checking Shadowfax...' : `Saving ${selectedCourier?.courier_name || 'courier'}…`) : selectedCourier?.provider === 'shadowfax' ? (selectedCourier.mode === 'Direct' ? 'Book with Shadowfax' : 'Reconcile Shadowfax Shipment') : selectedCourierKey ? 'Book Shipment' : 'Select a courier above'}
             </button>{!canBookShipment && bookingBlocker && <p className="text-center text-[11px] font-medium text-amber-700">{bookingBlocker}</p>}</div>
           )}
           <button onClick={onClose} className="rounded-lg px-2 py-2.5 text-sm font-semibold text-slate-500 hover:bg-slate-50">Close</button>
