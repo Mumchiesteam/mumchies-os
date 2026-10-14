@@ -9,7 +9,7 @@ import pytest
 import httpx
 from fastapi import HTTPException
 from PIL import Image
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -28,7 +28,7 @@ from app.services.courier_platform.shadowfax_http import (
 )
 from app.services.courier_platform.webhooks import WebhookHandler, process_webhook, webhook_registry
 from app.services.courier_platform.models import TrackingResult
-from app.services.label_printing import LabelPrintError, LabelService, confirm_batch, create_batch, image_label_to_pdf, print_ready_pdf
+from app.services.label_printing import LabelPrintError, LabelService, confirm_batch, create_batch, image_label_to_pdf, print_ready_pdf, shadowfax_print_ready_pdf
 from app.api.routes.couriers import PackageDetailsPayload, _build_provider_booking_request, _sync_shopify_after_booking, _validate_shadowfax_booking_request
 from app.schemas.orders import OrderProduct, ShippingAddress, ShopifyOrder
 
@@ -270,7 +270,7 @@ async def test_shadowfax_label_uses_documented_awb_endpoint_and_client_order_rec
     requests = []
     def handler(request):
         requests.append(request)
-        return httpx.Response(200, content=b"%PDF-1.4", headers={"content-type": "application/pdf"})
+        return httpx.Response(200, content=b"%PDF-1.4", headers={"content-type": "application/octet-stream"})
 
     transport = ShadowfaxHTTPTransport(token="secret", base_url="https://shadowfax.example/api", client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
     try:
@@ -457,6 +457,18 @@ def test_image_label_without_dpi_is_rejected():
 def test_pdf_four_by_six_preserves_portrait_or_landscape(dimensions):
     page = PdfReader(BytesIO(print_ready_pdf(exact_pdf(*dimensions)))).pages[0]
     assert (float(page.mediabox.width), float(page.mediabox.height)) == dimensions
+
+
+def test_shadowfax_print_ready_keeps_only_shipping_label_page():
+    writer = PdfWriter()
+    writer.add_blank_page(width=288, height=432)
+    writer.add_blank_page(width=288, height=432)
+    source = BytesIO(); writer.write(source)
+
+    pages = PdfReader(BytesIO(shadowfax_print_ready_pdf(source.getvalue()))).pages
+
+    assert len(pages) == 1
+    assert (float(pages[0].mediabox.width), float(pages[0].mediabox.height)) == (288, 432)
 
 
 @pytest.mark.anyio

@@ -250,7 +250,15 @@ class ShadowfaxHTTPTransport:
         )
         if response.status_code >= 400:
             self._json(response, "label")
-        return response.content, response.headers.get("content-type", "application/pdf")
+        # The documented endpoint can send a PDF as a generic download (or with
+        # MIME parameters).  Trust a PDF only when its signature confirms it;
+        # this keeps the adapter strict without rejecting the provider's valid
+        # binary response merely because of its HTTP header.
+        content = response.content
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().casefold()
+        if content.lstrip().startswith(b"%PDF-"):
+            content_type = "application/pdf"
+        return content, content_type or "application/pdf"
 
     async def track_shipment(self, shipment: dict[str, Any]) -> dict[str, Any]:
         awb = str(shipment.get("awb") or "").strip()

@@ -59,6 +59,18 @@ def print_ready_pdf(source: bytes) -> bytes:
     return output.getvalue()
 
 
+def shadowfax_print_ready_pdf(source: bytes) -> bytes:
+    """Use Shadowfax's first 4x6 page and omit its following declaration page."""
+    reader = PdfReader(BytesIO(source))
+    if not reader.pages:
+        raise LabelPrintError("Shadowfax returned an empty PDF label.")
+    writer = PdfWriter()
+    writer.add_page(reader.pages[0])
+    output = BytesIO()
+    writer.write(output)
+    return print_ready_pdf(output.getvalue())
+
+
 async def official_label(shipment: ShiprocketShipment) -> bytes:
     if not shipment.awb:
         raise LabelPrintError("Shipment has no AWB.")
@@ -115,7 +127,9 @@ class LabelService:
             })
         except ProviderError as error:
             raise LabelPrintError(str(error)) from error
-        return print_ready_pdf(result.content) if result.format == LabelFormat.PDF else image_label_to_pdf(result.content, result.format)
+        if result.format == LabelFormat.PDF:
+            return shadowfax_print_ready_pdf(result.content) if shipment.provider == "shadowfax" else print_ready_pdf(result.content)
+        return image_label_to_pdf(result.content, result.format)
 
 
 async def _matching_shopify_order(order_id: str):
