@@ -166,6 +166,26 @@ def test_courier_lookup_package_and_selection_invalidation_use_one_write(tmp_pat
     assert record["selected_courier"] is None
 
 
+def test_explicit_courier_selection_uses_one_write_without_transient_clear(tmp_path, monkeypatch):
+    path = tmp_path / "operations.json"
+    monkeypatch.setattr(order_operations, "OPS_FILE", path)
+    writes = 0
+    original_write = OrderOperationsStore._write_all.__func__
+
+    def count_write(cls, data):
+        nonlocal writes
+        writes += 1
+        return original_write(cls, data)
+
+    monkeypatch.setattr(OrderOperationsStore, "_write_all", classmethod(count_write))
+    selected = {"provider": "shiprocket", "courier_id": "43", "courier_name": "Surface"}
+    record = OrderOperationsStore.save_courier_selection("1", {"weight_kg": 0.5}, selected, "Sushil")
+
+    assert writes == 1
+    assert record["selected_courier"] == selected
+    assert record["package_details"] == {"weight_kg": 0.5}
+
+
 @pytest.mark.anyio
 async def test_address_hard_blockers_and_advisory_warnings(db):
     missing_pin = await validate_order_address("1", AddressValidationPayload(address_line1="12 Main Road"), db)

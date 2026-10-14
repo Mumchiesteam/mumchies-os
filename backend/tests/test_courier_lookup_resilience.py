@@ -128,15 +128,13 @@ async def test_drawer_prefetch_does_not_persist_package_or_selection(monkeypatch
 
 
 @pytest.mark.anyio
-async def test_explicit_selection_persists_package_before_courier(monkeypatch):
+async def test_explicit_selection_persists_package_and_courier_together(monkeypatch):
     calls = []
     monkeypatch.setattr(couriers, "current_actor", lambda _request: "Tester")
-    monkeypatch.setattr(couriers.OrderOperationsStore, "prepare_courier_lookup", lambda order_id, package, actor: calls.append(("package", order_id, package, actor)))
-    monkeypatch.setattr(couriers.OrderOperationsStore, "save_selected_courier", lambda order_id, selected: (calls.append(("courier", order_id, selected)) or {"selected_courier": selected}))
-    monkeypatch.setattr(couriers.OrderOperationsStore, "record_timeline_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(couriers.OrderOperationsStore, "save_courier_selection", lambda order_id, package, selected, actor: (calls.append(("selection", order_id, package, selected, actor)) or {"selected_courier": selected}))
     payload = {"provider": "shiprocket", "courier_id": "43", "courier_name": "Surface", "booking_supported": True, "weight_kg": .5, "length_cm": 10, "breadth_cm": 11, "height_cm": 12}
     result = await couriers.select_courier("1", payload, SimpleNamespace())
-    assert [call[0] for call in calls] == ["package", "courier"]
+    assert [call[0] for call in calls] == ["selection"]
     assert result["selected_courier"]["courier_id"] == "43"
 
 

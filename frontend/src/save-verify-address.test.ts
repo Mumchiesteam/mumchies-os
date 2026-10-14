@@ -36,7 +36,8 @@ describe('Save & Verify drawer state propagation', () => {
     expect(flow).toContain('setOperations(result.operations)')
     expect(flow).toContain('operationalStatus: null')
     expect(flow).toContain('addressVerified: result.operations.address_verified')
-    expect(flow).toContain('const freshEligibility = await getBookingEligibility(orderId)')
+    expect(flow).toContain('setBookingEligibility(null)')
+    expect(flow).toContain('void getBookingEligibility(orderId).then(freshEligibility =>')
     expect(flow).toContain('setBookingEligibility(freshEligibility)')
   })
 

@@ -105,8 +105,9 @@ def test_courier_lookup_is_read_only_and_returns_proposed_context_readiness() ->
 
 def test_package_and_selection_writes_only_follow_explicit_selection() -> None:
     source = inspect.getsource(couriers.select_courier)
-    assert "prepare_courier_lookup" in source
-    assert "save_selected_courier" in source
+    assert "save_courier_selection" in source
+    assert "prepare_courier_lookup" not in source
+    assert "save_selected_courier" not in source
 
 
 def test_booking_completes_critical_cleanup_before_noncritical_post_booking_work() -> None:

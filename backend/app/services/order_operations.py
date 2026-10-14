@@ -322,6 +322,32 @@ class OrderOperationsStore:
             return record
 
     @classmethod
+    def save_courier_selection(cls, order_id: str, package_details: dict[str, Any], selected_courier: dict[str, Any], operator: str) -> dict[str, Any]:
+        """Persist an explicit package/courier choice atomically in one file write."""
+        with cls._lock:
+            data = cls._read_all()
+            record = data.get(order_id, deepcopy(cls._default_record))
+            occurred_at = datetime.now(timezone.utc).isoformat()
+            revision = int(record.get("package_revision") or 0) + 1
+            record["package_details"] = package_details
+            record["package_revision"] = revision
+            record["package_provenance"] = {"order_id": order_id, "saved_at": occurred_at, "operator": operator, "revision": revision}
+            cls._record_action(record, "package_details_saved", occurred_at, operator)
+            record.setdefault("timeline_events", []).append({"action": "package_details_updated", "timestamp": occurred_at, "operator": operator, "details": {}})
+            # Preserve the existing action history while committing the final
+            # selection directly, so no transient unselected state is exposed.
+            cls._record_action(record, "courier_selected", occurred_at, operator)
+            record["selected_courier"] = selected_courier
+            cls._record_action(record, "courier_selected", occurred_at, operator)
+            record.setdefault("timeline_events", []).append({
+                "action": "courier_selected", "timestamp": occurred_at, "operator": operator,
+                "details": {"provider": selected_courier.get("provider"), "courier_id": selected_courier.get("courier_id"), "courier_name": selected_courier.get("courier_name")},
+            })
+            data[order_id] = record
+            cls._write_all(data)
+            return deepcopy(record)
+
+    @classmethod
     def save_address_sync_results(cls, order_id: str, results: dict[str, Any]) -> dict[str, Any]:
         with cls._lock:
             data = cls._read_all()

@@ -35,12 +35,6 @@ describe('Orders latency regressions', () => {
     expect(booking).toContain('applyConfirmedBooking(orderId, result.shipment ?? null)')
   })
 
-  it('does not repeat the global Shadowfax health read for every drawer selection', () => {
-    const healthRead = source.indexOf('void getShadowfaxHealthCheck()')
-    const healthStart = source.lastIndexOf('useEffect(() => {', healthRead)
-    const health = source.slice(healthStart, source.indexOf('useEffect(() => {', healthRead + 1))
-    expect(health).not.toContain('selectedOrderId')
-  })
 
   it('does not refresh eligibility after courier quotes', () => {
     const flow = source.slice(source.indexOf('const checkCouriers'), source.indexOf('const selectCourier'))
@@ -107,6 +101,8 @@ describe('Orders latency regressions', () => {
   it('shows pending selection feedback without treating it as a persisted courier', () => {
     const flow = source.slice(source.indexOf('const selectCourier'), source.indexOf('const bookShipment'))
     expect(flow).toContain('selectingKey: courierSelectionKey(courier)')
+    expect(flow).toContain("const priorSelectedKey = session.selectedKey")
+    expect(flow).toContain('selectedKey: null, selectingKey: courierSelectionKey(courier)')
     expect(flow).toContain('selectedKey: courierSelectionKey(result.selected_courier), selectingKey: null')
     expect(flow).toContain('isCurrentCourierSession(current, courierSelectionInFlight.current)')
     const card = source.slice(source.indexOf('{courierOptions.map(option =>'), source.indexOf("{selectedCourier?.provider === 'shadowfax'"))
@@ -128,10 +124,10 @@ describe('Orders latency regressions', () => {
     expect(card).toContain('disabled={!quoteGate.enabled || Boolean(selectingCourierKey)}')
   })
 
-  it('restores the unselected UI after a failed courier selection', () => {
+  it('restores the prior selection after a failed courier selection', () => {
     const flow = source.slice(source.indexOf('const selectCourier'), source.indexOf('const bookShipment'))
     expect(flow).toContain('} catch (err) {')
-    expect(flow).toContain('selectingKey: null, error: (err as Error).message')
+    expect(flow).toContain('selectedKey: priorSelectedKey, selectingKey: null, error: (err as Error).message')
   })
 
   it('rejects delayed select responses from a previous drawer order', () => {
@@ -178,11 +174,14 @@ describe('Orders latency regressions', () => {
     expect(source).toContain('previous.contextKey === quoteContext.key && (previous.phase === \'loading\' || previous.phase === \'refreshing\')')
   })
 
-  it('applies saved address and awaits authoritative eligibility before completing Save & Verify', () => {
+  it('applies a saved address promptly while booking stays disabled until authoritative eligibility returns', () => {
     const flow = source.slice(source.indexOf('const saveAndVerifyAddress'), source.indexOf('const checkCouriers'))
     expect(flow).toContain('setNotice(result.verified')
-    expect(flow).toContain('await getBookingEligibility(orderId)')
+    expect(flow).toContain('setBookingEligibility(null)')
+    expect(flow).toContain('void getBookingEligibility(orderId).then(freshEligibility =>')
+    expect(flow).not.toContain('await getBookingEligibility(orderId)')
     expect(flow).toContain('setBookingEligibility(freshEligibility)')
+    expect(flow).toContain('generation === drawerGenerationRef.current && selectedOrderId === orderId')
   })
 
   it('does not surface stale Save & Verify completion or error after switching drawer order', () => {

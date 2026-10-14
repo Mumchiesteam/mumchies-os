@@ -2028,11 +2028,12 @@ async def select_courier(order_id: str, payload: dict[str, object], request: Req
         "mode": payload.get("mode"),
     }
     package = PackageDetailsPayload.model_validate(payload)
-    # Persist package provenance only at the explicit operator-selection
-    # boundary. Drawer-open quote prefetch must remain read-only.
-    OrderOperationsStore.prepare_courier_lookup(order_id, package.model_dump(), current_actor(request))
-    record = OrderOperationsStore.save_selected_courier(order_id, selected)
-    OrderOperationsStore.record_timeline_event(order_id, "courier_selected", operator=current_actor(request), details={"provider": provider, "courier_id": selected["courier_id"], "courier_name": selected["courier_name"]})
+    # Persist package provenance and the final selection together at the
+    # explicit operator-selection boundary. Drawer quote prefetch remains
+    # read-only and no transient unselected state is written.
+    started = time.perf_counter()
+    record = OrderOperationsStore.save_courier_selection(order_id, package.model_dump(), selected, current_actor(request))
+    LOGGER.info("courier_selection_save persistence_ms=%.2f provider=%s", (time.perf_counter() - started) * 1000, provider)
     return {"provider": provider, "selected_courier": record.get("selected_courier")}
 
 
