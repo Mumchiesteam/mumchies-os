@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { copyVisibleOrderNumber, headings, NDRPage, ndrSemanticCells, ndrTrackingUrl } from './components/NDRPage'
+import { copyVisibleOrderNumber, headings, NDRPage, NDRTable, ndrSemanticCells, ndrTrackingHref, ndrTrackingUrl } from './components/NDRPage'
 import type { NDRCase } from './services/ndr'
 import { actOnNDR, getNDRAnalytics, getNDRCases, type NDRSummary } from './services/ndr'
 import { kpiButtonClass, shopifyPresentation, toggleKpi } from './utils/ndrView'
@@ -45,6 +45,26 @@ describe('NDR operations module', () => {
     expect(ndrSemanticCells(item)).toContain('Out for delivery')
     expect(headings).toContain('Payment Type')
     expect(headings).toContain('Tracking Status')
+  })
+  it('opens verified courier links or the internal NDR tracking view for live response shapes', () => {
+    const caseFor=(provider:string,awb:string,tracking_url:string|null)=>({id:`case-${awb}`,provider,awb,tracking_url,provider_tracking_url:null,products:[]} as unknown as NDRCase)
+    expect(ndrTrackingHref(caseFor('shadowfax','SF40928255890','https://tracking.shadowfax.in/SF40928255890'))).toBe('https://tracking.shadowfax.in/SF40928255890')
+    expect(ndrTrackingHref(caseFor('shadowfax','SF40928256593',null))).toBe('/?ndr_case=case-SF40928256593')
+    expect(ndrTrackingHref(caseFor('shiprocket','SRCS1904596435','https://shiprocket.co/tracking/SRCS1904596435'))).toBe('https://shiprocket.co/tracking/SRCS1904596435')
+    expect(ndrTrackingHref(caseFor('delhivery','1234567890','https://www.delhivery.com/track/package/1234567890'))).toBe('https://www.delhivery.com/track/package/1234567890')
+    expect(ndrTrackingUrl(caseFor('shiprocket','SRCS1904596435','javascript:alert(1)'))).toBeNull()
+  })
+  it('renders each supplied AWB as a new-tab tracking link', () => {
+    const cases=[
+      {id:'case-sf-1',awb:'SF40928255890',provider:'shadowfax',tracking_url:null,provider_tracking_url:null,products:[]},
+      {id:'case-sf-2',awb:'SF40928256593',provider:'shadowfax',tracking_url:'https://tracking.shadowfax.in/SF40928256593',provider_tracking_url:null,products:[]},
+      {id:'case-sr',awb:'SRCS1904596435',provider:'shiprocket',tracking_url:'https://shiprocket.co/tracking/SRCS1904596435',provider_tracking_url:null,products:[]},
+    ] as unknown as NDRCase[]
+    const html=renderToStaticMarkup(<NDRTable cases={cases} loading={false} open={async()=>{}} copyOrder={async()=>{}} />)
+    expect(html).toContain('href="/?ndr_case=case-sf-1"')
+    expect(html).toContain('href="https://tracking.shadowfax.in/SF40928256593"')
+    expect(html).toContain('href="https://shiprocket.co/tracking/SRCS1904596435"')
+    expect(html.match(/target="_blank"/g)).toHaveLength(3)
   })
   it('sends grid filters to the backend', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async()=>new Response(JSON.stringify({items:[],total:0}), { status: 200, headers: { 'Content-Type': 'application/json' } }))

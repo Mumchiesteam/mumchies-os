@@ -248,7 +248,8 @@ function App() {
   const authUser = useAuth()
   const currentPath = typeof window === 'undefined' ? '' : window.location.pathname
   const initialReportPath = currentPath.startsWith('/reports') ? currentPath : ''
-  const [activePage, setActivePage] = useState<typeof navItems[number]>(initialReportPath ? 'Reports' : 'Dashboard')
+  const initialNdrCase = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('ndr_case')
+  const [activePage, setActivePage] = useState<typeof navItems[number]>(initialReportPath ? 'Reports' : initialNdrCase ? 'NDR' : 'Dashboard')
   const [reportPath, setReportPath] = useState(initialReportPath || '/reports')
   const [reconciliationSection, setReconciliationSection] = useState<'reconciliation' | 'courier_issues'>('reconciliation')
   const [orders, setOrders] = useState<Order[]>([])
