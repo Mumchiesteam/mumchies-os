@@ -84,7 +84,7 @@ async def test_delhivery_success_shiprocket_failure_returns_delhivery(monkeypatc
 
 
 @pytest.mark.anyio
-async def test_provider_timeouts_return_manual_option_and_combined_error(monkeypatch, lookup_context):
+async def test_provider_timeouts_do_not_invent_a_manual_zero_price_quote(monkeypatch, lookup_context):
     async def timeout(*_args):
         raise asyncio.TimeoutError
 
@@ -94,8 +94,38 @@ async def test_provider_timeouts_return_manual_option_and_combined_error(monkeyp
     result = await couriers.shiprocket_serviceability("1", CourierCheckPayload(weight_kg=.5, courier_payment_mode="Prepaid"), SimpleNamespace(), lookup_context)
     assert result["lookup_status"] == "manual_only"
     assert result["provider_failures"] == {"shiprocket": "timeout", "delhivery": "timeout"}
-    assert [quote["provider"] for quote in result["couriers"]] == ["shadowfax"]
+    assert result["couriers"] == []
     assert any("both rate providers" in warning for warning in result["provider_warnings"])
+
+
+@pytest.mark.anyio
+async def test_shadowfax_direct_is_a_single_serviceable_option_with_no_price_when_api_returns_coverage_only(monkeypatch, lookup_context):
+    async def no_quotes(*_args):
+        return []
+
+    async def shadowfax_serviceability(_self, _request):
+        quote = SimpleNamespace(
+            service_id="regular", courier_name="Shadowfax Direct", charges=None,
+            estimated_delivery_days=None, expected_delivery_date=None,
+        )
+        return SimpleNamespace(serviceable=True, quotes=[quote])
+
+    monkeypatch.setattr(couriers.ShiprocketService, "serviceability", no_quotes)
+    monkeypatch.setattr(couriers.DelhiveryService, "configured", property(lambda _self: False))
+    monkeypatch.setattr(couriers.settings, "shadowfax_direct_booking_enabled", True)
+    monkeypatch.setattr(couriers.ShadowfaxAdapter, "configured", property(lambda _self: True))
+    monkeypatch.setattr(couriers.ShadowfaxAdapter, "serviceability", shadowfax_serviceability)
+
+    result = await couriers.shiprocket_serviceability("1", CourierCheckPayload(weight_kg=.5, courier_payment_mode="Prepaid"), SimpleNamespace(), lookup_context)
+
+    assert result["couriers"] == [{
+        "courier_id": "shadowfax:regular", "courier_name": "Shadowfax Direct",
+        "rate": None, "cod_charge": None, "total_estimated_shipping_cost": None,
+        "estimated_delivery_days": None, "expected_delivery_date": None, "rating": None,
+        "cod_supported": True, "prepaid_supported": True, "mode": "Direct",
+        "provider": "shadowfax", "booking_supported": True,
+        "rate_note": "Shadowfax Direct serviceability confirmed; rate unavailable",
+    }]
 
 
 @pytest.mark.anyio
@@ -201,7 +231,7 @@ async def test_courier_check_readiness_locks_when_quote_address_is_not_verified(
 
     result = await couriers.shiprocket_serviceability("1", payload, SimpleNamespace(), SimpleNamespace(rollback=lambda: None))
 
-    assert result["couriers"]
+    assert result["couriers"] == []
     assert result["booking_readiness"]["eligible"] is False
     assert "address must be verified" in result["booking_readiness"]["missing_requirements"]
 

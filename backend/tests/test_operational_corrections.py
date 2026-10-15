@@ -380,7 +380,7 @@ async def test_shiprocket_cancel_rejects_application_error_on_http_200(monkeypat
 ])
 async def test_cancelled_unfulfilled_order_cannot_create_manual_shadowfax_evidence(monkeypatch, cancelled_at, shopify_status):
     order = SimpleNamespace(cancelled_at=cancelled_at, shopify_status=shopify_status, fulfillment_status="unfulfilled")
-    async def context(_order_id, _db): return order, {"selected_courier": {"provider": "shadowfax"}}, None
+    async def context(_order_id, _db): return order, {"selected_courier": None}, None
     monkeypatch.setattr(couriers, "_load_context", context)
     monkeypatch.setattr(couriers, "upsert_shipment", lambda *_args, **_kwargs: pytest.fail("shipment evidence was persisted"))
     with pytest.raises(orders.HTTPException, match="Cancelled Shopify orders") as error:

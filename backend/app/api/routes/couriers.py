@@ -931,13 +931,13 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
             quote = shadowfax_result.quotes[0]
             normalized_quotes.append({
                 "courier_id": f"shadowfax:{quote.service_id}", "courier_name": quote.courier_name,
-                "rate": quote.charges or 0, "cod_charge": None,
-                "total_estimated_shipping_cost": quote.charges or 0,
+                "rate": quote.charges, "cod_charge": None,
+                "total_estimated_shipping_cost": quote.charges,
                 "estimated_delivery_days": quote.estimated_delivery_days,
                 "expected_delivery_date": quote.expected_delivery_date,
                 "rating": None, "cod_supported": True, "prepaid_supported": True,
                 "mode": "Direct", "provider": "shadowfax", "booking_supported": True,
-                "rate_note": "Shadowfax Direct serviceability confirmed",
+                "rate_note": "Shadowfax Direct serviceability confirmed" if quote.charges is not None else "Shadowfax Direct serviceability confirmed; rate unavailable",
             })
         rate_provider_quotes = len(normalized_quotes)
         if "shiprocket" in provider_failures:
@@ -945,15 +945,7 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
         if "delhivery" in provider_failures and provider_failures["delhivery"] != "not_configured":
             provider_warnings.append("Delhivery lookup failed. Available courier results are shown." if rate_provider_quotes else "Delhivery lookup failed. Retry lookup.")
         if all(provider in provider_failures for provider in ("shiprocket", "delhivery")):
-            provider_warnings.append("Courier lookup failed: both rate providers are unavailable. Shadowfax manual remains available.")
-        normalized_quotes.append({
-            "courier_id": "shadowfax:manual", "courier_name": "Shadowfax", "rate": 0,
-            "cod_charge": None, "total_estimated_shipping_cost": 0,
-            "estimated_delivery_days": None, "expected_delivery_date": None, "rating": None,
-            "cod_supported": True, "prepaid_supported": True, "mode": "Manual",
-            "provider": "shadowfax", "booking_supported": True,
-            "rate_note": "Manual booking on Shadowfax required",
-        })
+            provider_warnings.append("Courier lookup failed: both rate providers are unavailable. Manual shipment recording remains available.")
         quote_address = _order_latest_address(order, quote_operations) or {}
         quote_context = {
             "order_id": order.order_id, "drawer_generation": payload.drawer_generation,
@@ -993,7 +985,11 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
             "delhivery": round(provider_timings.get("delhivery", 0), 2),
             "total_backend": round((time.perf_counter() - request_started) * 1000, 2),
         },
-        "couriers": sorted(normalized_quotes, key=lambda quote: float(quote["total_estimated_shipping_cost"])),
+        "couriers": sorted(
+            normalized_quotes,
+            key=lambda quote: float(quote["total_estimated_shipping_cost"])
+            if isinstance(quote.get("total_estimated_shipping_cost"), (int, float)) else float("inf"),
+        ),
         # Eligibility is evaluated against the immutable proposed quote context;
         # no order or shipment state has been persisted by this read-only route.
         "booking_readiness": {
@@ -1032,9 +1028,6 @@ async def save_manual_shadowfax_shipment(order_id: str, payload: ManualShadowfax
     shopify_tracking = _shopify_shadowfax_tracking(order)
     if has_existing_shipment_evidence(order, operations, shipment) and not shopify_tracking:
         raise HTTPException(status_code=409, detail="An active shipment or fulfilment already exists for this order.")
-    selected = operations.get("selected_courier")
-    if not shopify_tracking and (not isinstance(selected, dict) or str(selected.get("provider") or "").casefold() != "shadowfax"):
-        raise HTTPException(status_code=400, detail="Select the manual Shadowfax courier option first.")
     actor = current_actor(request)
     booked_at = payload.booked_at or datetime.now(timezone.utc)
     service = str(payload.service_name or "").strip() or None

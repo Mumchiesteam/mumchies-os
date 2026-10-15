@@ -63,7 +63,7 @@ describe('Shadowfax create-only diagnostic', () => {
   })
 
   it('keeps the manual Shadowfax reconciliation workflow separate from normal booking', () => {
-    expect(appSource).toContain('Ship this order in Shadowfax 360, then reconcile it here.')
+    expect(appSource).toContain('Use direct booking when available. If this exact order was booked outside Mumchies OS, reconcile its AWB here; exact-order validation remains required.')
     expect(appSource).toContain('Paste the AWB from Shadowfax. It will be validated against this exact order before anything is recorded.')
     expect(appSource).toContain('Validate and record shipment')
     const handlerStart = appSource.indexOf('const saveManualShadowfax = async')

@@ -885,9 +885,9 @@ export async function checkShiprocketCouriers(orderId: string, payload: {
   couriers: Array<{
     courier_id: string | null
     courier_name: string
-    rate: number
+    rate: number | null
     cod_charge: number | null
-    total_estimated_shipping_cost: number
+    total_estimated_shipping_cost: number | null
     estimated_delivery_days: number | null
     expected_delivery_date: string | null
     rating: number | null
@@ -935,9 +935,9 @@ export async function selectShiprocketCourier(orderId: string, payload: {
   rate_note: string
   courier_id: string
   courier_name: string
-  rate: number
+  rate: number | null
   cod_charge: number | null
-  total_estimated_shipping_cost: number
+  total_estimated_shipping_cost: number | null
   estimated_delivery_days: number | null
   expected_delivery_date: string | null
   rating: number | null

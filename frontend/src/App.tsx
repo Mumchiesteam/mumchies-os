@@ -91,9 +91,9 @@ export type CallResult = 'No Answer' | 'Busy' | 'Switched Off' | 'On Hold' | 'Co
 type CourierQuote = {
   courier_id: string | null
   courier_name: string
-  rate: number
+  rate: number | null
   cod_charge: number | null
-  total_estimated_shipping_cost: number
+  total_estimated_shipping_cost: number | null
   estimated_delivery_days: number | null
   expected_delivery_date: string | null
   rating: number | null
@@ -784,7 +784,11 @@ function App() {
       if (controller.signal.aborted || result.client_context_key !== quoteContext.key || !isCurrentCourierSession(current, { orderId, generation, contextKey: quoteContext.key, requestId })) return
       const active = current as CourierSession
       setBookingEligibility(result.booking_readiness)
-      const sorted = [...(result.couriers ?? [])].sort((a, b) => a.total_estimated_shipping_cost - b.total_estimated_shipping_cost)
+      const sorted = [...(result.couriers ?? [])].sort((a, b) => {
+        const aCost = typeof a.total_estimated_shipping_cost === 'number' && Number.isFinite(a.total_estimated_shipping_cost) ? a.total_estimated_shipping_cost : Number.POSITIVE_INFINITY
+        const bCost = typeof b.total_estimated_shipping_cost === 'number' && Number.isFinite(b.total_estimated_shipping_cost) ? b.total_estimated_shipping_cost : Number.POSITIVE_INFINITY
+        return aCost - bCost
+      })
       const lookupError = result.lookup_status === 'manual_only'
         ? 'Courier lookup failed: both rate providers are unavailable. Retry lookup.'
         : sorted.length === 0 ? 'No courier services are currently available. Check the package and address, then retry.' : ''
@@ -1714,6 +1718,8 @@ const OrderDrawer = memo(function OrderDrawer({
                     const selected = optionSelectionKey === selectedCourierKey
                     const selecting = optionSelectionKey === selectingCourierKey
                     const shadowfaxRecommendation = option.provider === 'shadowfax' ? shadowfaxRecommendationPresentation(shadowfaxPincodeRecommendation) : null
+                    const rate = typeof option.rate === 'number' && Number.isFinite(option.rate) ? option.rate : null
+                    const totalRate = typeof option.total_estimated_shipping_cost === 'number' && Number.isFinite(option.total_estimated_shipping_cost) ? option.total_estimated_shipping_cost : null
                     return (
                       <button key={optionSelectionKey ?? `${option.provider}-${option.courier_name}-${option.courier_id}-${option.mode ?? ''}`} disabled={!quoteGate.enabled || Boolean(selectingCourierKey)} onClick={() => void onSelectCourier(option, currentQuoteContextKey, packageNumbers)} className={`w-full rounded-xl border p-2.5 text-left transition disabled:cursor-not-allowed disabled:opacity-70 ${selected || selecting ? 'border-[#ff6b35] bg-orange-50/60' : 'border-slate-200 bg-white enabled:hover:bg-slate-50'}`}>
                         <div className="flex items-start justify-between gap-3">
@@ -1721,6 +1727,7 @@ const OrderDrawer = memo(function OrderDrawer({
                             <div className="flex items-center gap-2">
                               <p className="text-sm font-semibold text-slate-800">{option.courier_name}</p>
                               <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase text-slate-500">{option.provider}</span>
+                              {option.provider === 'shadowfax' && option.mode === 'Direct' && <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-bold uppercase text-violet-700">Direct</span>}
                               {selected && <span className="rounded-full bg-[#ff6b35] px-2 py-0.5 text-[10px] font-bold text-white">Selected</span>}
                               {selecting && <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-bold text-[#c84a1e]"><span className="h-2 w-2 animate-spin rounded-full border border-orange-300 border-t-[#ff6b35]" />Selecting</span>}
                               {shadowfaxRecommendation && <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${shadowfaxRecommendation.className}`}>{shadowfaxRecommendation.label}</span>}
@@ -1732,9 +1739,9 @@ const OrderDrawer = memo(function OrderDrawer({
                             {!quoteGate.enabled && <p className="mt-1 text-[11px] font-semibold text-amber-700">{quoteGate.reason}</p>}
                           </div>
                           <div className="text-right text-xs text-slate-500">
-                            <p>Freight {formatMoney(option.rate)}</p>
+                            <p>Freight {rate !== null ? formatMoney(rate) : 'Rate unavailable'}</p>
                             <p>COD {option.cod_charge == null ? '—' : formatMoney(option.cod_charge)}</p>
-                            <p className="font-semibold text-slate-700">Total {formatMoney(option.total_estimated_shipping_cost)}</p>
+                            <p className="font-semibold text-slate-700">Total {totalRate !== null ? formatMoney(totalRate) : 'Rate unavailable'}</p>
                             <p>Rating {option.rating == null ? '—' : option.rating.toFixed(2)}</p>
                           </div>
                         </div>
@@ -1743,8 +1750,8 @@ const OrderDrawer = memo(function OrderDrawer({
                   })}
                 </div>
               )}
-              {selectedCourier?.provider === 'shadowfax' && <p className="rounded-lg bg-amber-50 px-3 py-2 font-semibold text-amber-800">Ship this order in Shadowfax 360, then reconcile it here.</p>}
-              {shadowfaxWorkflowStatus && selectedCourier?.provider === 'shadowfax' && <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700" role="status">{shadowfaxWorkflowStatus}</p>}
+              {!shipment && <div className="rounded-lg bg-violet-50 px-3 py-2 text-sm text-violet-900"><p className="font-semibold">{selectedCourier?.provider === 'shadowfax' && selectedCourier?.mode === 'Direct' ? 'Shadowfax Direct selected' : 'Manual Shadowfax reconciliation fallback'}</p><p className="mt-1 text-xs">Use direct booking when available. If this exact order was booked outside Mumchies OS, reconcile its AWB here; exact-order validation remains required.</p><button type="button" onClick={() => { setShadowfaxWorkflowStatus(''); setShowShadowfaxForm(value => !value) }} className="mt-2 rounded border border-violet-300 bg-white px-3 py-1.5 text-xs font-semibold">{showShadowfaxForm ? 'Hide Shadowfax reconciliation' : 'Reconcile externally booked Shadowfax shipment'}</button></div>}
+              {shadowfaxWorkflowStatus && <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700" role="status">{shadowfaxWorkflowStatus}</p>}
               {showShadowfaxDirectTest && <div className="flex flex-wrap gap-2"><button type="button" disabled={bookingLoading || shadowfaxTestState?.eligible_for_test !== true || Boolean(shadowfaxTestState?.create_request_started_at)} onClick={onTestShadowfaxDirect} className="rounded-lg border border-violet-300 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 disabled:opacity-50">Test Shadowfax Direct</button></div>}
               {showShadowfaxDirectTest && shadowfaxTestState && <details open className="rounded-lg border border-violet-200 bg-violet-50/40 p-3 text-xs text-slate-700">
                 <summary className="cursor-pointer font-semibold text-violet-900">Shadowfax direct test status</summary>
@@ -1760,8 +1767,8 @@ const OrderDrawer = memo(function OrderDrawer({
                   <p className="mt-1">True fields: {shadowfaxShipmentRow.reset_blocker.true_fields.join(', ') || 'none'}</p>
                 </div>
               </details>}
-              {showShadowfaxForm && selectedCourier?.provider === 'shadowfax' && <div className="space-y-3 rounded-xl border border-slate-200 p-3">
-                <p className="font-semibold text-slate-800">Could not find the shipment automatically</p>
+              {showShadowfaxForm && !shipment && <div className="space-y-3 rounded-xl border border-slate-200 p-3">
+                <p className="font-semibold text-slate-800">Manual Shadowfax reconciliation fallback</p>
                 <p className="text-xs text-slate-600">Paste the AWB from Shadowfax. It will be validated against this exact order before anything is recorded.</p>
                 <div className="grid gap-2 sm:grid-cols-2"><Field label="Shadowfax AWB" value={manualShadowfax.awb} onChange={awb => setManualShadowfax({ ...manualShadowfax, awb })} /><Field label="Service name" value={manualShadowfax.service_name} onChange={service_name => setManualShadowfax({ ...manualShadowfax, service_name })} /><Field label="Booking date/time" value={manualShadowfax.booked_at} onChange={booked_at => setManualShadowfax({ ...manualShadowfax, booked_at })} /><Field label="Freight (optional)" value={manualShadowfax.freight} onChange={freight => setManualShadowfax({ ...manualShadowfax, freight })} /><Field label="Operator note" value={manualShadowfax.note} onChange={note => setManualShadowfax({ ...manualShadowfax, note })} /></div>
                 <button disabled={bookingLoading || !manualShadowfax.awb.trim()} onClick={() => { setShadowfaxWorkflowStatus('Checking Shadowfax...'); void onSaveManualShadowfax({ awb: manualShadowfax.awb, service_name: manualShadowfax.service_name, booked_at: new Date(manualShadowfax.booked_at).toISOString(), freight: manualShadowfax.freight ? Number(manualShadowfax.freight) : undefined, note: manualShadowfax.note }).then(() => { setShadowfaxWorkflowStatus('Shipment found · Shipment recorded'); setShowShadowfaxForm(false) }).catch(() => setShadowfaxWorkflowStatus('Failed - retry')) }} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40">Validate and record shipment</button>
@@ -1885,11 +1892,11 @@ const OrderDrawer = memo(function OrderDrawer({
           ) : (
             <div className="flex flex-1 flex-col gap-1"><button
               disabled={!canBookShipment}
-              onClick={() => { if (selectedCourier?.provider !== 'shadowfax' || selectedCourier?.mode === 'Direct') { void onBookShipment(packageNumbers); return } setShadowfaxWorkflowStatus('Checking Shadowfax...'); void onSaveManualShadowfax({}).then(() => { setShadowfaxWorkflowStatus('Shipment found · Shipment recorded'); setShowShadowfaxForm(false) }).catch(() => { setShadowfaxWorkflowStatus('Could not find Shadowfax shipment · Failed - retry'); setShowShadowfaxForm(true) }) }}
+              onClick={() => void onBookShipment(packageNumbers)}
               className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
             >
               <Icon name="truck" size={16} />
-              {selectingCourierKey ? <><span className="h-3 w-3 animate-spin rounded-full border border-slate-300 border-t-white" />Selecting courier</> : bookingLoading ? (selectedCourier?.provider === 'shadowfax' && selectedCourier?.mode !== 'Direct' ? 'Checking Shadowfax...' : `Saving ${selectedCourier?.courier_name || 'courier'}…`) : selectedCourier?.provider === 'shadowfax' ? (selectedCourier.mode === 'Direct' ? 'Book with Shadowfax' : 'Reconcile Shadowfax Shipment') : selectedCourierKey ? 'Book Shipment' : 'Select a courier above'}
+              {selectingCourierKey ? <><span className="h-3 w-3 animate-spin rounded-full border border-slate-300 border-t-white" />Selecting courier</> : bookingLoading ? `Saving ${selectedCourier?.courier_name || 'courier'}…` : selectedCourier?.provider === 'shadowfax' ? 'Book with Shadowfax' : selectedCourierKey ? 'Book Shipment' : 'Select a courier above'}
             </button>{!canBookShipment && bookingBlocker && <p className="text-center text-[11px] font-medium text-amber-700">{bookingBlocker}</p>}</div>
           )}
           <button onClick={onClose} className="rounded-lg px-2 py-2.5 text-sm font-semibold text-slate-500 hover:bg-slate-50">Close</button>

@@ -3,11 +3,12 @@ import appSource from './App.tsx?raw'
 import ordersSource from './services/orders.ts?raw'
 
 describe('Shadowfax manual reconciliation', () => {
-  it('checks the backend immediately and exposes every operator state', () => {
+  it('uses an explicit AWB reconciliation fallback without changing normal booking', () => {
     expect(appSource).toContain("setShadowfaxWorkflowStatus('Checking Shadowfax...')")
-    expect(appSource).toContain('onSaveManualShadowfax({})')
+    expect(appSource).toContain('onSaveManualShadowfax({ awb: manualShadowfax.awb')
     expect(appSource).toContain('Shipment found · Shipment recorded')
-    expect(appSource).toContain('Could not find Shadowfax shipment · Failed - retry')
+    expect(appSource).toContain('Manual Shadowfax reconciliation fallback')
+    expect(appSource).toContain("!manualShadowfax.awb.trim()")
     expect(appSource).toContain('Validate and record shipment')
   })
 
