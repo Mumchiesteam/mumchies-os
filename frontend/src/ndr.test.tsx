@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { copyVisibleOrderNumber, headings, NDRPage, ndrSemanticCells } from './components/NDRPage'
+import { copyVisibleOrderNumber, headings, NDRPage, ndrSemanticCells, ndrTrackingUrl } from './components/NDRPage'
 import type { NDRCase } from './services/ndr'
 import { actOnNDR, getNDRAnalytics, getNDRCases, type NDRSummary } from './services/ndr'
 import { kpiButtonClass, shopifyPresentation, toggleKpi } from './utils/ndrView'
@@ -35,6 +35,14 @@ describe('NDR operations module', () => {
     await actOnNDR('case-1', { action:'resolve', note:'Done' })
     expect(String(fetchMock.mock.calls[0][0])).toContain('/ndr/cases/case-1/actions')
     expect(String(fetchMock.mock.calls[0][0])).not.toContain('/ndr/sync')
+  })
+  it('keeps AWB tracking links and payment badges tied to API facts', () => {
+    const item={awb:'SF123',provider_tracking_url:null,tracking_url:'https://tracking.example/SF123',payment_type:'COD',latest_tracking_status:'Out for delivery',products:[]} as unknown as NDRCase
+    expect(ndrTrackingUrl(item)).toBe('https://tracking.example/SF123')
+    expect(ndrSemanticCells(item)).toContain('COD')
+    expect(ndrSemanticCells(item)).toContain('Out for delivery')
+    expect(headings).toContain('Payment Type')
+    expect(headings).toContain('Tracking Status')
   })
   it('sends grid filters to the backend', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async()=>new Response(JSON.stringify({items:[],total:0}), { status: 200, headers: { 'Content-Type': 'application/json' } }))

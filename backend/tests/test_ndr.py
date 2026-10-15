@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from app.api.routes.ndr import NDRAction, NDRImportPayload, case_action, import_cases, list_cases, resolution_analytics, summary
+from app.api.routes.ndr import NDRAction, NDRImportPayload, _payment_type_label, case_action, case_detail, import_cases, list_cases, resolution_analytics, summary
 from app.core.config import settings
 from app.db.base import Base
 from app.models.ndr import NDRCase, NDREvent, NDRImportRun
@@ -235,6 +235,37 @@ def test_case_list_enriches_product_without_reconciling(db):
     db.add_all([case,ShipmentEvent(id="rto",order_id="6819",order_number="322264",provider="delhivery",awb="4829510010776",normalized_status="rto_delivered",recorded_at=now,source="poll",deduplication_key="rto"),OrderReadModel(order_id="6819",order_number="322264",customer_name="Customer",payment_type="cod",order_value=999,products=[{"product_name":"Roasted Makhana","quantity":1,"price":999}],updated_at=now)]);db.commit()
     assert list_cases(kpi="active",page=1,page_size=50,db=db)["items"]==[]
     db.refresh(case);assert case.current_status=="new"
+
+
+def test_awb_search_enriches_tracking_and_authoritative_payment_type_without_network_calls(db):
+    now = datetime.now(timezone.utc)
+    case = NDRCase(id="awb-search", source_identity="awb:SF123", awb="SF123", provider="shadowfax", order_number="329103", source_lifecycle="active", current_status="new", priority="high", delivery_attempts=1, first_ndr_at=now, last_synced_at=now, provider_status="NDR", failure_reason="Customer unavailable", products=[], cod_amount=0)
+    db.add_all([
+        case,
+        OrderReadModel(order_id="shopify-329103", order_number="329103", customer_name="Customer", payment_type="partial_cod", order_value=499, products=[], updated_at=now),
+        ShiprocketShipment(order_id="shopify-329103", provider="shadowfax", awb="SF123", courier_name="Shadowfax Direct", latest_status="Out for delivery", tracking_url="https://tracking.example/SF123"),
+    ])
+    db.commit()
+
+    listed = list_cases(search="SF123", status="new", page=1, page_size=50, db=db)["items"]
+    assert len(listed) == 1
+    assert listed[0]["payment_type"] == "COD"
+    assert listed[0]["tracking_url"] == "https://tracking.example/SF123"
+    assert listed[0]["latest_tracking_status"] == "Out for delivery"
+    assert listed[0]["courier_name"] == "Shadowfax Direct"
+
+    detail = case_detail(case.id, db=db)
+    assert {key: detail[key] for key in ("payment_type", "tracking_url", "latest_tracking_status")} == {
+        "payment_type": "COD", "tracking_url": "https://tracking.example/SF123", "latest_tracking_status": "Out for delivery",
+    }
+
+
+def test_payment_type_labels_never_guess_from_financial_state():
+    assert _payment_type_label("cod") == "COD"
+    assert _payment_type_label("partial_cod") == "COD"
+    assert _payment_type_label("prepaid") == "Prepaid"
+    assert _payment_type_label(None) == "Unknown"
+    assert _payment_type_label("paid") == "Unknown"
 
 @pytest.mark.parametrize("status", ["Delivered", "RTO Initiated", "RTO In Transit", "RTO Delivered", "Returned to Seller", "Return Completed"])
 def test_shadowfax_events_do_not_mutate_case_at_active_read(status, db):

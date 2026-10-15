@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.core.identity import current_user
 from app.db.session import get_db
 from app.models.ndr import NDRCase, NDREvent, NDRImportRun
+from app.models.shiprocket import ShiprocketShipment
 from app.models.user import User
 from app.services.ndr import add_event, serialize_case
 from app.services.ndr_import import import_ndr, serialize_import_run
@@ -23,6 +24,29 @@ import hmac
 
 router = APIRouter(prefix="/ndr", tags=["ndr"])
 INDIA = ZoneInfo("Asia/Kolkata")
+
+
+def _payment_type_label(value: object) -> str:
+    """Translate the locally cached authoritative order payment type for operators."""
+    normalized = str(value or "").strip().casefold().replace("_", " ")
+    if normalized in {"cod", "partial cod"}:
+        return "COD"
+    if normalized == "prepaid":
+        return "Prepaid"
+    return "Unknown"
+
+
+def _enrich_case_item(item: dict, order: object | None, shipment: ShiprocketShipment | None) -> dict:
+    """Attach read-model and persisted shipment facts without network access or writes."""
+    item["payment_type"] = _payment_type_label(getattr(order, "payment_type", None))
+    if shipment:
+        item["courier_name"] = item.get("courier_name") or shipment.courier_name or shipment.courier_service
+        item["tracking_url"] = shipment.tracking_url or shipment.shopify_tracking_url or item.get("provider_tracking_url")
+        item["latest_tracking_status"] = shipment.latest_status or shipment.terminal_status or shipment.normalized_status or item.get("provider_status")
+    else:
+        item["tracking_url"] = item.get("provider_tracking_url")
+        item["latest_tracking_status"] = item.get("provider_status")
+    return item
 
 
 def _india_day_bounds(now: datetime) -> tuple[datetime, datetime]:
@@ -135,13 +159,17 @@ def list_cases(search: str = "", courier: str = "", failure_reason: str = "", ag
     priority_rank = sql_case((NDRCase.priority == "high", 0), (NDRCase.priority == "medium", 1), else_=2)
     rows = db.scalars(query.order_by(NDRCase.resolved_at.is_not(None), priority_rank, NDRCase.first_ndr_at.asc()).offset((page - 1) * page_size).limit(page_size)).all()
     cached = by_order_number(db, {str(row.order_number or row.order_id or "").lstrip("#") for row in rows})
+    awbs = {str(row.awb or "").strip() for row in rows if row.awb}
+    shipments = db.scalars(select(ShiprocketShipment).where(ShiprocketShipment.awb.in_(awbs))).all() if awbs else []
+    shipments_by_awb = {(str(shipment.provider or "").casefold(), str(shipment.awb or "")): shipment for shipment in shipments}
     items = []
     for row in rows:
         item = serialize_case(row)
         order = cached.get(str(row.order_number or row.order_id or "").lstrip("#"))
         if order and order.products:
             item["products"] = order.products
-        items.append(item)
+        shipment = shipments_by_awb.get((str(row.provider or "").casefold(), str(row.awb or "")))
+        items.append(_enrich_case_item(item, order, shipment))
     logging.getLogger(__name__).info(
         "ndr_cases total_ms=%.2f terminal_ms=%.2f query_enrich_ms=%.2f rows=%d",
         (time.perf_counter() - request_started) * 1000, terminal_ms,
@@ -155,7 +183,12 @@ def case_detail(case_id: str, db: Session = Depends(get_db)) -> dict:
     case = db.get(NDRCase, case_id)
     if not case: raise HTTPException(404, "NDR case not found.")
     events = db.scalars(select(NDREvent).where(NDREvent.case_id == case_id).order_by(NDREvent.created_at.desc())).all()
-    return serialize_case(case, events=events)
+    order = by_order_number(db, {str(case.order_number or case.order_id or "").lstrip("#")}).get(str(case.order_number or case.order_id or "").lstrip("#"))
+    shipment = db.scalar(select(ShiprocketShipment).where(
+        ShiprocketShipment.awb == case.awb,
+        func.lower(ShiprocketShipment.provider) == str(case.provider or "").casefold(),
+    )) if case.awb else None
+    return _enrich_case_item(serialize_case(case, events=events), order, shipment)
 
 
 def _analytics_row(cases: list[NDRCase]) -> dict:
