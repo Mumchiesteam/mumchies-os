@@ -10,8 +10,8 @@ describe('Shadowfax courier comparison', () => {
     expect(source).not.toContain("selectedCourier.mode === 'Direct' ? 'Book with Shadowfax' : 'Reconcile Shadowfax Shipment'")
   })
 
-  it('shows missing prices as unavailable and sorts them after priced quotes', () => {
-    expect(source).toContain('Number.POSITIVE_INFINITY')
+  it('shows missing prices as unavailable and keeps the provider display order independent of price', () => {
+    expect(source).toContain("const providerRank: Record<CourierQuote['provider'], number> = { shadowfax: 0, delhivery: 1, shiprocket: 2 }")
     expect(source).toContain("rate !== null ? formatMoney(rate) : 'Rate unavailable'")
     expect(source).toContain("totalRate !== null ? formatMoney(totalRate) : 'Rate unavailable'")
   })

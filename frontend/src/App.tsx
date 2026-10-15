@@ -784,11 +784,8 @@ function App() {
       if (controller.signal.aborted || result.client_context_key !== quoteContext.key || !isCurrentCourierSession(current, { orderId, generation, contextKey: quoteContext.key, requestId })) return
       const active = current as CourierSession
       setBookingEligibility(result.booking_readiness)
-      const sorted = [...(result.couriers ?? [])].sort((a, b) => {
-        const aCost = typeof a.total_estimated_shipping_cost === 'number' && Number.isFinite(a.total_estimated_shipping_cost) ? a.total_estimated_shipping_cost : Number.POSITIVE_INFINITY
-        const bCost = typeof b.total_estimated_shipping_cost === 'number' && Number.isFinite(b.total_estimated_shipping_cost) ? b.total_estimated_shipping_cost : Number.POSITIVE_INFINITY
-        return aCost - bCost
-      })
+      const providerRank: Record<CourierQuote['provider'], number> = { shadowfax: 0, delhivery: 1, shiprocket: 2 }
+      const sorted = [...(result.couriers ?? [])].sort((a, b) => providerRank[a.provider] - providerRank[b.provider])
       const lookupError = result.lookup_status === 'manual_only'
         ? 'Courier lookup failed: both rate providers are unavailable. Retry lookup.'
         : sorted.length === 0 ? 'No courier services are currently available. Check the package and address, then retry.' : ''
@@ -1440,6 +1437,7 @@ const OrderDrawer = memo(function OrderDrawer({
   const [showManualExternal, setShowManualExternal] = useState(false)
   const [manualExternal, setManualExternal] = useState<ManualExternalShipmentPayload>({ provider: 'shiprocket', awb: '', reason: 'Order recreated / cloned externally', comment: '', operator_confirmed: false })
   const [manualExternalStatus, setManualExternalStatus] = useState('')
+  const addressReviewMessages = addressReview ? [...addressReview.blockers, ...addressReview.warnings] : []
   const autoLookupKeyRef = useRef('')
   const selectableTimingRef = useRef(false)
   const drawerOpenedAtRef = useRef(0)
@@ -1602,7 +1600,7 @@ const OrderDrawer = memo(function OrderDrawer({
             </fieldset>
             {addressSaveError && <p role="alert" className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">Address was not saved: {addressSaveError}</p>}
             {addressEligibilityError && <div role="alert" className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800"><p>{addressEligibilityError}</p><button onClick={onRetryAddressEligibility} className="mt-2 rounded border border-amber-300 px-3 py-1.5 text-sm font-semibold">Retry eligibility check</button></div>}
-            {addressReview && <div className={`mt-3 rounded-lg px-3 py-2 text-sm ${addressReview.blockers.length ? 'bg-rose-50 text-rose-700' : addressReview.warnings.length ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-700'}`}><p className="font-semibold">{addressReview.status}</p>{addressReview.blockers.map(value => <p key={value}>• {value}</p>)}{addressReview.warnings.map(value => <p key={value}>• {value}</p>)}<p className="mt-1 text-xs opacity-80">{addressReview.shiprocket_message}</p><p className="mt-1 text-[11px] opacity-70">Advisory only; Maps results and warnings do not block verification.</p></div>}
+            {addressReviewMessages.length > 0 && <div className={`mt-3 rounded-lg px-3 py-2 text-sm ${addressReview?.blockers.length ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-800'}`}>{addressReviewMessages.map(value => <p key={value}>• {value}</p>)}</div>}
             <div className="mt-3 space-y-2 text-xs text-slate-600">
               {order.addressSyncResults && (
                 <div className="grid grid-cols-2 gap-1 rounded-lg bg-slate-50 p-2">

@@ -40,6 +40,7 @@ from app.services.shiprocket import (
 from app.services.shopify import ShopifyConfigurationError, ShopifyService
 from app.services.shopify_fulfillment import ShopifyFulfillmentSynchronizer, ShopifyFulfillmentSyncError
 from app.services.temporary_shadowfax_repair import repair_legacy_shadowfax_test_324541
+from app.services.shadowfax_rates import bengaluru_origin_rate
 
 router = APIRouter(prefix="/couriers/shiprocket", tags=["couriers"])
 booking_router = APIRouter(prefix="/orders", tags=["couriers"])
@@ -900,6 +901,8 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
             finally:
                 provider_timings["delhivery"] = (time.perf_counter() - started) * 1000
 
+        quote_address = _order_latest_address(order, quote_operations) or {}
+        shadowfax_rate = bengaluru_origin_rate(quote_address.get("state"), quote_address.get("city"))
         shadowfax = ShadowfaxAdapter()
         async def shadowfax_quotes():
             if not settings.shadowfax_direct_booking_enabled or not shadowfax.configured or not delivery_postcode:
@@ -931,13 +934,13 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
             quote = shadowfax_result.quotes[0]
             normalized_quotes.append({
                 "courier_id": f"shadowfax:{quote.service_id}", "courier_name": quote.courier_name,
-                "rate": quote.charges, "cod_charge": None,
-                "total_estimated_shipping_cost": quote.charges,
+                "rate": shadowfax_rate.including_gst if shadowfax_rate else None, "cod_charge": None,
+                "total_estimated_shipping_cost": shadowfax_rate.including_gst if shadowfax_rate else None,
                 "estimated_delivery_days": quote.estimated_delivery_days,
                 "expected_delivery_date": quote.expected_delivery_date,
                 "rating": None, "cod_supported": True, "prepaid_supported": True,
                 "mode": "Direct", "provider": "shadowfax", "booking_supported": True,
-                "rate_note": "Shadowfax Direct serviceability confirmed" if quote.charges is not None else "Shadowfax Direct serviceability confirmed; rate unavailable",
+                "rate_note": f"Shadowfax 360 estimate incl. 18% GST • {shadowfax_rate.zone} • actual courier billing may vary" if shadowfax_rate else "Shadowfax Direct serviceability confirmed; rate unavailable",
             })
         rate_provider_quotes = len(normalized_quotes)
         if "shiprocket" in provider_failures:
@@ -946,7 +949,6 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
             provider_warnings.append("Delhivery lookup failed. Available courier results are shown." if rate_provider_quotes else "Delhivery lookup failed. Retry lookup.")
         if all(provider in provider_failures for provider in ("shiprocket", "delhivery")):
             provider_warnings.append("Courier lookup failed: both rate providers are unavailable. Manual shipment recording remains available.")
-        quote_address = _order_latest_address(order, quote_operations) or {}
         quote_context = {
             "order_id": order.order_id, "drawer_generation": payload.drawer_generation,
             "destination": {key: str(quote_address.get(key) or "") for key in (
@@ -985,11 +987,12 @@ async def shiprocket_serviceability(order_id: str, payload: CourierCheckPayload,
             "delhivery": round(provider_timings.get("delhivery", 0), 2),
             "total_backend": round((time.perf_counter() - request_started) * 1000, 2),
         },
-        "couriers": sorted(
-            normalized_quotes,
-            key=lambda quote: float(quote["total_estimated_shipping_cost"])
-            if isinstance(quote.get("total_estimated_shipping_cost"), (int, float)) else float("inf"),
-        ),
+        "couriers": [
+            quote for _index, quote in sorted(
+                enumerate(normalized_quotes),
+                key=lambda indexed: ({"shadowfax": 0, "delhivery": 1, "shiprocket": 2}.get(str(indexed[1].get("provider")), 3), indexed[0]),
+            )
+        ],
         # Eligibility is evaluated against the immutable proposed quote context;
         # no order or shipment state has been persisted by this read-only route.
         "booking_readiness": {
@@ -1552,8 +1555,6 @@ async def shiprocket_book_shipment(
                 raise HTTPException(status_code=409, detail="Shadowfax direct booking is disabled pending end-to-end validation.")
             if str(selected.get("courier_id") or "").casefold().startswith("shadowfax:manual"):
                 raise HTTPException(status_code=409, detail="Select a serviceable Shadowfax Direct quote before booking.")
-            if not _controlled_shadowfax_order_matches(order.order_number):
-                raise HTTPException(status_code=403, detail="Shadowfax direct booking is restricted to the configured controlled test order.")
             provider_payload = await _build_provider_booking_request(context.order, _context_operations(context), context.package)
             _validate_shadowfax_booking_request(provider_payload)
             _assert_booking_payload(context, "shadowfax", provider_payload)
@@ -1657,69 +1658,6 @@ async def provider_book_shipment(
     return await shiprocket_book_shipment(
         order_id, payload, db, current_actor(request), background_tasks=background_tasks, response=response,
     )
-
-
-def _controlled_shadowfax_order_matches(order_number: str) -> bool:
-    """A production-safe allow-list for one operator-designated test order."""
-    configured = str(settings.shadowfax_controlled_booking_order_number or "").strip().lstrip("#")
-    return bool(configured) and order_number.strip().lstrip("#") == configured
-
-
-@booking_router.post("/{order_id}/shadowfax/controlled-booking")
-async def controlled_shadowfax_booking(
-    order_id: str, payload: BookingPayload, request: Request, db: Session = Depends(get_db),
-) -> dict[str, object]:
-    """One admin-only Unified-API booking for the explicitly configured test order.
-
-    This intentionally does not consult the global enable flag: that flag keeps
-    the normal Book Shipment route off.  This endpoint stays inert until the
-    deployment configuration names one exact Shopify order number.
-    """
-    _require_courier_diagnostic_admin(request)
-    order, operations, shipment = await _load_context(order_id, db)
-    if not _controlled_shadowfax_order_matches(order.order_number):
-        raise HTTPException(status_code=403, detail="This order is not the explicitly configured controlled Shadowfax test order.")
-    if order.cancelled_at or str(order.shopify_status or "").strip().casefold() in {"cancelled", "canceled"}:
-        raise HTTPException(status_code=409, detail="Cancelled orders cannot be booked with Shadowfax.")
-    if str(order.fulfillment_status or "unfulfilled").strip().casefold() != "unfulfilled":
-        raise HTTPException(status_code=409, detail="Only unfulfilled Shopify orders can be booked with Shadowfax.")
-    if shipment:
-        evidence_fields = ("provider_order_id", "shipment_id", "awb")
-        present = [field for field in evidence_fields if shipment.get(field)]
-        if present:
-            raise HTTPException(status_code=409, detail=f"Shadowfax booking is blocked by existing shipment evidence: {', '.join(present)}.")
-        if str(shipment.get("booking_status") or "").casefold() in {"booking_initiated", "booking_uncertain", "booked", "confirmed", "manual_confirmed"}:
-            raise HTTPException(status_code=409, detail="Shadowfax booking is blocked by the durable booking state. Reconcile or review it before any retry.")
-    if has_existing_shipment_evidence(order, operations, shipment):
-        raise HTTPException(status_code=409, detail="Shopify tracking or shipment evidence already exists; Shadowfax create is blocked.")
-    eligibility = ShiprocketService().evaluate_booking_eligibility(order, operations, shipment)
-    if not eligibility.eligible:
-        raise HTTPException(status_code=400, detail={"message": "Order is not eligible for booking.", "missing_requirements": eligibility.missing_requirements})
-    selected = operations.get("selected_courier")
-    if not isinstance(selected, dict) or str(selected.get("provider") or "").casefold() != "shadowfax":
-        raise HTTPException(status_code=409, detail="Select a Shadowfax courier for this order before the controlled booking.")
-    if not _booking_selection_matches(selected, payload) or str(payload.provider or "").casefold() != "shadowfax":
-        raise HTTPException(status_code=409, detail="Controlled Shadowfax booking requires the current selected courier context.")
-    if payload.draft_order_id != order_id:
-        raise HTTPException(status_code=409, detail="Booking blocked: package or drawer state belongs to a different order.")
-    context = _booking_context(order, operations, PackageDetailsPayload.model_validate(payload.model_dump()), selected)
-    if payload.address_revision != context.address_revision or payload.booking_context_hash != context.context_hash:
-        raise HTTPException(status_code=409, detail="Booking blocked: order data changed or could not be verified. Reload the order before booking.")
-    provider_payload = await _build_provider_booking_request(context.order, _context_operations(context), context.package)
-    _validate_shadowfax_booking_request(provider_payload)
-    _assert_booking_payload(context, "shadowfax", provider_payload)
-    try:
-        result = await CourierPlatformService().book(
-            db, order_id=order_id, merchant_order_id=order.order_number,
-            adapter=ShadowfaxAdapter(), request=provider_payload, operator=current_actor(request),
-        )
-    except ProviderError as error:
-        raise HTTPException(status_code=502, detail={"message": str(error), "outcome": "uncertain" if error.uncertain else "rejected"}) from error
-    # CourierPlatformService atomically persisted the immutable provider ID and
-    # AWB before this Shopify fulfillment sync is allowed to run.
-    upsert_shipment(db, order_id, shopify_fulfillment_sync_status="pending", shopify_fulfillment_sync_error=None)
-    canonical = await _sync_shopify_after_booking(db, order)
-    return {"provider": "shadowfax", "controlled": True, **result, "shipment": canonical or shipment_snapshot(get_shipment(db, order_id))}
 
 
 @booking_router.post("/{order_id}/booking-context")

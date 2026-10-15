@@ -129,6 +129,42 @@ async def test_shadowfax_direct_is_a_single_serviceable_option_with_no_price_whe
 
 
 @pytest.mark.anyio
+async def test_courier_results_use_fixed_provider_display_order_and_shadowfax_rate_card(monkeypatch, lookup_context):
+    async def shiprocket(*_args):
+        return [
+            CourierQuote("sr-fast", "Shiprocket Fast", 50, None, 50, None, None, None, True, True, "surface"),
+            CourierQuote("sr-economy", "Shiprocket Economy", 40, None, 40, None, None, None, True, True, "surface"),
+        ]
+
+    async def delhivery(*_args):
+        return [DelhiveryQuote("d1", "Delhivery", 30, None, 30, None, None, None, True, True, "surface")]
+
+    async def shadowfax_serviceability(_self, _request):
+        quote = SimpleNamespace(service_id="regular", courier_name="Shadowfax Direct", charges=None, estimated_delivery_days=None, expected_delivery_date=None)
+        return SimpleNamespace(serviceable=True, quotes=[quote])
+
+    monkeypatch.setattr(couriers.ShiprocketService, "serviceability", shiprocket)
+    monkeypatch.setattr(couriers.DelhiveryService, "configured", property(lambda _self: True))
+    monkeypatch.setattr(couriers.DelhiveryService, "serviceability", delhivery)
+    monkeypatch.setattr(couriers.settings, "shadowfax_direct_booking_enabled", True)
+    monkeypatch.setattr(couriers.ShadowfaxAdapter, "configured", property(lambda _self: True))
+    monkeypatch.setattr(couriers.ShadowfaxAdapter, "serviceability", shadowfax_serviceability)
+    payload = CourierCheckPayload(
+        weight_kg=.5, courier_payment_mode="Prepaid",
+        quote_address={"customer_name": "Lookup", "phone": "9876543210", "address_line1": "Street", "address_line2": "", "landmark": "", "city": "Bengaluru", "state": "Karnataka", "pincode": "560001"},
+    )
+
+    result = await couriers.shiprocket_serviceability("1", payload, SimpleNamespace(), lookup_context)
+
+    assert [(quote["provider"], quote["courier_id"]) for quote in result["couriers"]] == [
+        ("shadowfax", "shadowfax:regular"), ("delhivery", "d1"),
+        ("shiprocket", "sr-fast"), ("shiprocket", "sr-economy"),
+    ]
+    assert result["couriers"][0]["rate"] == 46.02
+    assert "Zone A" in result["couriers"][0]["rate_note"]
+
+
+@pytest.mark.anyio
 async def test_ineligible_order_can_prefetch_but_response_remains_locked(monkeypatch, lookup_context):
     locked = eligibility()
     locked.eligible = False

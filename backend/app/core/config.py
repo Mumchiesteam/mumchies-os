@@ -42,7 +42,6 @@ class Settings(BaseSettings):
     shadowfax_password_secret: str | None = None
     shadowfax_base_url: str | None = None
     shadowfax_direct_booking_enabled: bool = False
-    shadowfax_controlled_booking_order_number: str | None = None
     shadowfax_unified_label_enabled: bool = False
     gdrive_folder_id: str | None = None
     gdrive_service_account_json: str | None = None

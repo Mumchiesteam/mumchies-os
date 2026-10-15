@@ -74,4 +74,11 @@ describe('Save & Verify drawer state propagation', () => {
     expect(source).toContain('Retry eligibility check')
     expect(source).toContain('setBookingEligibility(null)')
   })
+
+  it('shows only actionable address review messages', () => {
+    expect(source).toContain('const addressReviewMessages = addressReview ? [...addressReview.blockers, ...addressReview.warnings] : []')
+    expect(source).toContain('{addressReviewMessages.length > 0')
+    expect(source).not.toContain('Advisory only; Maps results and warnings do not block verification.')
+    expect(source).not.toContain('{addressReview.shiprocket_message}</p>')
+  })
 })
