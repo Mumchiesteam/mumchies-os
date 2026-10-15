@@ -32,13 +32,14 @@ describe('Save & Verify address errors', () => {
 describe('Save & Verify drawer state propagation', () => {
   const flow = source.slice(source.indexOf('const saveAndVerifyAddress'), source.indexOf('const checkCouriers'))
 
-  it('applies the authoritative operations response and awaits fresh eligibility', () => {
+  it('applies the authoritative operations response and refreshes eligibility without delaying the saved result', () => {
     expect(flow).toContain('setOperations(result.operations)')
     expect(flow).toContain('operationalStatus: null')
     expect(flow).toContain('addressVerified: result.operations.address_verified')
     expect(flow).toContain('setBookingEligibility(null)')
-    expect(flow).toContain('void getBookingEligibility(orderId).then(freshEligibility =>')
-    expect(flow).toContain('setBookingEligibility(freshEligibility)')
+    expect(flow).toContain('if (result.verified) void refreshAddressBookingEligibility(orderId, generation)')
+    expect(source).toContain('const freshEligibility = await getBookingEligibility(orderId)')
+    expect(source).toContain('setBookingEligibility(freshEligibility)')
   })
 
   it('keeps the cross-order generation and order guards intact', () => {
@@ -58,10 +59,19 @@ describe('Save & Verify drawer state propagation', () => {
     expect(source).toContain('order={drawerOrder || selectedOrder}')
   })
 
-  it('exposes explicit ready, saving, verified, and retry states', () => {
-    expect(source).toContain("'ready' | 'saving' | 'verified' | 'failed'")
+  it('distinguishes a validation blocker from a transport failure', () => {
+    expect(source).toContain("'ready' | 'saving' | 'verified' | 'needs_correction' | 'failed'")
     expect(source).toContain("saving: 'Saving...'")
     expect(source).toContain("verified: 'Verified'")
+    expect(source).toContain("needs_correction: 'Address needs correction'")
     expect(source).toContain("failed: 'Failed - retry'")
+  })
+
+  it('keeps a failed save distinct from a failed eligibility refresh', () => {
+    expect(source).toContain("setAddressSaveError(message)")
+    expect(source).toContain('Address was not saved: {addressSaveError}')
+    expect(source).toContain('Address was saved, but booking eligibility could not be refreshed. Booking remains disabled.')
+    expect(source).toContain('Retry eligibility check')
+    expect(source).toContain('setBookingEligibility(null)')
   })
 })

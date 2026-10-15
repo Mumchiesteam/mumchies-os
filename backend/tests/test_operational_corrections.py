@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from fastapi import BackgroundTasks, Response
+from fastapi import BackgroundTasks, HTTPException, Response
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -238,6 +238,28 @@ async def test_save_verify_address_validates_syncs_and_invalidates_old_verificat
     assert calls == ["order", ("customer", False)]
     OrderOperationsStore.save_address("1", {"address_line1": "Changed"}, operator="Operator")
     assert OrderOperationsStore.get("1")["address_verified"] is False
+
+
+@pytest.mark.anyio
+async def test_save_verify_address_keeps_existing_data_when_shopify_is_temporarily_unavailable(tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    OrderOperationsStore.verify_address("1", "Existing", {"address_line1": "Existing address"}, "2026-07-25T00:00:00+00:00")
+
+    async def unavailable(_self, _id):
+        raise httpx.ConnectError("offline", request=httpx.Request("GET", "https://shopify.example/orders/1"))
+
+    monkeypatch.setattr(orders.ShopifyService, "get_order", unavailable)
+    monkeypatch.setattr(orders.settings, "auth_session_secret", "test-secret")
+    payload = SaveVerifyAddressPayload(operator="Operator", customer_name="Customer", phone="9999999999", address_line1="12 Main Road", landmark="Near Park", city="Delhi", state="Delhi", pincode="110001", draft_order_id="1", draft_generation=1, expected_revision=1, draft_token=orders._address_draft_token("1", 1))
+
+    with pytest.raises(HTTPException) as error:
+        await orders.save_and_verify_address("1", payload, authenticated_request(), BackgroundTasks(), Response(), None)
+
+    assert error.value.status_code == 503
+    assert error.value.detail == "Shopify could not verify the current order. No address was saved; retry shortly."
+    preserved = OrderOperationsStore.get("1")
+    assert preserved["address_verified"] is True
+    assert preserved["verified_address_snapshot"] == {"address_line1": "Existing address"}
 
 
 def preflight(*, shopify=True, shiprocket=True):

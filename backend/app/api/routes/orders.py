@@ -869,8 +869,12 @@ async def save_and_verify_address(
     stage_started = time.perf_counter()
     try:
         canonical = await ShopifyService().get_order(order_id)
-    except (ShopifySyncError, httpx.HTTPError) as error:
-        raise HTTPException(status_code=409, detail="Current Shopify order identity could not be verified. Reload before saving.") from error
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Order no longer exists in Shopify. No address was saved.") from error
+        raise HTTPException(status_code=503, detail="Shopify could not verify the current order. No address was saved; retry shortly.") from error
+    except (ShopifyConfigurationError, ShopifySyncError, httpx.HTTPError) as error:
+        raise HTTPException(status_code=503, detail="Shopify could not verify the current order. No address was saved; retry shortly.") from error
     if canonical.order_id != order_id:
         raise HTTPException(status_code=409, detail="Canonical order identity mismatch. No address was saved.")
     stages["shopify_integrity_get"] = (time.perf_counter() - stage_started) * 1000

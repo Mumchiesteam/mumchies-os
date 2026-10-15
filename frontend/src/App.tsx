@@ -289,6 +289,8 @@ function App() {
   const [cancellationLoading, setCancellationLoading] = useState(false)
   const [cancellationResult, setCancellationResult] = useState<Record<string, { status: string; error?: string }> | null>(null)
   const [bookingEligibility, setBookingEligibility] = useState<BookingReadiness | null>(null)
+  const [addressSaveError, setAddressSaveError] = useState('')
+  const [addressEligibilityError, setAddressEligibilityError] = useState('')
   const [courierSession, setCourierSessionState] = useState<CourierSession | null>(null)
   const [bookingLoading, setBookingLoading] = useState(false)
   const [shadowfaxTestState, setShadowfaxTestState] = useState<ShadowfaxDirectTestState | null>(null)
@@ -469,6 +471,8 @@ function App() {
     const orderId = selectedOrder.internalId
     void (async () => {
       setBookingEligibility(null)
+      setAddressSaveError('')
+      setAddressEligibilityError('')
       setCourierSession(newCourierSession(orderId, generation))
       setOperations(null)
       setCancellationPreflight(null)
@@ -519,6 +523,8 @@ function App() {
     courierRequestRef.current = null
     courierSelectionInFlight.current = null
     setBookingEligibility(null)
+    setAddressSaveError('')
+    setAddressEligibilityError('')
     setCourierSession(newCourierSession(orderId, drawerGenerationRef.current))
     setOperations(null)
     setCancellationPreflight(null)
@@ -656,6 +662,31 @@ function App() {
     } catch (err) { setNotice((err as Error).message) }
   }
 
+  const refreshAddressBookingEligibility = async (orderId: string, generation: number) => {
+    try {
+      const freshEligibility = await getBookingEligibility(orderId)
+      if (generation === drawerGenerationRef.current && selectedOrderId === orderId) {
+        setBookingEligibility(freshEligibility)
+        setAddressEligibilityError('')
+      }
+    } catch (err) {
+      if (generation === drawerGenerationRef.current && selectedOrderId === orderId) {
+        const message = `Address was saved, but booking eligibility could not be refreshed. Booking remains disabled. ${((err as Error).message || 'Retry the eligibility check.')}`
+        setAddressEligibilityError(message)
+        setNotice(message)
+      }
+    }
+  }
+
+  const retryAddressBookingEligibility = () => {
+    if (!selectedOrder) return
+    const orderId = selectedOrder.internalId
+    const generation = drawerGenerationRef.current
+    setBookingEligibility(null)
+    setAddressEligibilityError('')
+    void refreshAddressBookingEligibility(orderId, generation)
+  }
+
   const saveAndVerifyAddress = async () => {
     if (!selectedOrder) return
     const orderId = selectedOrder.internalId
@@ -665,6 +696,8 @@ function App() {
       return
     }
     const clickStarted = performance.now()
+    setAddressSaveError('')
+    setAddressEligibilityError('')
     try {
       const requestStarted = performance.now()
       const result = await saveAndVerifyOrderAddress(orderId, { ...addressDraft, draft_order_id: orderId, draft_generation: generation, expected_revision: operations.address_revision ?? 0, draft_token: operations.address_draft_token })
@@ -679,13 +712,13 @@ function App() {
       setBookingEligibility(null)
       const session = courierSessionRef.current
       if (session && isCurrentDrawerRequest(session, selectedOrderId, drawerGenerationRef.current)) setCourierSession({ ...newCourierSession(orderId, generation), requestId: session.requestId })
-      void getBookingEligibility(orderId).then(freshEligibility => {
-        if (generation === drawerGenerationRef.current && selectedOrderId === orderId) setBookingEligibility(freshEligibility)
-      }).catch(() => undefined)
+      if (result.verified) void refreshAddressBookingEligibility(orderId, generation)
       return result
     } catch (err) {
       if (generation === drawerGenerationRef.current && selectedOrderId === orderId) {
-        setNotice((err as Error).message)
+        const message = (err as Error).message || 'Unable to save and verify the address. No address was changed.'
+        setAddressSaveError(message)
+        setNotice(message)
         throw err
       }
       return undefined
@@ -1153,9 +1186,12 @@ function App() {
           drawerGeneration={addressDraftGeneration}
           courierSyncMessage={courierSyncMessage}
           addressVerificationLine={addressVerifiedLabel}
-          onClose={() => { drawerGenerationRef.current += 1; courierRequestRef.current?.controller.abort(); courierRequestRef.current = null; courierSelectionInFlight.current = null; setCourierSession(null); setAddressDraft(emptyAddressDraft()); setAddressDraftOrderId(null); setAddressDraftGeneration(null); setAddressInitializing(true); setShadowfaxPincodeRecommendation(null); setSelectedOrderId(null); setSelectedOrderSnapshot(null) }}
+          onClose={() => { drawerGenerationRef.current += 1; courierRequestRef.current?.controller.abort(); courierRequestRef.current = null; courierSelectionInFlight.current = null; setCourierSession(null); setAddressDraft(emptyAddressDraft()); setAddressDraftOrderId(null); setAddressDraftGeneration(null); setAddressInitializing(true); setAddressSaveError(''); setAddressEligibilityError(''); setShadowfaxPincodeRecommendation(null); setSelectedOrderId(null); setSelectedOrderSnapshot(null) }}
           onSaveCallLog={() => void saveCallLog()}
           onSaveAddress={saveAndVerifyAddress}
+          addressSaveError={addressSaveError}
+          addressEligibilityError={addressEligibilityError}
+          onRetryAddressEligibility={retryAddressBookingEligibility}
           onSaveAddressConfirmation={() => void saveAddressConfirmation()}
           bookingEligibility={bookingEligibility}
           courierSession={courierSession}
@@ -1283,6 +1319,9 @@ const OrderDrawer = memo(function OrderDrawer({
   onSaveCallLog,
   onSaveAddressConfirmation,
   onSaveAddress,
+  addressSaveError,
+  addressEligibilityError,
+  onRetryAddressEligibility,
   bookingEligibility,
   courierSession,
   bookingLoading,
@@ -1346,6 +1385,9 @@ const OrderDrawer = memo(function OrderDrawer({
   onClose: () => void
   onSaveCallLog: () => void
   onSaveAddress: () => Promise<{ operations: OrderOperations; validation: { status: string; blockers: string[]; warnings: string[]; shiprocket_message: string }; verified: boolean } | undefined>
+  addressSaveError: string
+  addressEligibilityError: string
+  onRetryAddressEligibility: () => void
   onSaveAddressConfirmation: () => void
   bookingEligibility: BookingReadiness | null
   courierSession: CourierSession | null
@@ -1386,7 +1428,7 @@ const OrderDrawer = memo(function OrderDrawer({
   }))
   const [addressReview, setAddressReview] = useState<{ status: string; blockers: string[]; warnings: string[]; shiprocket_message: string } | null>(null)
   const [addressReviewLoading, setAddressReviewLoading] = useState(false)
-  const [addressSaveState, setAddressSaveState] = useState<'ready' | 'saving' | 'verified' | 'failed'>('ready')
+  const [addressSaveState, setAddressSaveState] = useState<'ready' | 'saving' | 'verified' | 'needs_correction' | 'failed'>('ready')
   const [workflowError, setWorkflowError] = useState('')
   const [showShadowfaxForm, setShowShadowfaxForm] = useState(false)
   const [shadowfaxWorkflowStatus, setShadowfaxWorkflowStatus] = useState('')
@@ -1550,10 +1592,12 @@ const OrderDrawer = memo(function OrderDrawer({
               </div>
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
-              <button disabled={addressReviewLoading} onClick={() => { setAddressReviewLoading(true); setAddressSaveState('saving'); void onSaveAddress().then(result => { if (result) { setAddressReview(result.validation); setAddressSaveState(result.verified ? 'verified' : 'failed') } else setAddressSaveState('failed') }).catch(() => setAddressSaveState('failed')).finally(() => setAddressReviewLoading(false)) }} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{{ ready: 'Save & Verify Address', saving: 'Saving...', verified: 'Verified', failed: 'Failed - retry' }[addressSaveState]}</button>
+              <button disabled={addressReviewLoading} onClick={() => { setAddressReviewLoading(true); setAddressSaveState('saving'); void onSaveAddress().then(result => { if (result) { setAddressReview(result.validation); setAddressSaveState(result.verified ? 'verified' : 'needs_correction') } else setAddressSaveState('failed') }).catch(() => setAddressSaveState('failed')).finally(() => setAddressReviewLoading(false)) }} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{{ ready: 'Save & Verify Address', saving: 'Saving...', verified: 'Verified', needs_correction: 'Address needs correction', failed: 'Failed - retry' }[addressSaveState]}</button>
               <button onClick={() => { const query = [addressDraft.address_line1, addressDraft.address_line2, addressDraft.landmark, addressDraft.city, addressDraft.state, addressDraft.pincode, 'India'].filter(Boolean).join(', '); window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`, '_blank', 'noopener,noreferrer') }} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600">Open in Google Maps</button>
             </div>
             </fieldset>
+            {addressSaveError && <p role="alert" className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">Address was not saved: {addressSaveError}</p>}
+            {addressEligibilityError && <div role="alert" className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800"><p>{addressEligibilityError}</p><button onClick={onRetryAddressEligibility} className="mt-2 rounded border border-amber-300 px-3 py-1.5 text-sm font-semibold">Retry eligibility check</button></div>}
             {addressReview && <div className={`mt-3 rounded-lg px-3 py-2 text-sm ${addressReview.blockers.length ? 'bg-rose-50 text-rose-700' : addressReview.warnings.length ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-700'}`}><p className="font-semibold">{addressReview.status}</p>{addressReview.blockers.map(value => <p key={value}>• {value}</p>)}{addressReview.warnings.map(value => <p key={value}>• {value}</p>)}<p className="mt-1 text-xs opacity-80">{addressReview.shiprocket_message}</p><p className="mt-1 text-[11px] opacity-70">Advisory only; Maps results and warnings do not block verification.</p></div>}
             <div className="mt-3 space-y-2 text-xs text-slate-600">
               {order.addressSyncResults && (
