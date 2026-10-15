@@ -10,7 +10,8 @@ afterEach(() => vi.restoreAllMocks())
 describe('NDR operations module', () => {
   it('renders dashboard, filters, grid columns and import-only refresh', () => {
     const html = renderToStaticMarkup(<NDRPage />)
-    for (const text of ['NDR Dashboard','Refresh Data','Last successful import','Search order, AWB, customer or phone','Priority','Order Number','AWB','Product','Customer','Phone','Courier','Current Status','Failure Reason','Recommended Action','Ageing','Last Update','Actions']) expect(html).toContain(text)
+    for (const text of ['NDR Dashboard','Refresh Data','Last successful import','Search order, AWB, customer or phone','Order Number','AWB','Product','Customer','Phone','Courier','Current Status','Failure Reason','Recommended Action','Ageing','Last Update','Actions']) expect(html).toContain(text)
+    expect(headings).not.toContain('Priority')
     expect(html).not.toContain('Assigned To')
     expect(html).not.toContain('Sync Now')
     expect(html).toContain('aria-label="NDR views"')
@@ -27,7 +28,7 @@ describe('NDR operations module', () => {
   it('maps every header to its semantic row value in the same order', () => {
     const item={priority:'medium',order_number:'323027',awb:'SF36981898586',products:[{product_name:'Dry Fruit Ladoo',quantity:1,price:499}],customer_name:'Ankita',customer_phone:'9999999999',courier_name:'Shadowfax',provider:'shadowfax',current_status:'courier_pending',failure_reason:'Attempted But Not Delivered',recommended_action:'Call customer',ageing_hours:350,last_provider_update_at:'2026-08-10T12:17:00Z'} as NDRCase
     const mapped=Object.fromEntries(ndrSemanticCells(item).map((value,index)=>[headings[index],value]))
-    expect(mapped).toMatchObject({'Priority':'medium','Order Number':'#323027','AWB':'SF36981898586','Product':'Dry Fruit La…','Customer':'Ankita','Courier':'Shadowfax','Current Status':'courier pending','Failure Reason':'Attempted But Not Delivered','Recommended Action':'Call customer','Ageing':'14d 14h'})
+    expect(mapped).toMatchObject({'Order Number':'#323027','AWB':'SF36981898586','Product':'Dry Fruit La…','Customer':'Ankita','Courier':'Shadowfax','Current Status':'courier pending','Failure Reason':'Attempted But Not Delivered','Recommended Action':'Call customer','Ageing':'14d 14h'})
     expect(headings.at(-1)).toBe('Actions')
   })
   it('uses only the persisted action endpoint', async () => {
@@ -39,6 +40,7 @@ describe('NDR operations module', () => {
   it('keeps AWB tracking links and payment badges tied to API facts', () => {
     const item={awb:'SF123',provider_tracking_url:null,tracking_url:'https://tracking.example/SF123',payment_type:'COD',latest_tracking_status:'Out for delivery',products:[]} as unknown as NDRCase
     expect(ndrTrackingUrl(item)).toBe('https://tracking.example/SF123')
+    expect(ndrTrackingUrl({...item,tracking_url:null})).toBeNull()
     expect(ndrSemanticCells(item)).toContain('COD')
     expect(ndrSemanticCells(item)).toContain('Out for delivery')
     expect(headings).toContain('Payment Type')
