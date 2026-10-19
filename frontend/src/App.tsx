@@ -1599,7 +1599,7 @@ const OrderDrawer = memo(function OrderDrawer({
               <button onClick={() => { const query = [addressDraft.address_line1, addressDraft.address_line2, addressDraft.landmark, addressDraft.city, addressDraft.state, addressDraft.pincode, 'India'].filter(Boolean).join(', '); window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`, '_blank', 'noopener,noreferrer') }} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600">Open in Google Maps</button>
             </div>
             </fieldset>
-            {addressSaveError && <p role="alert" className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">Address was not saved: {addressSaveError}</p>}
+            {addressSaveError && <p role="alert" className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{addressSaveError.startsWith('Address update in progress') ? addressSaveError : <>Address was not saved: {addressSaveError}</>}</p>}
             {addressEligibilityError && <div role="alert" className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800"><p>{addressEligibilityError}</p><button onClick={onRetryAddressEligibility} className="mt-2 rounded border border-amber-300 px-3 py-1.5 text-sm font-semibold">Retry eligibility check</button></div>}
             {addressReviewMessages.length > 0 && <div className={`mt-3 rounded-lg px-3 py-2 text-sm ${addressReview?.blockers.length ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-800'}`}>{addressReviewMessages.map(value => <p key={value}>• {value}</p>)}</div>}
             <div className="mt-3 space-y-2 text-xs text-slate-600">

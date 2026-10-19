@@ -41,6 +41,10 @@ from app.services.shopify import ShopifyConfigurationError, ShopifyService
 from app.services.shopify_fulfillment import ShopifyFulfillmentSynchronizer, ShopifyFulfillmentSyncError
 from app.services.temporary_shadowfax_repair import repair_legacy_shadowfax_test_324541
 from app.services.shadowfax_rates import bengaluru_origin_rate
+from app.services.reliability_state import (
+    BookingReserved, booking_failed_before_provider_request, booking_finished,
+    booking_submitted, current_address, reserve_booking,
+)
 
 router = APIRouter(prefix="/couriers/shiprocket", tags=["couriers"])
 booking_router = APIRouter(prefix="/orders", tags=["couriers"])
@@ -1506,6 +1510,7 @@ async def shiprocket_book_shipment(
     *, background_tasks: BackgroundTasks | None = None, response: Response | None = None,
 ) -> dict[str, object]:
     actor = operator
+    reservation = None
     request_started = time.perf_counter()
     stages: dict[str, float] = {}
     try:
@@ -1514,6 +1519,12 @@ async def shiprocket_book_shipment(
         stages["fresh_shopify_integrity_get"] = (time.perf_counter() - stage_started) * 1000
         stage_started = time.perf_counter()
         operations = OrderOperationsStore.get(order_id)
+        durable_address = current_address(db, order_id)
+        if durable_address is not None:
+            operations = {**operations, "address_revision": durable_address.revision,
+                "corrected_address": durable_address.address,
+                "verified_address_snapshot": durable_address.address if durable_address.verified else None,
+                "address_verified": durable_address.verified}
         local_shipment = get_shipment(db, order_id)
         shipment = shipment_snapshot(local_shipment) if local_shipment else None
         stages["booking_context_load"] = (time.perf_counter() - stage_started) * 1000
@@ -1550,6 +1561,10 @@ async def shiprocket_book_shipment(
         provider = str(selected.get("provider") or "shiprocket").lower()
         if payload.provider and payload.provider.lower() != provider:
             raise HTTPException(status_code=400, detail="Requested provider does not match the stored courier selection.")
+        try:
+            reservation = reserve_booking(db, order_id, provider, context.context_hash)
+        except BookingReserved as error:
+            raise HTTPException(status_code=409, detail=f"Booking is already {error}. Refresh or reconcile; no second provider request was sent.") from error
         if provider == "shadowfax":
             if not settings.shadowfax_direct_booking_enabled:
                 raise HTTPException(status_code=409, detail="Shadowfax direct booking is disabled pending end-to-end validation.")
@@ -1558,6 +1573,7 @@ async def shiprocket_book_shipment(
             provider_payload = await _build_provider_booking_request(context.order, _context_operations(context), context.package)
             _validate_shadowfax_booking_request(provider_payload)
             _assert_booking_payload(context, "shadowfax", provider_payload)
+            booking_submitted(db, order_id)
             result = await CourierPlatformService().book(
                 db, order_id=order_id, merchant_order_id=order.order_number,
                 adapter=ShadowfaxAdapter(), request=provider_payload, operator=actor,
@@ -1568,6 +1584,7 @@ async def shiprocket_book_shipment(
             canonical = shipment_snapshot(get_shipment(db, order_id))
             if background_tasks is not None:
                 background_tasks.add_task(_run_post_booking_work, order_id, order.order_number, order.shopify_graphql_id, "shadowfax", actor)
+            booking_finished(db, order_id, state="succeeded")
             return _finish_booking_response(order_id, "shadowfax", result, canonical, stages, request_started, response)
         if provider == "delhivery":
             service = DelhiveryService()
@@ -1583,6 +1600,7 @@ async def shiprocket_book_shipment(
             provider_payload = _build_delhivery_payload(context.order, _context_operations(context), context.package)
             _assert_booking_payload(context, "delhivery", provider_payload)
             stage_started = time.perf_counter()
+            booking_submitted(db, order_id)
             result = await service.book_order_shipment(
                 db, order_id, order.order_number,
                 provider_payload,
@@ -1607,12 +1625,14 @@ async def shiprocket_book_shipment(
             else:
                 cleanup = {"status": "not_scheduled"}
             response_result = {**result, "shiprocket_cleanup": cleanup, "warning": cleanup.get("error")}
+            booking_finished(db, order_id, state="succeeded")
             return _finish_booking_response(order_id, "delhivery", response_result, canonical, stages, request_started, response)
 
         order_payload = _build_shiprocket_order_payload(context.order, _context_operations(context), context.package)
         _assert_booking_payload(context, "shiprocket", order_payload)
         service = ShiprocketService()
         stage_started = time.perf_counter()
+        booking_submitted(db, order_id)
         result = await service.book_order_shipment(
             db,
             order_id,
@@ -1629,16 +1649,28 @@ async def shiprocket_book_shipment(
         stages["canonical_readback_and_label_state"] = (time.perf_counter() - stage_started) * 1000
         if background_tasks is not None:
             background_tasks.add_task(_run_post_booking_work, order_id, order.order_number, order.shopify_graphql_id, "shiprocket", actor)
+        booking_finished(db, order_id, state="succeeded")
         return _finish_booking_response(order_id, "shiprocket", result, canonical, stages, request_started, response)
+    except HTTPException as error:
+        if reservation is not None:
+            booking_failed_before_provider_request(db, order_id, str(error.detail))
+        raise
     except DelhiveryError as error:
+        if reservation is not None: booking_finished(db, order_id, state="uncertain", error=str(error))
         raise HTTPException(status_code=502, detail={"message": str(error), "upstream_status": error.status_code}) from error
     except httpx.HTTPError as error:
+        if reservation is not None: booking_finished(db, order_id, state="uncertain", error=str(error))
         raise HTTPException(status_code=502, detail={"message": "Unable to reach Delhivery. No automatic retry was attempted."}) from error
     except ShiprocketConfigurationError as error:
+        if reservation is not None: booking_finished(db, order_id, state="failed", error=str(error))
         raise HTTPException(status_code=503, detail=str(error)) from error
     except ShiprocketPersistenceError as error:
+        if reservation is not None: booking_finished(db, order_id, state="uncertain", error=str(error))
         raise HTTPException(status_code=500, detail={"message": str(error), **error.safe_details}) from error
     except ShiprocketAPIError as error:
+        if reservation is not None:
+            state = "failed" if error.status_code is not None and 400 <= error.status_code < 500 else "uncertain"
+            booking_finished(db, order_id, state=state, error=str(error))
         raise HTTPException(
             status_code=502,
             detail={

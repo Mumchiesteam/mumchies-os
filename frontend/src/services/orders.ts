@@ -390,6 +390,9 @@ export function readableApiError(body: unknown, fallback = 'Request failed.'): s
   if (normalized.includes('draft identity could not be verified') || normalized.includes('draft_token')) {
     return 'Address details changed. Reload the order and verify the address again.'
   }
+  if (normalized.includes('address synchronization is in progress')) {
+    return 'Address update in progress. Wait briefly, then reload the order before retrying. Your verified address has not been replaced.'
+  }
   if (normalized.includes('different order') || normalized.includes('order identity mismatch') || normalized.includes('draft_order_id')) {
     return 'Address belongs to a different order. Reload the order before verifying.'
   }

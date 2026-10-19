@@ -121,3 +121,52 @@ class CourierWebhookEvent(Base):
     processed_at = mapped_column(DateTime(timezone=True), nullable=True)
     status = mapped_column(String(32), nullable=False)
     error = mapped_column(Text, nullable=True)
+
+
+class OrderAddressState(Base):
+    """Small durable authority for the address revision; operational history stays in JSON."""
+    __tablename__ = "order_address_states"
+
+    order_id = mapped_column(String(32), primary_key=True)
+    revision = mapped_column(Integer, nullable=False, default=0)
+    address = mapped_column(JSON, nullable=True)
+    verified = mapped_column(Boolean, nullable=False, default=False)
+    sync_lease_revision = mapped_column(Integer, nullable=True)
+    sync_lease_token = mapped_column(String(64), nullable=True)
+    sync_lease_expires_at = mapped_column(DateTime(timezone=True), nullable=True)
+    sync_status = mapped_column(String(32), nullable=False, default="not_started")
+    sync_error = mapped_column(Text, nullable=True)
+    updated_at = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AddressSyncOperation(Base):
+    __tablename__ = "address_sync_operations"
+    __table_args__ = (UniqueConstraint("order_id", "revision", name="uq_address_sync_order_revision"),)
+
+    id = mapped_column(String(64), primary_key=True)
+    order_id = mapped_column(String(32), nullable=False, index=True)
+    revision = mapped_column(Integer, nullable=False)
+    address = mapped_column(JSON, nullable=False)
+    status = mapped_column(String(32), nullable=False)  # pending/running/succeeded/failed/superseded
+    attempts = mapped_column(Integer, nullable=False, default=0)
+    error = mapped_column(Text, nullable=True)
+    created_at = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_token = mapped_column(String(64), nullable=True)
+
+
+class BookingReservation(Base):
+    """One durable booking command per order. It deliberately survives process restarts."""
+    __tablename__ = "booking_reservations"
+
+    order_id = mapped_column(String(32), primary_key=True)
+    idempotency_key = mapped_column(String(64), nullable=False, unique=True)
+    provider = mapped_column(String(32), nullable=False)
+    context_hash = mapped_column(String(128), nullable=False)
+    state = mapped_column(String(32), nullable=False)  # reserved/submitted/succeeded/failed/uncertain
+    attempts = mapped_column(Integer, nullable=False, default=0)
+    provider_request_started_at = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at = mapped_column(DateTime(timezone=True), nullable=True)
+    error = mapped_column(Text, nullable=True)
+    created_at = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at = mapped_column(DateTime(timezone=True), nullable=False)

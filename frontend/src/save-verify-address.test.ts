@@ -21,6 +21,11 @@ describe('Save & Verify address errors', () => {
       .toBe('Address details changed. Reload the order and verify the address again.')
   })
 
+  it('explains an active address synchronization without presenting it as verification failure', () => {
+    expect(readableApiError({ detail: 'Address synchronization is in progress. Wait for it to finish, then reload before saving.' }))
+      .toContain('Address update in progress')
+  })
+
   it('uses the structured error reader for the Save & Verify transport', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       detail: [{ loc: ['body', 'draft_token'], msg: 'Field required', type: 'missing' }],

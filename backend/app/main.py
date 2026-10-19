@@ -22,6 +22,7 @@ from app.services.shopify import ShopifyService
 from app.services.shipment_poller import tracking_poller_loop
 from app.services.ndr_tracking import ndr_tracking_poller_loop
 from app.services.runtime_metrics import active_background_jobs, background_job, event_loop_watchdog, rss_mb
+from app.services.reliability_state import recover_interrupted_address_syncs
 from sqlalchemy import select
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
@@ -141,6 +142,19 @@ async def warm_management_report_snapshots() -> None:
 
     app.state.background_warmup_complete = asyncio.Event()
     asyncio.create_task(warm_sequentially())
+
+
+@app.on_event("startup")
+async def recover_address_sync_operations() -> None:
+    """Retry only persisted address work after a restart; no job is silently forgotten."""
+    async def recover() -> None:
+        await app.state.background_warmup_complete.wait()
+        from app.api.routes.orders import AddressPayload, _sync_saved_address
+        with SessionLocal() as db:
+            jobs = recover_interrupted_address_syncs(db)
+        for order_id, revision, address in jobs:
+            await _sync_saved_address(order_id, revision, AddressPayload(**address), "address-sync-recovery")
+    asyncio.create_task(recover())
 
 
 @app.on_event("startup")

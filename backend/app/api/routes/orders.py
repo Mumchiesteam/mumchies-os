@@ -32,6 +32,10 @@ from app.services.shopify import ShopifyConfigurationError, ShopifyService, Shop
 from app.services.shopify_fulfillment import ShopifyFulfillmentSynchronizer, ShopifyFulfillmentSyncError
 from app.services.order_read_models import cache_orders
 from app.services.runtime_metrics import background_job
+from app.services.reliability_state import (
+    AddressSyncInProgress, StaleAddressRevision, claim_address_sync, commit_address_revision,
+    current_address, finish_address_sync,
+)
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 RECONCILIATION_SNAPSHOT_KEY = "reconciliation"
@@ -522,6 +526,24 @@ async def get_order_operations(order_id: str, db: Session = Depends(get_db)) -> 
     request_started = time.perf_counter()
     store_started = time.perf_counter()
     operations = OrderOperationsStore.get(order_id)
+    durable_address = current_address(db, order_id)
+    if durable_address is not None:
+        # The durable row is the authority while an asynchronous Shopify update is
+        # outstanding.  Never let the older JSON projection make the drawer offer
+        # a booking or another save against stale address data.
+        operations = {
+            **operations,
+            "address_revision": durable_address.revision,
+            "corrected_address": durable_address.address,
+            "verified_address_snapshot": durable_address.address if durable_address.verified else None,
+            "address_verified": durable_address.verified,
+            "address_sync_results": {
+                "status": durable_address.sync_status,
+                "error": durable_address.sync_error,
+                "revision": durable_address.revision,
+                "in_progress": durable_address.sync_lease_revision is not None,
+            },
+        }
     store_ms = (time.perf_counter() - store_started) * 1000
     shopify_started = time.perf_counter()
     try:
@@ -817,15 +839,29 @@ async def _update_order_address(
         results["delhivery"] = "manual_required"
         results["errors"]["delhivery"] = "The booked Delhivery shipment was not changed automatically; cancellation/rebooking may be required."
 
-    return OrderOperationsStore.save_address_sync_results(order_id, results)
+    return results
 
 
-async def _sync_saved_address(order_id: str, payload: AddressPayload, actor: str) -> None:
-    """Run best-effort external address propagation after local verified persistence."""
+async def _sync_saved_address(order_id: str, revision: int, payload: AddressPayload, actor: str) -> None:
+    """Run one revision under a DB lease. Older jobs cannot publish state for newer work."""
     started = time.perf_counter()
+    results: dict[str, object] | None = None
+    error: str | None = None
     try:
         with SessionLocal() as background_db:
-            await _update_order_address(order_id, payload, None, background_db, persist_local=False, actor=actor)
+            job = claim_address_sync(background_db, order_id, revision)
+            if job is None:
+                return
+            try:
+                results = await _update_order_address(order_id, payload, None, background_db, persist_local=False, actor=actor)
+                failed = any(value == "failed" for key, value in results.items() if key != "errors")
+                error = "; ".join(str(value) for value in (results.get("errors") or {}).values()) or None
+                status = "failed" if failed else "succeeded"
+            except Exception as exc:  # failure is durable and visible, never silently successful
+                status, error = "failed", str(exc)
+            still_current = finish_address_sync(background_db, order_id, revision, str(job.lease_token), status=status, error=error)
+            if still_current and results is not None:
+                OrderOperationsStore.save_address_sync_results(order_id, {**results, "revision": revision, "status": status})
     except Exception:  # noqa: BLE001 - failure is retained by the sync routine where classifiable
         logging.getLogger(__name__).exception("address_sync_background_failed order_id=%s", order_id)
     finally:
@@ -845,13 +881,35 @@ async def update_order_address(order_id: str, payload: AddressUpdatePayload, req
         raise HTTPException(status_code=409, detail="Canonical order identity mismatch. No address was saved.")
     address = {key: getattr(payload, key) for key in ("customer_name", "phone", "address_line1", "address_line2", "landmark", "city", "state", "pincode")}
     try:
+        durable = commit_address_revision(db, order_id, payload.expected_revision, address, verified=False)
         OrderOperationsStore.save_verified_address_if_current(
             order_id, address, expected_revision=payload.expected_revision,
             visible_order_number=canonical.order_number, operator=current_actor(request), verified=False,
         )
-    except ValueError as error:
+    except AddressSyncInProgress as error:
+        raise HTTPException(status_code=409, detail="Address synchronization is in progress. Wait for it to finish, then reload before saving.") from error
+    except (ValueError, StaleAddressRevision) as error:
         raise HTTPException(status_code=409, detail="Address changed in another session. Reload before saving.") from error
-    return await _update_order_address(order_id, payload, request, db, persist_local=False)
+    job = claim_address_sync(db, order_id, durable.revision)
+    if job is None:
+        raise HTTPException(status_code=409, detail="Address synchronization is in progress. Wait for it to finish, then reload before saving.")
+    try:
+        results = await _update_order_address(order_id, payload, request, db, persist_local=False)
+        status = "failed" if any(value == "failed" for key, value in results.items() if key != "errors") else "succeeded"
+        error = "; ".join(str(value) for value in (results.get("errors") or {}).values()) or None
+    except Exception as exc:
+        finish_address_sync(db, order_id, durable.revision, str(job.lease_token), status="failed", error=str(exc))
+        raise
+    finish_address_sync(db, order_id, durable.revision, str(job.lease_token), status=status, error=error)
+    # This synchronous legacy route owns the current durable revision; preserve
+    # its established response shape without permitting background stale writes.
+    state = current_address(db, order_id)
+    if state is not None and state.revision == durable.revision:
+        return OrderOperationsStore.save_address_sync_results(
+            order_id, {**results, "revision": durable.revision,
+                       "status": status},
+        )
+    return OrderOperationsStore.get(order_id)
 
 
 @router.post("/{order_id}/address/save-verify")
@@ -889,12 +947,15 @@ async def save_and_verify_address(
     }
     stage_started = time.perf_counter()
     try:
+        durable = commit_address_revision(db, order_id, payload.expected_revision, snapshot, verified=not bool(validation["blockers"]))
         saved = OrderOperationsStore.save_verified_address_if_current(
             order_id, snapshot, expected_revision=payload.expected_revision,
             visible_order_number=canonical.order_number, operator=current_actor(request),
             verified=not bool(validation["blockers"]), address_sync_results=pending_sync,
         )
-    except ValueError as error:
+    except AddressSyncInProgress as error:
+        raise HTTPException(status_code=409, detail="Address synchronization is in progress. Wait for it to finish, then reload before saving.") from error
+    except (ValueError, StaleAddressRevision) as error:
         current = str(error).partition(":")[2]
         raise HTTPException(status_code=409, detail=f"Address changed in another session (current revision {current}). Reload before saving.") from error
     stages["operations_store_write"] = (time.perf_counter() - stage_started) * 1000
@@ -904,9 +965,9 @@ async def save_and_verify_address(
         "one_time_delivery_address": False,
         "use_as_default_address": False,
     })
-    background_tasks.add_task(_sync_saved_address, order_id, sync_payload, current_actor(request))
+    background_tasks.add_task(_sync_saved_address, order_id, durable.revision, sync_payload, current_actor(request))
     verified = not bool(validation["blockers"])
-    revision = int(saved.get("address_revision") or 0)
+    revision = durable.revision
     saved = {**saved, "address_draft_token": _address_draft_token(order_id, revision), "shadowfax_pincode_recommendation": shadowfax_pincode_recommendation(snapshot.get("pincode"))}
     total_ms = (time.perf_counter() - request_started) * 1000
     stages["total_backend"] = total_ms
