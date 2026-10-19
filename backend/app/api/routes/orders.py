@@ -537,6 +537,8 @@ async def get_order_operations(order_id: str, db: Session = Depends(get_db)) -> 
             "corrected_address": durable_address.address,
             "verified_address_snapshot": durable_address.address if durable_address.verified else None,
             "address_verified": durable_address.verified,
+            "address_provenance": {"order_id": order_id, "revision": durable_address.revision,
+                                   "source": "durable_verified_address"},
             "address_sync_results": {
                 "status": durable_address.sync_status,
                 "error": durable_address.sync_error,
@@ -1073,7 +1075,26 @@ async def cancel_order(order_id: str, payload: CancellationPayload, request: Req
             upstream = await ShiprocketService().find_existing_order(str(preflight["shiprocket"].get("lookup_id") or order_id))
             if upstream:
                 cancellation = await ShiprocketService().cancel_unbooked_order(upstream)
-                results["shiprocket"] = {"status": "cancelled" if cancellation.get("classification") == "accepted" else "cancellation_requested", "cancel_on_channel": False}
+                classification = str(cancellation.get("classification") or "ambiguous")
+                # Acceptance is not cancellation confirmation. The dedicated
+                # read-only verification action is the safe recovery path.
+                confirmed = False
+                provider_status = None
+                if classification == "accepted":
+                    try:
+                        verified = await ShiprocketService().order_details(upstream.get("id"))
+                        provider_status = str(verified.get("status") or "").casefold()
+                        confirmed = provider_status in {"cancelled", "canceled"}
+                    except (ShiprocketAPIError, ShiprocketConfigurationError, httpx.HTTPError):
+                        # Keep the accepted request pending; the dedicated verify
+                        # route can safely recheck without another POST.
+                        pass
+                results["shiprocket"] = {
+                    "status": "confirmed" if confirmed else "cancellation_requested" if classification == "accepted" else "failed",
+                    "cancel_on_channel": False, "request": cancellation.get("response"), "provider_status": provider_status,
+                }
+                if classification == "accepted":
+                    results["mumchies_os"] = {"status": "cancelled" if confirmed else "cancellation_requested"}
             else:
                 results["shiprocket"] = {"status": "failed", "error": "The Shiprocket order disappeared before cancellation.", "cancel_on_channel": False}
         except (ShiprocketAPIError, ShiprocketConfigurationError) as error:

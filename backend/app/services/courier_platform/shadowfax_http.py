@@ -258,6 +258,10 @@ class ShadowfaxHTTPTransport:
         content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().casefold()
         if content.lstrip().startswith(b"%PDF-"):
             content_type = "application/pdf"
+        elif content.startswith(b"\x89PNG\r\n\x1a\n"):
+            content_type = "image/png"
+        elif content.startswith(b"\xff\xd8\xff"):
+            content_type = "image/jpeg"
         return content, content_type or "application/pdf"
 
     async def track_shipment(self, shipment: dict[str, Any]) -> dict[str, Any]:

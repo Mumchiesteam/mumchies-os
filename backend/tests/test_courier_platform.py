@@ -29,7 +29,7 @@ from app.services.courier_platform.shadowfax_http import (
 from app.services.courier_platform.webhooks import WebhookHandler, process_webhook, webhook_registry
 from app.services.courier_platform.models import TrackingResult
 from app.services.label_printing import LabelPrintError, LabelService, confirm_batch, create_batch, image_label_to_pdf, print_ready_pdf, shadowfax_print_ready_pdf
-from app.api.routes.couriers import PackageDetailsPayload, _build_provider_booking_request, _sync_shopify_after_booking, _validate_shadowfax_booking_request
+from app.api.routes.couriers import PackageDetailsPayload, _build_delhivery_payload, _build_provider_booking_request, _build_shiprocket_order_payload, _sync_shopify_after_booking, _validate_shadowfax_booking_request
 from app.schemas.orders import OrderProduct, ShippingAddress, ShopifyOrder
 
 
@@ -95,6 +95,25 @@ async def test_shadowfax_booking_payload_uses_shopify_package_operator_and_wareh
     assert payload["rto_details"] == expected_warehouse
     assert payload["product_details"] == [{"sku_name": "Cookies", "sku_id": "COOKIE-1", "price": 250.0, "additional_details": {"quantity": 2}}]
     assert "unique_code" not in payload["pickup_details"] and "unique_code" not in payload["rto_details"]
+
+
+@pytest.mark.anyio
+async def test_latest_verified_os_address_reaches_every_supported_courier_payload(monkeypatch):
+    async def pickup_location(_self):
+        return {"name": "Mumchies", "phone": "9876543210", "address": "10 Factory Road", "city": "Bengaluru", "state": "Karnataka", "pin_code": "560077"}
+    monkeypatch.setattr("app.api.routes.couriers.ShiprocketService.pickup_location_details", pickup_location)
+    order = ShopifyOrder(order_id="gate-1", order_number="GATE-1", created_date="2026-07-27T00:00:00Z", customer_name="Original", phone="9000000000", email=None,
+        shipping_address=ShippingAddress(name="Original", address="Old Shopify Road", landmark=None, city="Delhi", state="Delhi", pincode="110001"),
+        products=[OrderProduct(product_name="Cookies", sku="C", quantity=1, weight_grams=500, price=Decimal("100"))], total_amount=Decimal("100"), order_total=Decimal("100"), cod_collectable_amount=Decimal("100"), payment_type="prepaid", tags=[])
+    verified = {"customer_name": "Verified", "phone": "9999999999", "address_line1": "42 Verified Lane", "address_line2": "Unit 8", "landmark": "Clock", "city": "Pune", "state": "Maharashtra", "pincode": "411001"}
+    package = PackageDetailsPayload(weight_kg=0.5, length_cm=20, breadth_cm=15, height_cm=10)
+    shiprocket = _build_shiprocket_order_payload(order, {"corrected_address": verified}, package)
+    delhivery = _build_delhivery_payload(order, {"corrected_address": verified}, package)
+    shadowfax = await _build_provider_booking_request(order, {"corrected_address": verified}, package)
+    assert shiprocket["shipping_address"] == "42 Verified Lane" and shiprocket["shipping_pincode"] == "411001"
+    assert delhivery["add"] == "42 Verified Lane Unit 8 Clock" and delhivery["pin"] == "411001"
+    assert shadowfax["customer_details"]["address_line_1"] == "42 Verified Lane"
+    assert shadowfax["customer_details"]["pincode"] == 411001
 
 
 @pytest.mark.anyio
@@ -280,6 +299,22 @@ async def test_shadowfax_label_uses_documented_awb_endpoint_and_client_order_rec
         assert json.loads(requests[0].content) == {"awb_number": "SF-STAGE-1", "file_type": "pdf", "include_sku_details": False}
         with pytest.raises(ProviderConfigurationError, match="does not document lookup by client_order_id"):
             await transport.find_booking("STAGE-1")
+    finally:
+        await transport._client.aclose()
+
+
+@pytest.mark.anyio
+async def test_shadowfax_label_sniffs_valid_image_when_provider_uses_generic_download_type():
+    image = b"\x89PNG\r\n\x1a\nprovider-label"
+    transport = ShadowfaxHTTPTransport(
+        token="secret", base_url="https://shadowfax.example/api",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, content=image, headers={"content-type": "application/octet-stream"})
+        )),
+    )
+    try:
+        content, content_type, _ = await transport.download_label({"awb": "SF-IMAGE-1"})
+        assert content == image and content_type == "image/png"
     finally:
         await transport._client.aclose()
 

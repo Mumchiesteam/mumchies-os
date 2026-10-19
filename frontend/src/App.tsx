@@ -718,6 +718,14 @@ function App() {
     } catch (err) {
       if (generation === drawerGenerationRef.current && selectedOrderId === orderId) {
         const message = (err as Error).message || 'Unable to save and verify the address. No address was changed.'
+        if (message.startsWith('Address details changed.') || message.startsWith('Address changed since')) {
+          // A deployment or another operator may have rotated the signed draft
+          // identity. Refresh the authoritative revision instead of leaving the
+          // operator retrying the same known-stale token.
+          setNotice('Address state changed. The latest address has been reloaded; review it and Save & Verify again.')
+          openOrder(orderId)
+          return undefined
+        }
         setAddressSaveError(message)
         setNotice(message)
         throw err

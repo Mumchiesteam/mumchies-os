@@ -1524,7 +1524,9 @@ async def shiprocket_book_shipment(
             operations = {**operations, "address_revision": durable_address.revision,
                 "corrected_address": durable_address.address,
                 "verified_address_snapshot": durable_address.address if durable_address.verified else None,
-                "address_verified": durable_address.verified}
+                "address_verified": durable_address.verified,
+                "address_provenance": {"order_id": order_id, "revision": durable_address.revision,
+                                       "source": "durable_verified_address"}}
         local_shipment = get_shipment(db, order_id)
         shipment = shipment_snapshot(local_shipment) if local_shipment else None
         stages["booking_context_load"] = (time.perf_counter() - stage_started) * 1000

@@ -289,7 +289,42 @@ async def test_shopify_and_shiprocket_cancellation_are_independent(tmp_path, mon
     monkeypatch.setattr(orders.ShiprocketService, "cancel_unbooked_order", shiprocket_cancel)
     result = await orders.cancel_order("1", CancellationPayload(operator="Untrusted"), authenticated_request(), None)
     assert result["results"]["shopify"]["status"] == "cancelled"
-    assert result["results"]["shiprocket"] == {"status": "cancelled", "cancel_on_channel": False}
+    assert result["results"]["shiprocket"]["status"] == "cancellation_requested"
+    assert result["results"]["mumchies_os"]["status"] == "cancellation_requested"
+
+
+@pytest.mark.anyio
+async def test_shiprocket_accepted_cancellation_stays_pending_while_provider_is_still_new(tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    calls = []
+    async def pf(_id, _db): return preflight(shopify=False)
+    async def find(_self, _id): return {"id": 99, "status": "NEW", "shipments": []}
+    async def cancel(_self, _order): calls.append("POST"); return {"classification": "accepted", "response": {"message": "accepted"}}
+    async def details(_self, _id): calls.append("GET"); return {"id": 99, "status": "NEW", "shipments": []}
+    monkeypatch.setattr(orders, "_cancellation_preflight", pf)
+    monkeypatch.setattr(orders.ShiprocketService, "find_existing_order", find)
+    monkeypatch.setattr(orders.ShiprocketService, "cancel_unbooked_order", cancel)
+    monkeypatch.setattr(orders.ShiprocketService, "order_details", details)
+    result = await orders.cancel_order("1", CancellationPayload(cancel_shopify=False), authenticated_request(), None)
+    assert calls == ["POST", "GET"]
+    assert result["results"]["shiprocket"]["status"] == "cancellation_requested"
+    assert result["results"]["mumchies_os"]["status"] == "cancellation_requested"
+
+
+@pytest.mark.anyio
+async def test_shiprocket_cancellation_is_confirmed_only_after_provider_reports_cancelled(tmp_path, monkeypatch):
+    monkeypatch.setattr(order_operations, "OPS_FILE", tmp_path / "operations.json")
+    async def pf(_id, _db): return preflight(shopify=False)
+    async def find(_self, _id): return {"id": 99, "status": "NEW", "shipments": []}
+    async def cancel(_self, _order): return {"classification": "accepted", "response": {"message": "accepted"}}
+    async def details(_self, _id): return {"id": 99, "status": "CANCELLED", "shipments": []}
+    monkeypatch.setattr(orders, "_cancellation_preflight", pf)
+    monkeypatch.setattr(orders.ShiprocketService, "find_existing_order", find)
+    monkeypatch.setattr(orders.ShiprocketService, "cancel_unbooked_order", cancel)
+    monkeypatch.setattr(orders.ShiprocketService, "order_details", details)
+    result = await orders.cancel_order("1", CancellationPayload(cancel_shopify=False), authenticated_request(), None)
+    assert result["results"]["shiprocket"]["status"] == "confirmed"
+    assert result["results"]["mumchies_os"]["status"] == "cancelled"
 
 
 @pytest.mark.anyio
