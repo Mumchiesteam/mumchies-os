@@ -47,25 +47,27 @@ async def track_order(order_number: str, _: bool = Depends(authorize)):
 
 @app.post("/chat")
 async def chat(payload: ChatRequest, _: bool = Depends(authorize)):
-    if not os.getenv("OPENAI_API_KEY"):
-        return {"reply": "AI is not configured yet. Add OPENAI_API_KEY in this preview service's Render Environment settings.", "ai_used": False}
-    text = payload.message.casefold()
+    text = payload.message.casefold().strip()
     import re
-    order_request = re.search(r"\b(track|tracking|where is|status of|order status|my order|order number|shipment)\b", text)
-    order_match = re.search(r"(?<![0-9])#?([0-9]{4,12})(?![0-9])", payload.message)
-    if order_request and order_match:
-        result = await lookup_order(order_match.group(1))
+    order_request = bool(re.search(r"\\b(order|track|tracking|shipment|delivery status|where is|where's|status)\\b", text))
+    order_match = re.search(r"(?<![0-9])#?([0-9]{4,12})(?:-C)?(?![0-9])", payload.message, re.I)
+    recent_order_context = any(
+        re.search(r"\\b(order|track|tracking|shipment|status)\\b", turn.content, re.I)
+        for turn in payload.history[-6:]
+    )
+    if order_match and (order_request or recent_order_context or re.fullmatch(r"#?[0-9]{4,12}(?:-C)?", text, re.I)):
+        result = await lookup_order(order_match.group(0))
         return {"reply": result["reply"], "ai_used": False, "order_tracking": result["status"]}
+    if re.fullmatch(r"(yes|correct|yes correct|haan|han|ji|yep|yeah|ok|okay)", text):
+        for turn in reversed(payload.history[-6:]):
+            previous = re.search(r"(?<![0-9])#?([0-9]{4,12})(?:-C)?(?![0-9])", turn.content, re.I)
+            if previous:
+                result = await lookup_order(previous.group(0))
+                return {"reply": result["reply"], "ai_used": False, "order_tracking": result["status"]}
     if order_request:
         return {"reply": "Please share your Mumchies order number so I can check its status.", "ai_used": False}
-    if re.fullmatch(r"(?i)(yes|correct|yes correct|haan|han|ji|yep|yeah|ok|okay)", text.strip()):
-        for turn in reversed(payload.history):
-            previous = re.search(r"(?<![0-9])#?([0-9]{4,12})(?![0-9])", turn.content)
-            if previous and ("order" in turn.content.casefold() or "track" in turn.content.casefold()):
-                result = await lookup_order(previous.group(1))
-                return {"reply": result["reply"], "ai_used": False, "order_tracking": result["status"]}
-
-
+    if not os.getenv("OPENAI_API_KEY"):
+        return {"reply": "AI is not configured yet. Add OPENAI_API_KEY in this preview service's Render Environment settings.", "ai_used": False}
     if any(word in text for word in ("refund", "cancel order", "damaged", "return order", "human agent", "speak to human")):
         return {"reply": "I'll refer this to the Mumchies support team. This preview cannot contact staff.", "ai_used": False, "needs_human": True}
     kb = json.loads((ROOT / "backend/app/data/support_knowledge_base.json").read_text(encoding="utf-8"))
