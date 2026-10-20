@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - audit/os-quality-20261021
+      - fix/os-cancellation-status-20261021
   workflow_dispatch:
 
 permissions:
