@@ -52,10 +52,14 @@ async def chat(payload: ChatRequest, _: bool = Depends(authorize)):
     website_facts = json.loads((ROOT / "support_preview/website_facts.json").read_text(encoding="utf-8"))
     shop_products, catalogue_error = await catalogue()
     relevant_products = select_products(shop_products, payload.message, payload.history)
+    hinglish = any(token in (" " + payload.message.casefold() + " ") for token in (" hai", " hain", " mein", " kaun", " kitna", " dijiye", " aap", " nahi", " ji ", " wala", " pass", " acha"))
     instructions = (
         "You are a warm, efficient sales and customer support associate for Mumchies, "
         "speaking naturally in the customer's English, Hindi or Hinglish. "
         "Understand follow-ups, short replies, corrections and context switches. "
+        "Reply in natural Roman-script Hinglish to Roman Hindi/Hinglish messages, even with English product names. "
+        "Reply in Devanagari Hindi when the customer uses Hindi script; use English for English-only messages. "
+        "Avoid stiff translations and maintain the customer language across short follow-ups. "
         "Keep answers conversational and concise, typically 1-3 sentences. "
         "Do not mention drafts, knowledge bases, training data, AI limitations or internal systems to customers. "
         "Product reference information is unapproved and must not be treated as verified. "
@@ -89,7 +93,11 @@ async def chat(payload: ChatRequest, _: bool = Depends(authorize)):
         "The public Shopify catalogue is the preferred source for actual product names, variants, listed prices and product URLs. "
         "Only offer product links that appear in the catalogue or the curated website facts. "
         "The catalogue is a periodically cached public listing, not verified stock or current checkout price. "
-        "Do not invent flavours, pack sizes or descriptions absent from the catalogue."
+        "Do not invent flavours, pack sizes or descriptions absent from the catalogue. "
+        "Noodles and pasta are separate categories; never answer a noodles question with pasta. "
+        "Do not invent customer care phone numbers, email addresses, physical addresses or business cities. "
+        "Only share business contacts explicitly present in verified business facts. "
+        "For product links use specific /products/ URLs from the public catalogue, not generic collection URLs."
     )
     conversation = [{"role": t.role, "content": t.content} for t in payload.history]
     conversation.append({"role": "user", "content": payload.message})
@@ -98,7 +106,7 @@ async def chat(payload: ChatRequest, _: bool = Depends(authorize)):
             response = await client.post("https://api.openai.com/v1/responses",
                 headers={"Authorization": "Bearer " + os.environ["OPENAI_API_KEY"]},
                 json={"model": os.getenv("SUPPORT_AI_MODEL", "gpt-4.1-mini"),
-                      "instructions": instructions + "\\nDraft reference: " + json.dumps({"draft_faq": reference, "website_facts": website_facts, "shopify_public_catalogue": relevant_products, "catalogue_status": catalogue_error or "cached public website listing; not live inventory"}, ensure_ascii=False),
+                      "instructions": instructions + "\\nDraft reference: " + json.dumps({"draft_faq": reference, "website_facts": website_facts, "shopify_public_catalogue": relevant_products, "catalogue_status": catalogue_error or "cached public website listing; not live inventory", "reply_language": "Roman Hinglish" if hinglish else "match customer language"}, ensure_ascii=False),
                       "input": conversation, "store": False, "max_output_tokens": 250})
             response.raise_for_status()
             data = response.json()
