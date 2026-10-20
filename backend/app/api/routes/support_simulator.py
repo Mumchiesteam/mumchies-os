@@ -1,0 +1,35 @@
+"""Offline WhatsApp support simulator: authenticated internal endpoint only.
+
+Does not store conversations or contact Meta. Production support integration
+will use a separate verified, persistent pipeline.
+"""
+from fastapi import APIRouter
+from pydantic import BaseModel, Field
+
+from app.services.support_ai import answer_support_message
+from app.services.support_handover import ConversationMode, decide_handover
+
+router = APIRouter(prefix="/support/simulator", tags=["support-simulator"])
+
+
+class SimulationRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    mode: ConversationMode = ConversationMode.BOT
+
+
+@router.post("/message")
+def simulate_message(payload: SimulationRequest) -> dict[str, object]:
+    baseline = answer_support_message(payload.message)
+    decision = decide_handover(
+        payload.message, current_mode=payload.mode,
+        requires_human=bool(baseline["needs_human"]),
+    )
+    if not decision.send_automated_reply:
+        return {
+            "reply": "Our team will help you shortly." if payload.mode == ConversationMode.BOT else None,
+            "mode": ConversationMode.HUMAN.value,
+            "needs_human": True,
+            "simulated": True,
+        }
+    return {"reply": baseline["reply"], "mode": decision.mode.value,
+            "needs_human": False, "simulated": True}
