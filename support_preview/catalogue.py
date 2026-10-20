@@ -91,5 +91,5 @@ def select_products(items, message, history, max_items=45):
             scored.append((score, p))
     scored.sort(key=lambda x: x[0], reverse=True)
     if not scored:
-        return items[:max_items]
+        return items[:max_items] if not wants_noodles else []
     return [p for _, p in scored[:max_items]]
