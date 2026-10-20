@@ -22,7 +22,9 @@
       "name": "Dry Fruit Laddu",
       "url": "https://mumchies.com/products/dry-fruit-laddu-net-weight-350gm",
       "listed_price_inr": 549,
-      "shelf_life": "2 months per website FAQ"
+      "shelf_life": "2 months per website FAQ",
+      "sweetness_source": "Dates (khajur), as stated in Mumchies product information",
+      "refined_sugar_claim": "No refined sugar; not sugar-free, because dates contain natural sugars"
     },
     {
       "name": "Gond-Giri Atta Laddu",
@@ -51,6 +53,7 @@
     "These are website-listed products, not confirmed live stock. Do not assert stock or availability.",
     "The shelf-life figures are website FAQ claims, not batch-specific expiry dates.",
     "Do not invent courier ETA or claim to check serviceability.",
-    "Never promise a follow-up, catalogue check, or staff contact that the simulator cannot perform."
+    "Never promise a follow-up, catalogue check, or staff contact that the simulator cannot perform.",
+    "For Dry Fruit Laddu, explain that sweetness comes from dates (khajur), not refined sugar. Do not claim sugar-free or suitable for diabetics."
   ]
 }
