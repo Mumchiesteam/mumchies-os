@@ -32,6 +32,14 @@ def lookup_draft_faq(message: str) -> dict[str, object]:
             candidate = _normalise(phrase)
             if candidate and f" {candidate} " in f" {text} " and len(candidate) > score:
                 best, score = entry, len(candidate)
+    if any(phrase in text for phrase in ("u there", "you there", "anyone there", "are you there")):
+        return {"reply": "Yes, I'm here! What can I help you with?", "needs_human": False, "matched_intent": "presence"}
+    if "gond" in text:
+        return {"reply": "I can't confirm Gond Laddu availability from this draft catalogue. Please check our current product listing or ask our team.", "needs_human": False, "matched_intent": "product_availability"}
+    if any(phrase in text for phrase in ("how many days", "delivery time", "delivery timeline", "days for delviery")):
+        return {"reply": "Delivery time depends on your destination. What is your six-digit delivery pincode?", "needs_human": False, "matched_intent": "delivery_timeline"}
+    if "stores" in text or "stockists" in text or "retail outlets" in text:
+        return {"reply": "Which city or area are you looking in? Our team can confirm current store availability.", "needs_human": False, "matched_intent": "retail_stores"}
     if best is None:
         return {"reply": "Could you share a little more detail? Our team can help if needed.",
                 "needs_human": False, "matched_intent": None}
