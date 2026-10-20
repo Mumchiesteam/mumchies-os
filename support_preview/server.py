@@ -51,7 +51,7 @@ async def chat(payload: ChatRequest, _: bool = Depends(authorize)):
         return {"reply": "AI is not configured yet. Add OPENAI_API_KEY in this preview service's Render Environment settings.", "ai_used": False}
     text = payload.message.casefold()
     import re
-    order_request = re.search(r"\\b(track|tracking|where is|status of|order status|my order|order number|shipment)\\b", text)
+    order_request = re.search(r"\b(track|tracking|where is|status of|order status|my order|order number|shipment)\b", text)
     order_match = re.search(r"(?<![0-9])#?([0-9]{4,12})(?![0-9])", payload.message)
     if order_request and order_match:
         result = await lookup_order(order_match.group(1))
