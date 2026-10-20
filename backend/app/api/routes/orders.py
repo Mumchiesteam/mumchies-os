@@ -1114,7 +1114,10 @@ async def cancel_order(order_id: str, payload: CancellationPayload, request: Req
     elif any(s in confirmed_states for s in states.values()):
         overall = "cancelled"
     else:
-        overall = "not_applicable"
+        # No upstream order exists: completing an OS-only cancellation is valid.
+        # Never silently call a provider-controlled order locally cancelled.
+        has_upstream_order = bool(preflight["shopify"].get("exists") or preflight["shiprocket"].get("exists"))
+        overall = "not_applicable" if has_upstream_order else "cancelled"
     results["mumchies_os"] = {"status": overall}
     timestamp = datetime.now(timezone.utc).isoformat()
     actor = current_actor(request)
