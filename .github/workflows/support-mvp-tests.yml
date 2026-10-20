@@ -22,4 +22,4 @@ jobs:
       - name: Run isolated support tests
         env:
           PYTHONPATH: backend
-        run: python -m pytest backend/tests/test_support_ai.py -q
+        run: python -m pytest backend/tests/test_support_ai.py backend/tests/test_support_handover.py -q
