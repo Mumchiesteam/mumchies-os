@@ -6,7 +6,7 @@ will use a separate verified, persistent pipeline.
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from app.services.support_ai import answer_support_message
+from app.services.support_knowledge import lookup_draft_faq
 from app.services.support_handover import ConversationMode, decide_handover
 
 router = APIRouter(prefix="/support/simulator", tags=["support-simulator"])
@@ -19,7 +19,7 @@ class SimulationRequest(BaseModel):
 
 @router.post("/message")
 def simulate_message(payload: SimulationRequest) -> dict[str, object]:
-    baseline = answer_support_message(payload.message)
+    baseline = lookup_draft_faq(payload.message)
     decision = decide_handover(
         payload.message, current_mode=payload.mode,
         requires_human=bool(baseline["needs_human"]),
