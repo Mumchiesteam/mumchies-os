@@ -58,6 +58,13 @@ async def chat(payload: ChatRequest, _: bool = Depends(authorize)):
         return {"reply": result["reply"], "ai_used": False, "order_tracking": result["status"]}
     if order_request:
         return {"reply": "Please share your Mumchies order number so I can check its status.", "ai_used": False}
+    if re.fullmatch(r"(?i)(yes|correct|yes correct|haan|han|ji|yep|yeah|ok|okay)", text.strip()):
+        for turn in reversed(payload.history):
+            previous = re.search(r"(?<![0-9])#?([0-9]{4,12})(?![0-9])", turn.content)
+            if previous and ("order" in turn.content.casefold() or "track" in turn.content.casefold()):
+                result = await lookup_order(previous.group(1))
+                return {"reply": result["reply"], "ai_used": False, "order_tracking": result["status"]}
+
 
     if any(word in text for word in ("refund", "cancel order", "damaged", "return order", "human agent", "speak to human")):
         return {"reply": "I'll refer this to the Mumchies support team. This preview cannot contact staff.", "ai_used": False, "needs_human": True}
