@@ -55,7 +55,7 @@ async def chat(payload: ChatRequest, _: bool = Depends(authorize)):
         re.search(r"\\b(order|track|tracking|shipment|status)\\b", turn.content, re.I)
         for turn in payload.history[-6:]
     )
-    if order_match and (order_request or recent_order_context or re.fullmatch(r"#?[0-9]{4,12}(?:-C)?", text, re.I)):
+    if order_match:
         result = await lookup_order(order_match.group(0))
         return {"reply": result["reply"], "ai_used": False, "order_tracking": result["status"]}
     if re.fullmatch(r"(yes|correct|yes correct|haan|han|ji|yep|yeah|ok|okay)", text):
