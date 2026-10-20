@@ -33,7 +33,7 @@ jobs:
     env:
       DATABASE_URL: postgresql+psycopg://audit_user:audit_password_only@localhost:5432/mumchies_audit
       AUTH_ENABLED: "false"
-      DATA_DIR: ${{ runner.temp }}/mumchies-audit-data
+      DATA_DIR: /tmp/mumchies-audit-data
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
