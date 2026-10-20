@@ -9,6 +9,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 import httpx
 from support_preview.catalogue import catalogue, select_products
+from support_preview.order_tracking import lookup as lookup_order
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 basic = HTTPBasic()
@@ -40,11 +41,24 @@ def health():
 def index(_: bool = Depends(authorize)):
     return (Path(__file__).parent / "index.html").read_text(encoding="utf-8")
 
+@app.get("/track/{order_number}")
+async def track_order(order_number: str, _: bool = Depends(authorize)):
+    return await lookup_order(order_number)
+
 @app.post("/chat")
 async def chat(payload: ChatRequest, _: bool = Depends(authorize)):
     if not os.getenv("OPENAI_API_KEY"):
         return {"reply": "AI is not configured yet. Add OPENAI_API_KEY in this preview service's Render Environment settings.", "ai_used": False}
     text = payload.message.casefold()
+    import re
+    order_request = re.search(r"\\b(track|tracking|where is|status of|order status|my order|order number|shipment)\\b", text)
+    order_match = re.search(r"(?<![0-9])#?([0-9]{4,12})(?![0-9])", payload.message)
+    if order_request and order_match:
+        result = await lookup_order(order_match.group(1))
+        return {"reply": result["reply"], "ai_used": False, "order_tracking": result["status"]}
+    if order_request:
+        return {"reply": "Please share your Mumchies order number so I can check its status.", "ai_used": False}
+
     if any(word in text for word in ("refund", "cancel order", "damaged", "return order", "human agent", "speak to human")):
         return {"reply": "I'll refer this to the Mumchies support team. This preview cannot contact staff.", "ai_used": False, "needs_human": True}
     kb = json.loads((ROOT / "backend/app/data/support_knowledge_base.json").read_text(encoding="utf-8"))
@@ -112,7 +126,7 @@ async def chat(payload: ChatRequest, _: bool = Depends(authorize)):
         "Never assert only one pack size exists unless all variants have been checked. "
         "Do not invent festive items or named products absent from the provided listings. "
         "For shipping estimates, do not ask for a pincode unless a working delivery checker is available. "
-        "This preview has no delivery checker, order tracking or human handoff; state that plainly and "
+        "This preview has no delivery checker or human handoff; state that plainly and "
         "offer the existing order confirmation tracking link if the customer has one. "
         "Do not claim to check the pincode or offer a general delivery estimate without data. "
         "Do not invent customer care phone numbers, email addresses, physical addresses or business cities. "
@@ -131,7 +145,7 @@ async def chat(payload: ChatRequest, _: bool = Depends(authorize)):
         "listed price, relevant description and direct product URL if supplied. "
         "If an exact product URL is unavailable, explicitly say the direct link is not verified; "
         "NEVER substitute a generic collection URL for a requested product link. "
-        "For order tracking, say there is no order lookup integration in this preview and do not imply "
+        "For order tracking without an order number, request the order number and do not imply "
         "you have accessed the order, confirmed its existence or checked shipment progress. "
         "Never provide customer support phone numbers or email addresses unless present in explicitly "
         "verified business contact facts; do not reuse contact details from previous assistant messages.")
