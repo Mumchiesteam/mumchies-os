@@ -21,3 +21,9 @@ def test_human_conversation_does_not_get_bot_reply():
     result = asyncio.run(simulate_message(SimulationRequest(message="Hello", mode=ConversationMode.HUMAN)))
     assert result["reply"] is None
     assert result["mode"] == "human"
+
+
+def test_handover_does_not_send_bot_reply():
+    result = asyncio.run(simulate_message(SimulationRequest(message="I want a refund")))
+    assert result["reply"] is None
+    assert result["ai_used"] is False
