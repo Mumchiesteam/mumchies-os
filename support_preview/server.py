@@ -52,14 +52,22 @@ async def chat(payload: ChatRequest, _: bool = Depends(authorize)):
     website_facts = json.loads((ROOT / "support_preview/website_facts.json").read_text(encoding="utf-8"))
     shop_products, catalogue_error = await catalogue()
     relevant_products = select_products(shop_products, payload.message, payload.history)
-    hinglish = any(token in (" " + payload.message.casefold() + " ") for token in (" hai", " hain", " mein", " kaun", " kitna", " dijiye", " aap", " nahi", " ji ", " wala", " pass", " acha"))
+    import re
+    current = payload.message.strip()
+    hindi_script = bool(re.search(r"[\u0900-\u097f]", current))
+    hinglish = bool(re.search(r"\b(hai|hain|mein|kaun|kitna|dijiye|aap|nahi|kya|kaise|kitne|chahiye|mujhe|batao|wala|ka|ki|se|nahi|hain|raha|karo|do|iska|isme|iske)\b", current.casefold()))
+    reply_language = "Hindi in Devanagari" if hindi_script else ("Roman Hinglish" if hinglish else "English")
     instructions = (
         "You are a warm, efficient sales and customer support associate for Mumchies, "
         "speaking naturally in the customer's English, Hindi or Hinglish. "
         "Understand follow-ups, short replies, corrections and context switches. "
         "Reply in natural Roman-script Hinglish to Roman Hindi/Hinglish messages, even with English product names. "
         "Reply in Devanagari Hindi when the customer uses Hindi script; use English for English-only messages. "
-        "Avoid stiff translations and maintain the customer language across short follow-ups. "
+        "IMPORTANT: Detect language from the CURRENT user message, not earlier chat messages. "
+        "For an English question, ALWAYS answer in English even if prior conversation was Hindi/Hinglish. "
+        "For Roman Hindi/Hinglish, reply in Roman Hinglish. For Devanagari, reply in Hindi script. "
+        "Only inherit earlier language for truly language-neutral messages like yes, ok, 1kg or a pincode. "
+        "Do not mirror the language of your own earlier replies. "
         "Keep answers conversational and concise, typically 1-3 sentences. "
         "Do not mention drafts, knowledge bases, training data, AI limitations or internal systems to customers. "
         "Product reference information is unapproved and must not be treated as verified. "
@@ -118,7 +126,7 @@ async def chat(payload: ChatRequest, _: bool = Depends(authorize)):
             response = await client.post("https://api.openai.com/v1/responses",
                 headers={"Authorization": "Bearer " + os.environ["OPENAI_API_KEY"]},
                 json={"model": os.getenv("SUPPORT_AI_MODEL", "gpt-4.1-mini"),
-                      "instructions": instructions + "\\nDraft reference: " + json.dumps({"draft_faq": reference, "website_facts": website_facts, "shopify_public_catalogue": relevant_products, "matching_product_count": len(relevant_products), "catalogue_status": catalogue_error or "cached public website listing; not live inventory", "reply_language": "Roman Hinglish" if hinglish else "match customer language"}, ensure_ascii=False),
+                      "instructions": instructions + "\\nDraft reference: " + json.dumps({"draft_faq": reference, "website_facts": website_facts, "shopify_public_catalogue": relevant_products, "matching_product_count": len(relevant_products), "catalogue_status": catalogue_error or "cached public website listing; not live inventory", "reply_language": reply_language}, ensure_ascii=False),
                       "input": conversation, "store": False, "max_output_tokens": 250})
             response.raise_for_status()
             data = response.json()
