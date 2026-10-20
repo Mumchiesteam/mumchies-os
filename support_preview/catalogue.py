@@ -63,7 +63,10 @@ async def catalogue():
 
 def select_products(items, message, history, max_items=45):
     # Broad questions get representative names; specific questions get matching entries.
-    # Explicit new category overrides earlier topics (e.g. noodles, not pasta).\n    context = message.casefold()\n    if len(context.split()) <= 2 and context.strip() in {"yes", "ji", "haan", "link", "links", "ok"}:\n        context = " ".join([str(t.content) for t in history[-3:]] + [message]).casefold()
+    # Explicit new category overrides earlier topics (e.g. noodles, not pasta).
+    context = message.casefold()
+    if len(context.split()) <= 2 and context.strip() in {"yes", "ji", "haan", "link", "links", "ok"}:
+        context = " ".join([str(t.content) for t in history[-3:]] + [message]).casefold()
     terms = set(re.findall(r"[a-z]{3,}", context))
     aliases = {"namkeen": {"savoury", "savory", "mixture", "chivda", "snack"},
                "mithai": {"sweet", "laddu", "katli"}, "ladoo": {"laddu"},
@@ -72,7 +75,14 @@ def select_products(items, message, history, max_items=45):
     for word, extras in aliases.items():
         if word in terms:
             expanded.update(extras)
-    # Keep pasta and noodles distinct even if their descriptions mention each other.\n    wants_noodles = bool(re.search(r"\\b(noodles?|noodle|nudles?)\\b", context))\n    wants_pasta = bool(re.search(r"\\bpasta\\b", context)) and not wants_noodles\n    if wants_noodles:\n        items = [p for p in items if re.search(r"\\bnoodles?\\b", p["name"], re.I)]\n    elif wants_pasta:\n        items = [p for p in items if "pasta" in p["name"].casefold()]\n    scored = []
+    # Keep pasta and noodles distinct even if their descriptions mention each other.
+    wants_noodles = bool(re.search(r"\\b(noodles?|noodle|nudles?)\\b", context))
+    wants_pasta = bool(re.search(r"\\bpasta\\b", context)) and not wants_noodles
+    if wants_noodles:
+        items = [p for p in items if re.search(r"\\bnoodles?\\b", p["name"], re.I)]
+    elif wants_pasta:
+        items = [p for p in items if "pasta" in p["name"].casefold()]
+    scored = []
     for p in items:
         name = p["name"].casefold()
         description = (p["type"] + " " + p["tags"]).casefold()
