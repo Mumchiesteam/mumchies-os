@@ -1,0 +1,315 @@
+{
+  "version": "draft-1",
+  "status": "website-sourced; pending business approval",
+  "updated": "2026-10-20",
+  "entries": [
+    {
+      "id": "catalogue",
+      "question": "What products do you sell?",
+      "answer": "Mumchies offers sweets, savouries, millet noodles and pasta, and gifting options. Browse the current range at https://mumchies.com/collections/all-products.",
+      "phrases": [
+        "what do you sell",
+        "products",
+        "catalogue",
+        "catalog",
+        "snacks",
+        "product range",
+        "products batao",
+        "kya milta hai",
+        "what all do you have"
+      ],
+      "source": "https://mumchies.com/collections/all-products",
+      "approval": "pending",
+      "mode": "informational"
+    },
+    {
+      "id": "sweets",
+      "question": "Which sweets do you have?",
+      "answer": "Our range includes Dry Fruit Laddu, Jaggery Kaju Katli, Stuffed Choco Dates and other sweets. Please check https://mumchies.com/collections/all-products for current options.",
+      "phrases": [
+        "sweets",
+        "mithai",
+        "laddu varieties",
+        "ladoo",
+        "kaju katli",
+        "choco dates"
+      ],
+      "source": "https://mumchies.com/collections/all-products",
+      "approval": "pending",
+      "mode": "informational"
+    },
+    {
+      "id": "no_refined_sugar",
+      "question": "Does Dry Fruit Laddu have refined sugar?",
+      "answer": "Our Dry Fruit Laddu is listed as having no refined sugar. Please check the pack or product listing for the full ingredients and nutrition details.",
+      "phrases": [
+        "dry fruit laddu sugar",
+        "dry fruit ladoo sugar",
+        "refined sugar laddu",
+        "laddu without sugar",
+        "sugar free laddu"
+      ],
+      "source": "https://mumchies.com/collections/all-products",
+      "approval": "pending",
+      "mode": "informational"
+    },
+    {
+      "id": "preservatives",
+      "question": "Do your products contain added preservatives?",
+      "answer": "Mumchies states that its products are made without added preservatives. For a specific product, please check the pack ingredients.",
+      "phrases": [
+        "preservatives",
+        "preservative",
+        "artificial additives",
+        "chemicals"
+      ],
+      "source": "https://mumchies.com/products/peanut-jaggery-laddu",
+      "approval": "pending",
+      "mode": "informational"
+    },
+    {
+      "id": "palm_oil",
+      "question": "Do you use palm oil?",
+      "answer": "Mumchies states that it does not use palm oil in its products.",
+      "phrases": [
+        "palm oil",
+        "palmolein",
+        "palmolin"
+      ],
+      "source": "https://mumchies.com/products/peanut-jaggery-laddu",
+      "approval": "pending",
+      "mode": "informational"
+    },
+    {
+      "id": "oil",
+      "question": "Which oil do you use for savouries?",
+      "answer": "Our website says our namkeens use rice-bran oil. Ingredients may vary by product, so please check the specific pack.",
+      "phrases": [
+        "which oil",
+        "cooking oil",
+        "rice bran oil",
+        "namkeen oil"
+      ],
+      "source": "https://mumchies.com/products/peanut-jaggery-laddu",
+      "approval": "pending",
+      "mode": "informational"
+    },
+    {
+      "id": "storage",
+      "question": "How should I store the products?",
+      "answer": "Store in a cool, dry place and keep the pack tightly sealed after opening. Follow the storage instructions printed on your pack.",
+      "phrases": [
+        "store",
+        "storage",
+        "keep fresh",
+        "refrigerate",
+        "how to keep"
+      ],
+      "source": "https://mumchies.com/products/peanut-jaggery-laddu",
+      "approval": "pending",
+      "mode": "informational"
+    },
+    {
+      "id": "shelf_life",
+      "question": "What is the shelf life?",
+      "answer": "Shelf life varies by product. Please use the best-before or expiry date printed on the specific pack; we can help with product-specific details.",
+      "phrases": [
+        "shelf life",
+        "expiry",
+        "expire",
+        "best before",
+        "how long lasts",
+        "freshness"
+      ],
+      "source": "https://mumchies.com/products/peanut-jaggery-laddu",
+      "approval": "pending",
+      "mode": "informational"
+    },
+    {
+      "id": "shipping",
+      "question": "Do you deliver across India?",
+      "answer": "We ship to most locations in India. Delivery availability and timelines depend on your pincode and order.",
+      "phrases": [
+        "deliver across india",
+        "shipping india",
+        "pan india",
+        "all india delivery",
+        "deliver nationwide",
+        "deliver to my city"
+      ],
+      "source": "https://mumchies.com/products/peanut-jaggery-laddu",
+      "approval": "pending",
+      "mode": "informational"
+    },
+    {
+      "id": "shipping_fee",
+      "question": "Is shipping free?",
+      "answer": "Our website currently advertises free shipping on orders over ₹399. Please confirm the applicable charges at checkout.",
+      "phrases": [
+        "free shipping",
+        "shipping charges",
+        "delivery charges",
+        "shipping fee",
+        "free delivery"
+      ],
+      "source": "https://mumchies.com/",
+      "approval": "pending",
+      "mode": "informational"
+    },
+    {
+      "id": "prepaid",
+      "question": "Is there a prepaid discount?",
+      "answer": "Our website currently advertises an extra 5% discount on prepaid orders. The final offer and eligibility will be shown at checkout.",
+      "phrases": [
+        "prepaid discount",
+        "pay online discount",
+        "online payment discount"
+      ],
+      "source": "https://mumchies.com/",
+      "approval": "pending",
+      "mode": "informational"
+    },
+    {
+      "id": "ordering",
+      "question": "How do I place an order?",
+      "answer": "You can explore products and place an order at https://mumchies.com. If you need help choosing products, tell us what you are looking for.",
+      "phrases": [
+        "place order",
+        "how to buy",
+        "buy online",
+        "order online",
+        "website order",
+        "kaise order kare"
+      ],
+      "source": "https://mumchies.com/",
+      "approval": "pending",
+      "mode": "informational"
+    },
+    {
+      "id": "millet",
+      "question": "Do you have millet noodles or pasta?",
+      "answer": "Yes, Mumchies offers millet noodles and pasta. You can browse the latest options at https://mumchies.com/collections/all-products.",
+      "phrases": [
+        "millet noodles",
+        "millet pasta",
+        "noodles",
+        "pasta",
+        "millets"
+      ],
+      "source": "https://mumchies.com/collections/all-products",
+      "approval": "pending",
+      "mode": "informational"
+    },
+    {
+      "id": "corporate",
+      "question": "Do you offer corporate gifting?",
+      "answer": "Yes. Mumchies offers corporate and bulk gifting, with curated hampers and customisation options. Share your quantity, budget, destination and required date for a quote.",
+      "phrases": [
+        "corporate gifting",
+        "corporate gifts",
+        "employee gifting",
+        "office gifting",
+        "bulk gifts",
+        "diwali gifts",
+        "gift hampers"
+      ],
+      "source": "https://mumchies.com/pages/diwali-corporate-gifting-2026",
+      "approval": "pending",
+      "mode": "informational"
+    },
+    {
+      "id": "branding",
+      "question": "Can you add our company logo to gift hampers?",
+      "answer": "Corporate gifting options can include branded sleeves, boxes, stickers and gift cards, depending on the order. Our team can confirm feasibility and pricing.",
+      "phrases": [
+        "logo",
+        "branding",
+        "branded hampers",
+        "custom packaging",
+        "customisation",
+        "customization",
+        "gift card"
+      ],
+      "source": "https://mumchies.com/pages/diwali-corporate-gifting-2026",
+      "approval": "pending",
+      "mode": "informational"
+    },
+    {
+      "id": "multi_address",
+      "question": "Can corporate gifts go to multiple addresses?",
+      "answer": "Yes, Mumchies supports office delivery and individual-address corporate gifting. Final serviceability, charges and timing depend on the destination list.",
+      "phrases": [
+        "multiple addresses",
+        "multi location",
+        "different locations",
+        "employees homes",
+        "multiple offices"
+      ],
+      "source": "https://mumchies.com/pages/diwali-corporate-gifting-2026",
+      "approval": "pending",
+      "mode": "informational"
+    },
+    {
+      "id": "samples",
+      "question": "Can we request corporate gifting samples?",
+      "answer": "Sampling may be available depending on the hamper and delivery location. Our gifting team can confirm sample options and charges.",
+      "phrases": [
+        "samples",
+        "sample hamper",
+        "trial hamper",
+        "try before bulk"
+      ],
+      "source": "https://mumchies.com/pages/diwali-corporate-gifting-2026",
+      "approval": "pending",
+      "mode": "informational"
+    },
+    {
+      "id": "contact",
+      "question": "How can I contact Mumchies?",
+      "answer": "You can email wecare@mumchies.com or call +91 83103 37505, as listed on our website.",
+      "phrases": [
+        "contact",
+        "phone number",
+        "email",
+        "call mumchies",
+        "customer care number"
+      ],
+      "source": "https://mumchies.com/",
+      "approval": "pending",
+      "mode": "informational"
+    },
+    {
+      "id": "allergens",
+      "question": "Does this product contain allergens?",
+      "answer": "For allergy safety, please check the complete ingredient and allergen information on the specific pack. Tell us the product and allergen, and our team can help verify.",
+      "phrases": [
+        "allergy",
+        "allergen",
+        "peanut allergy",
+        "nuts allergy",
+        "sesame",
+        "gluten",
+        "celiac"
+      ],
+      "source": "https://mumchies.com/collections/all-products",
+      "approval": "pending",
+      "mode": "human_review"
+    },
+    {
+      "id": "price",
+      "question": "What is the price?",
+      "answer": "Prices vary by product and offer. Please check the current price on https://mumchies.com/collections/all-products, or tell us which product interests you.",
+      "phrases": [
+        "price",
+        "cost",
+        "rate",
+        "kitne ka",
+        "how much",
+        "mrp"
+      ],
+      "source": "https://mumchies.com/collections/all-products",
+      "approval": "pending",
+      "mode": "informational"
+    }
+  ]
+}
