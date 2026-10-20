@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 import httpx
+from support_preview.catalogue import catalogue, select_products
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 basic = HTTPBasic()
@@ -49,6 +50,8 @@ async def chat(payload: ChatRequest, _: bool = Depends(authorize)):
     kb = json.loads((ROOT / "backend/app/data/support_knowledge_base.json").read_text(encoding="utf-8"))
     reference = [{"topic": e["id"], "draft_answer": e["answer"]} for e in kb["entries"]]
     website_facts = json.loads((ROOT / "support_preview/website_facts.json").read_text(encoding="utf-8"))
+    shop_products, catalogue_error = await catalogue()
+    relevant_products = select_products(shop_products, payload.message, payload.history)
     instructions = (
         "You are a warm, efficient sales and customer support associate for Mumchies, "
         "speaking naturally in the customer's English, Hindi or Hinglish. "
@@ -82,7 +85,11 @@ async def chat(payload: ChatRequest, _: bool = Depends(authorize)):
         "If asked for a list, give the known names immediately. "
         "Do not invent a shelf-life range or tell a pre-purchase customer to check their pack. "
         "Remember the supplied pincode across follow-ups. "
-        "Do not confuse a website listing with live inventory or a verified delivery estimate."
+        "Do not confuse a website listing with live inventory or a verified delivery estimate. "
+        "The public Shopify catalogue is the preferred source for actual product names, variants, listed prices and product URLs. "
+        "Only offer product links that appear in the catalogue or the curated website facts. "
+        "The catalogue is a periodically cached public listing, not verified stock or current checkout price. "
+        "Do not invent flavours, pack sizes or descriptions absent from the catalogue."
     )
     conversation = [{"role": t.role, "content": t.content} for t in payload.history]
     conversation.append({"role": "user", "content": payload.message})
@@ -91,7 +98,7 @@ async def chat(payload: ChatRequest, _: bool = Depends(authorize)):
             response = await client.post("https://api.openai.com/v1/responses",
                 headers={"Authorization": "Bearer " + os.environ["OPENAI_API_KEY"]},
                 json={"model": os.getenv("SUPPORT_AI_MODEL", "gpt-4.1-mini"),
-                      "instructions": instructions + "\\nDraft reference: " + json.dumps({"draft_faq": reference, "website_facts": website_facts}, ensure_ascii=False),
+                      "instructions": instructions + "\\nDraft reference: " + json.dumps({"draft_faq": reference, "website_facts": website_facts, "shopify_public_catalogue": relevant_products, "catalogue_status": catalogue_error or "cached public website listing; not live inventory"}, ensure_ascii=False),
                       "input": conversation, "store": False, "max_output_tokens": 250})
             response.raise_for_status()
             data = response.json()
