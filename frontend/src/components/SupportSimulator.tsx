@@ -4,12 +4,13 @@ import { apiBase } from '../services/orders'
 
 type Mode = 'bot' | 'human'
 type Message = { sender: 'customer' | 'bot' | 'staff'; text: string }
-type SimulationResult = { reply: string | null; mode: Mode; needs_human: boolean; simulated: boolean }
+type SimulationResult = { reply: string | null; mode: Mode; needs_human: boolean; simulated: boolean; ai_used?: boolean }
 
 export function SupportSimulator() {
   const [mode, setMode] = useState<Mode>('bot')
   const [draft, setDraft] = useState('')
   const [messages, setMessages] = useState<Message[]>([])
+  const [aiUsed, setAiUsed] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [staffDraft, setStaffDraft] = useState('')
@@ -28,11 +29,12 @@ export function SupportSimulator() {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
-        body: JSON.stringify({ message, mode }),
+        body: JSON.stringify({ message, mode, history: messages.slice(-16).map(item => ({ role: item.sender === 'customer' ? 'user' : 'assistant', content: item.text })) }),
       })
       if (!response.ok) throw new Error('Simulator request failed (' + response.status + ')')
       const result = await response.json() as SimulationResult
       setMode(result.mode)
+      setAiUsed(Boolean(result.ai_used))
       if (result.reply) setMessages(previous => [...previous, { sender: 'bot', text: result.reply! }])
     } catch {
       setError('Unable to reach the simulator. Check your Mumchies OS session.')
@@ -44,7 +46,8 @@ export function SupportSimulator() {
   return (
     <section style={{ maxWidth: 480, margin: '24px auto', fontFamily: 'system-ui' }}>
       <h2>WhatsApp Support Simulator</h2>
-      <p>Offline demo only. No WhatsApp messages are sent.</p>
+      <p>Internal test only. No WhatsApp messages are sent. AI is used only when enabled on the backend.</p>
+      <p aria-live="polite">Last response: {aiUsed ? 'OpenAI' : 'Rules-based fallback / no AI'}</p>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
         {scenarios.map(example => <button key={example} onClick={() => setDraft(example)}>{example}</button>)}
       </div>
@@ -72,7 +75,7 @@ export function SupportSimulator() {
         }}>Staff reply</button>
       </div>}
       {error && <p role="alert">{error}</p>}
-      <button style={{ marginTop: 12 }} onClick={() => { setMode('bot'); setMessages([]); setError(''); setStaffDraft('') }}>
+      <button style={{ marginTop: 12 }} onClick={() => { setMode('bot'); setMessages([]); setError(''); setStaffDraft(''); setAiUsed(false) }}>
         Start new test conversation
       </button>
     </section>
