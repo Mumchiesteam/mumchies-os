@@ -127,6 +127,14 @@ async def chat(payload: ChatRequest, _: bool = Depends(authorize)):
         "Do not say you will notify customers when products are back in stock; no notification service exists. "
         "When asked for a product link, output the plain direct URL without Markdown brackets or parentheses. "
         "For yes/no follow-ups, respond to the last relevant question without asking the same question again.")
+    instructions += (" For product-information requests, use the exact matching catalogue entry: provide its name, "
+        "listed price, relevant description and direct product URL if supplied. "
+        "If an exact product URL is unavailable, explicitly say the direct link is not verified; "
+        "NEVER substitute a generic collection URL for a requested product link. "
+        "For order tracking, say there is no order lookup integration in this preview and do not imply "
+        "you have accessed the order, confirmed its existence or checked shipment progress. "
+        "Never provide customer support phone numbers or email addresses unless present in explicitly "
+        "verified business contact facts; do not reuse contact details from previous assistant messages.")
     conversation = [{"role": t.role, "content": t.content} for t in payload.history]
     conversation.append({"role": "user", "content": payload.message})
     try:
