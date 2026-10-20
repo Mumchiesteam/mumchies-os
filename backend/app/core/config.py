@@ -11,6 +11,9 @@ REPO_ROOT = BACKEND_DIR.parent
 class Settings(BaseSettings):
     app_name: str = "Mumchies OS API"
     app_version: str = "0.1.0"
+    openai_api_key: str | None = None
+    support_ai_enabled: bool = False
+    support_ai_model: str = "gpt-4.1-mini"
     api_v1_prefix: str = "/api/v1"
     database_url: str = "postgresql+psycopg://mumchies:change-me@localhost:5432/mumchies_os"
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
