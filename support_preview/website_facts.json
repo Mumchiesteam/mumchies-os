@@ -1,0 +1,56 @@
+{
+  "verified_from": "mumchies.com public product and collection pages; snapshot 2026-10-21; verify before live customer use",
+  "collections": {
+    "sweets": "https://mumchies.com/collections/sweets",
+    "savouries": "https://mumchies.com/collections/savouries",
+    "gifting": "https://mumchies.com/collections/gifting",
+    "best_sellers": "https://mumchies.com/collections/bestsellers",
+    "all": "https://mumchies.com/collections/all-products"
+  },
+  "products": [
+    {
+      "name": "Chivda - Roasted | Not Fried",
+      "url": "https://mumchies.com/products/chivda",
+      "listed_price_inr": 95
+    },
+    {
+      "name": "Corn Flakes Chivda - No Palm Oil",
+      "url": "https://mumchies.com/collections/all",
+      "listed_price_inr": 95
+    },
+    {
+      "name": "Dry Fruit Laddu",
+      "url": "https://mumchies.com/products/dry-fruit-laddu-net-weight-350gm",
+      "listed_price_inr": 549,
+      "shelf_life": "2 months per website FAQ"
+    },
+    {
+      "name": "Gond-Giri Atta Laddu",
+      "url": "https://mumchies.com/products/gond-giri-laddu",
+      "listed_price_inr": 195,
+      "shelf_life": "4 months per website FAQ"
+    },
+    {
+      "name": "Chaat Makhana",
+      "availability": "shown sold out in catalogue snapshot"
+    },
+    {
+      "name": "Chili Cheese Makhana",
+      "availability": "shown sold out in catalogue snapshot"
+    },
+    {
+      "name": "Finger Millet (Ragi) Pasta",
+      "listed_price_inr": 140
+    },
+    {
+      "name": "Foxtail-Millet (Kangni) Pasta",
+      "listed_price_inr": 140
+    }
+  ],
+  "notes": [
+    "These are website-listed products, not confirmed live stock. Do not assert stock or availability.",
+    "The shelf-life figures are website FAQ claims, not batch-specific expiry dates.",
+    "Do not invent courier ETA or claim to check serviceability.",
+    "Never promise a follow-up, catalogue check, or staff contact that the simulator cannot perform."
+  ]
+}
