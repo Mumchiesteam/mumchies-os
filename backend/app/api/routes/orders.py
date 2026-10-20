@@ -1052,7 +1052,7 @@ async def cancel_order(order_id: str, payload: CancellationPayload, request: Req
     if not preflight["allowed"]:
         raise HTTPException(status_code=409, detail=preflight["blocked_reason"])
     results: dict[str, object] = {
-        "mumchies_os": {"status": "cancelled"},
+        "mumchies_os": {"status": "not_applicable"},
         "shopify": {"status": "not_applicable"},
         "shiprocket": {"status": "not_applicable"},
         "comment": payload.comment,
@@ -1099,6 +1099,23 @@ async def cancel_order(order_id: str, payload: CancellationPayload, request: Req
                 results["shiprocket"] = {"status": "failed", "error": "The Shiprocket order disappeared before cancellation.", "cancel_on_channel": False}
         except (ShiprocketAPIError, ShiprocketConfigurationError) as error:
             results["shiprocket"] = {"status": "failed", "error": str(error), "cancel_on_channel": False}
+    # Do not claim that the OS cancellation succeeded when a provider rejected
+    # the request, or while either provider is still processing it.
+    states = {
+        name: str((results[name] or {}).get("status") or "not_applicable").casefold()
+        for name in ("shopify", "shiprocket")
+    }
+    confirmed_states = {"cancelled", "confirmed", "already_cancelled", "already cancelled"}
+    active_states = confirmed_states | {"cancellation_requested"}
+    if "failed" in states.values():
+        overall = "partial_failure" if any(s in active_states for s in states.values()) else "failed"
+    elif "cancellation_requested" in states.values():
+        overall = "cancellation_requested"
+    elif any(s in confirmed_states for s in states.values()):
+        overall = "cancelled"
+    else:
+        overall = "not_applicable"
+    results["mumchies_os"] = {"status": overall}
     timestamp = datetime.now(timezone.utc).isoformat()
     actor = current_actor(request)
     operations = OrderOperationsStore.save_cancellation(order_id, results, actor, timestamp)
