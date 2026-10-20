@@ -1,10 +1,14 @@
-name: Mumchies OS audit tests
+name: Mumchies OS CI
 
 on:
   push:
     branches:
+      - main
       - audit/os-quality-20261021
       - fix/os-cancellation-status-20261021
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
