@@ -16,7 +16,10 @@
         "product range",
         "products batao",
         "kya milta hai",
-        "what all do you have"
+        "what all do you have",
+        "what products do you deal with",
+        "what products do you have",
+        "what all do you sell"
       ],
       "source": "https://mumchies.com/collections/all-products",
       "approval": "pending",
@@ -47,7 +50,11 @@
         "dry fruit ladoo sugar",
         "refined sugar laddu",
         "laddu without sugar",
-        "sugar free laddu"
+        "sugar free laddu",
+        "does your dry fruit laddu have sugar",
+        "does your laddu have sugar",
+        "does the laddu contain sugar",
+        "dry fruit laddu have sugar"
       ],
       "source": "https://mumchies.com/collections/all-products",
       "approval": "pending",
@@ -211,7 +218,10 @@
         "office gifting",
         "bulk gifts",
         "diwali gifts",
-        "gift hampers"
+        "gift hampers",
+        "what is your moq for corporate gifting",
+        "corporate gifting moq",
+        "minimum order quantity corporate gifts"
       ],
       "source": "https://mumchies.com/pages/diwali-corporate-gifting-2026",
       "approval": "pending",
