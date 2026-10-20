@@ -1,0 +1,25 @@
+name: Support MVP tests
+
+on:
+  push:
+    branches:
+      - feature/ai-customer-support
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  support-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install test dependencies
+        run: python -m pip install pytest==8.3.4
+      - name: Run isolated support tests
+        env:
+          PYTHONPATH: backend
+        run: python -m pytest backend/tests/test_support_ai.py -q
