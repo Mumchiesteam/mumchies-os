@@ -28,7 +28,7 @@ async def simulate_message(payload: SimulationRequest) -> dict[str, object]:
     )
     if not decision.send_automated_reply:
         return {
-            "reply": "Our team will help you shortly." if payload.mode == ConversationMode.BOT else None,
+            "reply": None,
             "mode": ConversationMode.HUMAN.value,
             "needs_human": True,
             "simulated": True, "ai_used": False,
