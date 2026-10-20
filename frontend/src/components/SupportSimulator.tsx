@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { getCsrfToken } from '../services/auth-state'
+import { apiBase } from '../services/orders'
 
 type Mode = 'bot' | 'human'
 type Message = { sender: 'customer' | 'bot' | 'staff'; text: string }
@@ -19,11 +21,11 @@ export function SupportSimulator() {
     setMessages(previous => [...previous, { sender: 'customer', text: message }])
     setBusy(true)
     try {
-      const csrf = document.cookie.match(/(?:^|; )mumchies_csrf=([^;]+)/)?.[1] ?? ''
-      const response = await fetch('/api/v1/support/simulator/message', {
+      const csrf = getCsrfToken()
+      const response = await fetch(`${apiBase}/api/v1/support/simulator/message`, {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': decodeURIComponent(csrf) },
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
         body: JSON.stringify({ message, mode }),
       })
       if (!response.ok) throw new Error('Simulator request failed (' + response.status + ')')
