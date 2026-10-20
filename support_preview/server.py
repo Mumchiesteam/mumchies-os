@@ -119,6 +119,14 @@ async def chat(payload: ChatRequest, _: bool = Depends(authorize)):
         "Only share business contacts explicitly present in verified business facts. "
         "For product links use specific /products/ URLs from the public catalogue, not generic collection URLs."
     )
+    instructions += (" MANDATORY OUTPUT LANGUAGE FOR THIS TURN: " + reply_language + ". "
+        "This instruction overrides the language of previous turns, prior assistant messages, and all reference material. "
+        "For English, write the entire answer in English; do not use Hindi words or Hinglish phrases. "
+        "Never quote or reuse unverified shipping day ranges such as 3-7 or 5-10 days. "
+        "Never claim discounts, coupons, prepaid offers or promotions without explicit current verified offer data. "
+        "Do not say you will notify customers when products are back in stock; no notification service exists. "
+        "When asked for a product link, output the plain direct URL without Markdown brackets or parentheses. "
+        "For yes/no follow-ups, respond to the last relevant question without asking the same question again.")
     conversation = [{"role": t.role, "content": t.content} for t in payload.history]
     conversation.append({"role": "user", "content": payload.message})
     try:
