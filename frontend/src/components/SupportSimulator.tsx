@@ -12,6 +12,8 @@ export function SupportSimulator() {
   const [messages, setMessages] = useState<Message[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [staffDraft, setStaffDraft] = useState('')
+  const scenarios = ['Does your laddu have sugar?', 'Where is my order?', 'I want a refund', 'Can I speak to a human?']
 
   async function send() {
     const message = draft.trim()
@@ -43,6 +45,9 @@ export function SupportSimulator() {
     <section style={{ maxWidth: 480, margin: '24px auto', fontFamily: 'system-ui' }}>
       <h2>WhatsApp Support Simulator</h2>
       <p>Offline demo only. No WhatsApp messages are sent.</p>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+        {scenarios.map(example => <button key={example} onClick={() => setDraft(example)}>{example}</button>)}
+      </div>
       <div style={{ background: '#e8e3d8', padding: 16, borderRadius: 12, minHeight: 340 }}>
         {messages.map((item, index) => (
           <div key={index} style={{ background: item.sender === 'customer' ? '#fff' : '#d9fdd3',
@@ -59,8 +64,15 @@ export function SupportSimulator() {
           placeholder="Type a customer message..." style={{ flex: 1, padding: 10 }} />
         <button disabled={busy || !draft.trim()} onClick={() => void send()}>Send</button>
       </div>
+      {mode === 'human' && <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+        <input aria-label="Staff reply" value={staffDraft} onChange={event => setStaffDraft(event.target.value)}
+          placeholder="Simulate staff response..." style={{ flex: 1, padding: 10 }} />
+        <button disabled={!staffDraft.trim()} onClick={() => {
+          setMessages(previous => [...previous, { sender: 'staff', text: staffDraft.trim() }]); setStaffDraft('')
+        }}>Staff reply</button>
+      </div>}
       {error && <p role="alert">{error}</p>}
-      <button style={{ marginTop: 12 }} onClick={() => { setMode('bot'); setMessages([]); setError('') }}>
+      <button style={{ marginTop: 12 }} onClick={() => { setMode('bot'); setMessages([]); setError(''); setStaffDraft('') }}>
         Start new test conversation
       </button>
     </section>
