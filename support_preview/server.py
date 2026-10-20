@@ -95,6 +95,18 @@ async def chat(payload: ChatRequest, _: bool = Depends(authorize)):
         "The catalogue is a periodically cached public listing, not verified stock or current checkout price. "
         "Do not invent flavours, pack sizes or descriptions absent from the catalogue. "
         "Noodles and pasta are separate categories; never answer a noodles question with pasta. "
+        "CRITICAL: Do not infer ingredient absence from a product name, category or marketing description. "
+        "Millet noodles may contain maida, cheese powder, wheat, additives or other ingredients; only assert "
+        "their presence or absence when the exact product ingredient list explicitly confirms it. "
+        "Never claim a product or flavour exists based on chat history, generic category knowledge or guesswork. "
+        "If no matching product appears in the supplied catalogue, say you cannot confirm it is listed. "
+        "For questions about calories or allergens, use exact labelled nutrition/ingredients only; no estimates. "
+        "Never assert only one pack size exists unless all variants have been checked. "
+        "Do not invent festive items or named products absent from the provided listings. "
+        "For shipping estimates, do not ask for a pincode unless a working delivery checker is available. "
+        "This preview has no delivery checker, order tracking or human handoff; state that plainly and "
+        "offer the existing order confirmation tracking link if the customer has one. "
+        "Do not claim to check the pincode or offer a general delivery estimate without data. "
         "Do not invent customer care phone numbers, email addresses, physical addresses or business cities. "
         "Only share business contacts explicitly present in verified business facts. "
         "For product links use specific /products/ URLs from the public catalogue, not generic collection URLs."
@@ -106,7 +118,7 @@ async def chat(payload: ChatRequest, _: bool = Depends(authorize)):
             response = await client.post("https://api.openai.com/v1/responses",
                 headers={"Authorization": "Bearer " + os.environ["OPENAI_API_KEY"]},
                 json={"model": os.getenv("SUPPORT_AI_MODEL", "gpt-4.1-mini"),
-                      "instructions": instructions + "\\nDraft reference: " + json.dumps({"draft_faq": reference, "website_facts": website_facts, "shopify_public_catalogue": relevant_products, "catalogue_status": catalogue_error or "cached public website listing; not live inventory", "reply_language": "Roman Hinglish" if hinglish else "match customer language"}, ensure_ascii=False),
+                      "instructions": instructions + "\\nDraft reference: " + json.dumps({"draft_faq": reference, "website_facts": website_facts, "shopify_public_catalogue": relevant_products, "matching_product_count": len(relevant_products), "catalogue_status": catalogue_error or "cached public website listing; not live inventory", "reply_language": "Roman Hinglish" if hinglish else "match customer language"}, ensure_ascii=False),
                       "input": conversation, "store": False, "max_output_tokens": 250})
             response.raise_for_status()
             data = response.json()
