@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     support_ai_enabled: bool = False
     support_ai_model: str = "gpt-4.1-mini"
+    whatsapp_verify_token: str | None = None
+    whatsapp_app_secret: str | None = None
+    whatsapp_webhook_enabled: bool = False
     api_v1_prefix: str = "/api/v1"
     database_url: str = "postgresql+psycopg://mumchies:change-me@localhost:5432/mumchies_os"
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
