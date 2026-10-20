@@ -15,7 +15,6 @@
     },
     {
       "name": "Corn Flakes Chivda - No Palm Oil",
-      "url": "https://mumchies.com/collections/all",
       "listed_price_inr": 95
     },
     {
@@ -54,6 +53,7 @@
     "The shelf-life figures are website FAQ claims, not batch-specific expiry dates.",
     "Do not invent courier ETA or claim to check serviceability.",
     "Never promise a follow-up, catalogue check, or staff contact that the simulator cannot perform.",
-    "For Dry Fruit Laddu, explain that sweetness comes from dates (khajur), not refined sugar. Do not claim sugar-free or suitable for diabetics."
+    "For Dry Fruit Laddu, explain that sweetness comes from dates (khajur), not refined sugar. Do not claim sugar-free or suitable for diabetics.",
+    "Corn Flakes Chivda has no verified direct product URL in curated facts. Never substitute a collection URL as its product link; use an exact URL only if found in the public catalogue."
   ]
 }
