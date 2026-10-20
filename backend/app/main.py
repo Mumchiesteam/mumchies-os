@@ -39,8 +39,9 @@ async def require_authentication(request: Request, call_next):
     auth_started = time.perf_counter()
     public_paths = {"/health", f"{settings.api_v1_prefix}/auth/login", f"{settings.api_v1_prefix}/auth/logout"}
     signed_provider_webhook = request.method == "POST" and request.url.path.startswith(f"{settings.api_v1_prefix}/couriers/webhooks/")
+    whatsapp_webhook = settings.whatsapp_webhook_enabled and request.method in {"GET", "POST"} and request.url.path == f"{settings.api_v1_prefix}/whatsapp/webhook"
     signed_ndr_import = request.method == "POST" and request.url.path == f"{settings.api_v1_prefix}/ndr/import"
-    if not settings.auth_enabled or request.method == "OPTIONS" or request.url.path in public_paths or signed_provider_webhook or signed_ndr_import:
+    if not settings.auth_enabled or request.method == "OPTIONS" or request.url.path in public_paths or signed_provider_webhook or signed_ndr_import or whatsapp_webhook:
         response = await call_next(request)
         prior = response.headers.get("Server-Timing")
         total = f"request_total;dur={(time.perf_counter() - request_started) * 1000:.2f}"
