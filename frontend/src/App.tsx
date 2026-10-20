@@ -67,6 +67,7 @@ import { NDRPage } from './components/NDRPage'
 import { DashboardPage } from './components/DashboardPage'
 import { AnalyticsPage } from './components/AnalyticsPage'
 import { ReportsPage } from './components/ReportsPage'
+import { SupportSimulator } from './components/SupportSimulator'
 import { formatDateTime, parseOperationalDate } from './utils/time'
 import { orderContactSectionTitle } from './utils/operations'
 import { EngageCircle, EngageProgress } from './components/EngageStatus'
@@ -128,7 +129,7 @@ const newCourierSession = (orderId: string, generation: number): CourierSession 
   selectedKey: null, selectingKey: null, error: '', warnings: [],
 })
 
-const navItems = ['Dashboard', 'Orders', 'Analytics', 'NDR', 'Reconciliation', 'Reports', 'Settings'] as const
+const navItems = ['Dashboard', 'Orders', 'Analytics', 'NDR', 'Reconciliation', 'Reports', 'Support Simulator', 'Settings'] as const
 export const workspaceLoadsForPage = (page: typeof navItems[number]) => ({
   orders: page === 'Orders',
   reconciliation: page === 'Reconciliation',
@@ -1062,6 +1063,7 @@ function App() {
         {activePage === 'Settings' && authUser?.role === 'owner' && <UsersPage />}
         {activePage === 'NDR' && <NDRPage />}
         {activePage === 'Reports' && <ReportsPage path={reportPath} navigate={navigateReports} />}
+        {activePage === 'Support Simulator' && <SupportSimulator />}
         {activePage === 'Reconciliation' && <div>
           <div className="mb-5"><p className="text-sm font-medium text-[#ff6b35]">Reconciliation</p><h2 className="mt-1 text-2xl font-bold tracking-tight">Order reconciliation</h2></div>
           <div className="mb-5 flex gap-5 border-b border-slate-200"><button onClick={() => setReconciliationSection('reconciliation')} className={`px-1 pb-3 text-sm font-semibold ${reconciliationSection === 'reconciliation' ? 'border-b-2 border-slate-900 text-slate-900' : 'text-slate-500'}`}>Reconciliation</button><button onClick={() => setReconciliationSection('courier_issues')} className={`px-1 pb-3 text-sm font-semibold ${reconciliationSection === 'courier_issues' ? 'border-b-2 border-slate-900 text-slate-900' : 'text-slate-500'}`}>Courier Issues</button></div>
