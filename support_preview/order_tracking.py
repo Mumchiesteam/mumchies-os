@@ -35,7 +35,7 @@ async def lookup(order_number: str) -> dict:
         return {"status": "unavailable", "reply": "Live order tracking is not configured in this preview yet."}
     number = match.group(1)
     store = os.environ["SHOPIFY_STORE"].strip().removeprefix("https://").rstrip("/")
-    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.-]*\\.myshopify\\.com", store):
+    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.-]*\.myshopify\.com", store):
         return {"status": "unavailable", "reply": "Order tracking configuration needs attention."}
     version = os.environ["SHOPIFY_API_VERSION"].strip()
     if not re.fullmatch(r"20[0-9]{2}-(01|04|07|10)", version):
