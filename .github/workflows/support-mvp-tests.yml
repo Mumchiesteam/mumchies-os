@@ -18,8 +18,8 @@ jobs:
         with:
           python-version: '3.13'
       - name: Install test dependencies
-        run: python -m pip install pytest==8.3.4 fastapi==0.115.6 pydantic-settings httpx
+        run: python -m pip install pytest==8.3.4 fastapi==0.115.6 pydantic-settings httpx sqlalchemy
       - name: Run isolated support tests
         env:
           PYTHONPATH: backend
-        run: python -m pytest backend/tests/test_support_ai.py backend/tests/test_support_handover.py backend/tests/test_whatsapp_webhook.py backend/tests/test_whatsapp_events.py -q
+        run: python -m pytest backend/tests/test_support_ai.py backend/tests/test_support_handover.py backend/tests/test_whatsapp_webhook.py backend/tests/test_whatsapp_events.py backend/tests/test_support_store.py -q
