@@ -10,3 +10,5 @@ from app.models.order_read_model import OrderReadModel
 from app.models.gst_report_snapshot import GstReportSnapshot
 
 __all__ = ["ShiprocketShipment", "OrderAddressState", "AddressSyncOperation", "BookingReservation", "OrderReadModel", "ShipmentEvent", "ShipmentPollRun", "ShipmentPollAttempt", "CourierIssue", "GstReportSnapshot", "User", "NDRCase", "NDREvent", "NDRSyncRun", "NDRImportRun"]
+
+from app.models.support_conversation import SupportConversation, SupportMessage
