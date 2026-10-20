@@ -2,7 +2,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from app.services.support_ai import answer_support_message
+from app.services.support_ai import answer_support_message_with_ai
 
 router = APIRouter(prefix="/support", tags=["support"])
 
@@ -12,5 +12,5 @@ class SupportRequest(BaseModel):
 
 
 @router.post("/test-reply")
-def test_reply(payload: SupportRequest) -> dict[str, object]:
-    return answer_support_message(payload.message)
+async def test_reply(payload: SupportRequest) -> dict[str, object]:
+    return await answer_support_message_with_ai(payload.message)
