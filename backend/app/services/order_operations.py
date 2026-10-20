@@ -220,7 +220,7 @@ class OrderOperationsStore:
             data = cls._read_all()
             record = data.get(order_id, deepcopy(cls._default_record))
             record["cancellation"] = {**result, "operator": operator, "timestamp": timestamp}
-            confirmed = str((result.get("shiprocket") or {}).get("status") or "").casefold() in {"confirmed", "already_cancelled"}
+            confirmed = str((result.get("mumchies_os") or {}).get("status") or "").casefold() == "cancelled"
             if confirmed:
                 record["call_logs"] = [{"result": "Cancelled", "comment": result.get("comment") or "", "operator": operator, "timestamp": timestamp}, *record.get("call_logs", [])]
                 cls._record_action(record, "order_cancelled", timestamp, operator)
