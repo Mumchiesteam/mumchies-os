@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - audit/os-quality-20261021
+      - fix/shadowfax-label-sku-20261021
   workflow_dispatch:
 
 permissions:
