@@ -595,7 +595,7 @@ def _shadowfax_label_sku_name(product_name: str) -> str:
     name = " ".join(product_name.split())
     if len(name) <= 60:
         return name
-    match = re.search(r"\\bpack\\s+of\\s+\\d+\\b", name, flags=re.IGNORECASE)
+    match = re.search(r"\bpack\s+of\s+\d+\b", name, flags=re.IGNORECASE)
     if not match:
         return name
     product = name.split(" - ", 1)[0].split(" | ", 1)[0].strip()
