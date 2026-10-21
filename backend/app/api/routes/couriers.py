@@ -583,6 +583,27 @@ def _cached_shiprocket_pickup_location_details() -> dict[str, object] | None:
     return dict(cached[2])
 
 
+def _shadowfax_label_sku_name(product_name: str) -> str:
+    """Keep pack identity visible on Shadowfax's narrow provider-printed SKU rows.
+
+    Only compact a known marketing-title pattern with an explicit pack size.
+    Never truncate unrecognized products or alter the original Shopify order,
+    SKU identifier, ordered quantity, or price.
+    """
+    import re
+
+    name = " ".join(product_name.split())
+    if len(name) <= 60:
+        return name
+    match = re.search(r"\bpack\s+of\s+\d+\b", name, flags=re.IGNORECASE)
+    if not match:
+        return name
+    product = name.split(" - ", 1)[0].split(" | ", 1)[0].strip()
+    pack = name[match.start():].strip()
+    compact = f"{product} | {pack}"
+    return compact if product and match.start() > len(product) and len(compact) < len(name) else name
+
+
 async def _build_provider_booking_request(
     order: ShopifyOrder,
     operations: dict[str, object],
@@ -642,7 +663,7 @@ async def _build_provider_booking_request(
         if item.quantity <= 0 or float(item.price) < 0 or not item.product_name.strip():
             raise HTTPException(status_code=400, detail=f"Product line {index + 1} is invalid.")
         product = {
-            "sku_name": item.product_name,
+            "sku_name": _shadowfax_label_sku_name(item.product_name),
             "price": float(item.price),
             "additional_details": {"quantity": item.quantity},
         }

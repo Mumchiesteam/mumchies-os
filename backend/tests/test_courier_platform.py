@@ -29,7 +29,7 @@ from app.services.courier_platform.shadowfax_http import (
 from app.services.courier_platform.webhooks import WebhookHandler, process_webhook, webhook_registry
 from app.services.courier_platform.models import TrackingResult
 from app.services.label_printing import LabelPrintError, LabelService, confirm_batch, create_batch, image_label_to_pdf, print_ready_pdf, shadowfax_print_ready_pdf
-from app.api.routes.couriers import PackageDetailsPayload, _build_delhivery_payload, _build_provider_booking_request, _build_shiprocket_order_payload, _sync_shopify_after_booking, _validate_shadowfax_booking_request
+from app.api.routes.couriers import PackageDetailsPayload, _build_delhivery_payload, _build_provider_booking_request, _build_shiprocket_order_payload, _shadowfax_label_sku_name, _sync_shopify_after_booking, _validate_shadowfax_booking_request
 from app.schemas.orders import OrderProduct, ShippingAddress, ShopifyOrder
 
 
@@ -48,6 +48,44 @@ def official_booking_payload() -> dict:
         "rto_details": {"name": "Test", "contact": "9999999999", "address_line_1": "Test", "city": "Bengaluru", "state": "Karnataka", "pincode": 560077},
         "product_details": [{"sku_name": "Test item", "price": 500}],
     }
+
+
+def test_shadowfax_label_title_preserves_pack_size_and_avoids_marketing_overflow():
+    title = "Dry Fruit Laddu - 100% Dry Fruits | No Refined Sugar | Pack of 14 - 350 Gms (14 Laddus)"
+    assert _shadowfax_label_sku_name(title) == "Dry Fruit Laddu | Pack of 14 - 350 Gms (14 Laddus)"
+    assert _shadowfax_label_sku_name("Dry Fruit Laddu | Pack of 4") == "Dry Fruit Laddu | Pack of 4"
+    other = "Original long product without a defined pack size or recognized product title separator"
+    assert _shadowfax_label_sku_name(other) == other
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("ordered_quantity", [1, 4])
+async def test_shadowfax_compact_label_name_does_not_change_shopify_item_quantity_or_price(ordered_quantity):
+    original_title = "Dry Fruit Laddu - 100% Dry Fruits | No Refined Sugar | Pack of 14 - 350 Gms (14 Laddus)"
+    order = ShopifyOrder(
+        order_id="test-laddu", order_number="TEST-LADDU",
+        created_date="2026-10-21T00:00:00Z", customer_name="Test Customer",
+        phone="9999999999", email=None,
+        shipping_address=ShippingAddress(name="Test Customer", address="1 Test Road", city="Bengaluru", state="Karnataka", pincode="560076"),
+        products=[OrderProduct(product_name=original_title, sku="LADDU-14", quantity=ordered_quantity,
+                               weight_grams=350, price=Decimal("350"))],
+        total_amount=Decimal(str(350 * ordered_quantity)),
+        order_total=Decimal(str(350 * ordered_quantity)),
+        cod_collectable_amount=Decimal("0"), payment_type="prepaid", tags=[],
+    )
+    warehouse = {"name": "Mumchies", "phone": "9876543210", "address": "Warehouse Road",
+                 "city": "Bengaluru", "state": "Karnataka", "pin_code": "560076"}
+    payload = await _build_provider_booking_request(order, {}, PackageDetailsPayload(
+        weight_kg=.5, length_cm=15, breadth_cm=15, height_cm=5), warehouse=warehouse)
+    assert payload["product_details"] == [{
+        "sku_name": "Dry Fruit Laddu | Pack of 14 - 350 Gms (14 Laddus)",
+        "sku_id": "LADDU-14",
+        "price": 350.0,
+        "additional_details": {"quantity": ordered_quantity},
+    }]
+    assert payload["order_details"]["product_value"] == 350 * ordered_quantity
+    # The original Shopify display title remains unchanged for OS/reporting.
+    assert order.products[0].product_name == original_title
 
 
 @pytest.mark.anyio
